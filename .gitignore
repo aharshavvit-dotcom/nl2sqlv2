@@ -1,0 +1,77 @@
+# Python bytecode and test/build caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local
+.streamlit/secrets.toml
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+~$*
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+
+# Downloaded datasets and generated dataset outputs
+data/raw/
+data/processed/
+data/processed_*/
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/*.duckdb
+training_data/*.jsonl
+
+# Keep lightweight source/config data files trackable
+!data/templates.yaml
+!data/synonyms.yaml
+!data/.gitkeep
+!training_data/.gitkeep
+
+# Trained models and experiment artifacts
+artifacts/
+models/
+*.joblib
+*.pkl
+*.pickle
+*.onnx
+*.pt
+*.pth
+*.ckpt
+
+# Packaging/build outputs
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Jupyter notebooks/runtime checkpoints
+.ipynb_checkpoints/
+jupyter_runtime/

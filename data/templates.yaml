@@ -1,0 +1,95 @@
+templates:
+  rank_dimension:
+    description: Rank dimension values by an aggregate metric.
+    sql: |
+      SELECT
+        {{ dimension.expression }} AS {{ dimension.alias }},
+        {{ metric.aggregate }}({{ metric.expression }}) AS {{ metric.alias }}
+      FROM {{ base_table }}
+      {{ joins }}
+      {{ where_clause }}
+      GROUP BY {{ dimension.expression }}
+      ORDER BY {{ metric.alias }} {{ order }}
+      LIMIT {{ limit }}
+
+  aggregate_metric:
+    description: Return one aggregate metric.
+    sql: |
+      SELECT
+        {{ metric.aggregate }}({{ metric.expression }}) AS {{ metric.alias }}
+      FROM {{ base_table }}
+      {{ joins }}
+      {{ where_clause }}
+
+  detail_rows:
+    description: Return recent detail rows for a dimension and metric.
+    sql: |
+      SELECT
+        {{ dimension.expression }} AS {{ dimension.alias }},
+        {{ metric.expression }} AS {{ metric.alias }}
+      FROM {{ base_table }}
+      {{ joins }}
+      {{ where_clause }}
+      ORDER BY {{ metric.expression }} {{ order }}
+      LIMIT {{ limit }}
+
+  filtered_rank_dimension:
+    description: Rank dimension values by an aggregate metric with filters.
+    sql: |
+      SELECT
+        {{ dimension.expression }} AS {{ dimension.alias }},
+        {{ metric.aggregate }}({{ metric.expression }}) AS {{ metric.alias }}
+      FROM {{ base_table }}
+      {{ joins }}
+      {{ where_clause }}
+      GROUP BY {{ dimension.expression }}
+      ORDER BY {{ metric.alias }} {{ order }}
+      LIMIT {{ limit }}
+
+  time_series_metric:
+    description: Group an aggregate metric by a time dimension.
+    sql: |
+      SELECT
+        {{ dimension.expression }} AS {{ dimension.alias }},
+        {{ metric.aggregate }}({{ metric.expression }}) AS {{ metric.alias }}
+      FROM {{ base_table }}
+      {{ joins }}
+      {{ where_clause }}
+      GROUP BY {{ dimension.expression }}
+      ORDER BY {{ dimension.alias }} ASC
+      LIMIT {{ limit }}
+
+  distinct_dimension_values:
+    description: List distinct dimension values.
+    sql: |
+      SELECT DISTINCT
+        {{ dimension.expression }} AS {{ dimension.alias }}
+      FROM {{ base_table }}
+      {{ joins }}
+      {{ where_clause }}
+      ORDER BY {{ dimension.alias }} ASC
+      LIMIT {{ limit }}
+
+  metric_distribution:
+    description: Return min, max, and average values for a metric.
+    sql: |
+      SELECT
+        MIN({{ metric.expression }}) AS min_{{ metric.alias }},
+        MAX({{ metric.expression }}) AS max_{{ metric.alias }},
+        AVG({{ metric.expression }}) AS avg_{{ metric.alias }}
+      FROM {{ base_table }}
+      {{ joins }}
+      {{ where_clause }}
+
+  count_dimension:
+    description: Count rows by a dimension.
+    sql: |
+      SELECT
+        {{ dimension.expression }} AS {{ dimension.alias }},
+        COUNT(*) AS row_count
+      FROM {{ base_table }}
+      {{ joins }}
+      {{ where_clause }}
+      GROUP BY {{ dimension.expression }}
+      ORDER BY row_count {{ order }}
+      LIMIT {{ limit }}

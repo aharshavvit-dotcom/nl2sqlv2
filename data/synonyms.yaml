@@ -1,0 +1,103 @@
+metrics:
+  sales:
+    aliases: [sales, revenue, total sales, total revenue, gross sales, order value, amount, money, spend]
+    expression: orders.amount
+    aggregate: SUM
+    alias: revenue
+  order_count:
+    aliases: [orders, order count, number of orders, total orders, purchases, transactions]
+    expression: orders.order_id
+    aggregate: COUNT
+    alias: order_count
+  average_order_value:
+    aliases: [average order value, avg order value, average sales, avg sales, mean order amount]
+    expression: orders.amount
+    aggregate: AVG
+    alias: average_order_value
+  quantity:
+    aliases: [quantity, units, units sold, items sold, volume]
+    expression: order_items.quantity
+    aggregate: SUM
+    alias: total_quantity
+  profit:
+    aliases: [profit, margin, gross profit, total profit]
+    expression: order_items.profit
+    aggregate: SUM
+    alias: profit
+  discount:
+    aliases: [discount, discounts, markdown, total discount]
+    expression: order_items.discount
+    aggregate: SUM
+    alias: discount
+
+dimensions:
+  customer:
+    aliases: [customer, customers, client, clients, buyer, buyers, customer name]
+    column: customers.customer_name
+    alias: customer
+  customer_segment:
+    aliases: [segment, customer segment, tier, customer tier]
+    column: customers.segment
+    alias: segment
+  city:
+    aliases: [city, cities, town, location]
+    column: customers.city
+    alias: city
+  state:
+    aliases: [state, states, province, territory]
+    column: customers.state
+    alias: state
+  region:
+    aliases: [region, regions, area, geography]
+    column: customers.region
+    alias: region
+  product:
+    aliases: [product, products, sku, item, items, product name]
+    column: products.product_name
+    alias: product
+  category:
+    aliases: [category, categories, product category, department]
+    column: products.category
+    alias: category
+  brand:
+    aliases: [brand, brands, manufacturer]
+    column: products.brand
+    alias: brand
+  store:
+    aliases: [store, stores, branch, shop]
+    column: stores.store_name
+    alias: store
+  sales_rep:
+    aliases: [sales rep, representative, rep, salesperson, seller]
+    column: sales_reps.rep_name
+    alias: sales_rep
+  month:
+    aliases: [month, months, monthly, order month]
+    expression: strftime('%Y-%m', orders.order_date)
+    alias: month
+  year:
+    aliases: [year, years, yearly, annual]
+    expression: strftime('%Y', orders.order_date)
+    alias: year
+
+filters:
+  year:
+    aliases: [year, in year, during year]
+    column: orders.order_date
+    operator: "="
+  state:
+    aliases: [state, in state]
+    column: customers.state
+    operator: "="
+  city:
+    aliases: [city, in city]
+    column: customers.city
+    operator: "="
+  category:
+    aliases: [category, in category]
+    column: products.category
+    operator: "="
+  region:
+    aliases: [region, in region]
+    column: customers.region
+    operator: "="
