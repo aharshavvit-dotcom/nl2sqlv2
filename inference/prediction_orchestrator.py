@@ -6,6 +6,7 @@ from typing import Any
 from ir.ir_to_sql_renderer import IRToSQLRenderer
 from ir.ir_validator import IRValidator
 from ir.option_c_to_ir import OptionCToIRConverter
+from ir.semantic_metric_resolver import SemanticMetricResolver
 from validation.sql_validator import SQLValidator
 
 from .candidate_generator import CandidateGenerator
@@ -30,6 +31,7 @@ class PredictionOrchestrator:
         self.slot_resolver = SlotResolver()
         self.mapper = SchemaAwareMapper()
         self.join_planner = RuntimeJoinPlanner()
+        self.semantic_metric_resolver = SemanticMetricResolver()
         self.ir_converter = OptionCToIRConverter()
         self.ir_validator = IRValidator(max_limit=max_limit)
         self.sql_renderer = IRToSQLRenderer(max_limit=max_limit)
@@ -62,6 +64,7 @@ class PredictionOrchestrator:
         )
         slots = slot_payload["slots"]
         schema_mapping = self.mapper.map_slots_to_schema(slots, schema_context, metric_synonyms, dimension_synonyms)
+        self._apply_semantic_metric_resolution(schema_mapping, schema_context)
         base_table = self._select_base_table(schema_mapping, slots)
         required_tables = self._required_tables(selected_template.get("template_id"), schema_mapping)
         join_plan = self.join_planner.plan_joins(schema_context, base_table, required_tables)
@@ -90,6 +93,14 @@ class PredictionOrchestrator:
                 "join_plan": join_plan.model_dump(),
                 "ir_validation": ir_validation.model_dump(),
                 "validation": sql_validation,
+                "warnings": [
+                    *schema_mapping.warnings,
+                    *join_plan.warnings,
+                    *query_ir.warnings,
+                    *ir_validation.warnings,
+                    *ir_validation.errors,
+                    *([] if sql_validation.get("is_valid") else sql_validation.get("issues", [])),
+                ],
             }
         )
         warnings = [
@@ -123,7 +134,8 @@ class PredictionOrchestrator:
             debug={
                 "schema_context": schema_context.serialize_for_debug(),
                 "template_selection": selected_template,
-                "confidence_components": confidence["components"],
+                "confidence_breakdown": confidence["confidence_breakdown"],
+                "confidence_components": confidence["confidence_breakdown"],
             },
         )
 
@@ -153,9 +165,35 @@ class PredictionOrchestrator:
             tables.append(mapping.dimension_table)
         if mapping.date_table:
             tables.append(mapping.date_table)
-        if template_id == "simple_filter":
+        if mapping.filter_table:
             tables.append(mapping.filter_table)
         return [table for table in dict.fromkeys(tables) if table]
+
+    def _apply_semantic_metric_resolution(
+        self,
+        mapping: SchemaMapping,
+        schema_context: RuntimeSchemaContext,
+    ) -> None:
+        resolution = self.semantic_metric_resolver.resolve_metric_expression(
+            metric_name=mapping.metric_name or "",
+            dimension_name=mapping.dimension_name,
+            schema_context=schema_context,
+            current_metric_table=mapping.metric_table,
+            current_metric_column=mapping.metric_column,
+        )
+        if resolution.get("metric_expression"):
+            mapping.metric_table = resolution.get("metric_table")
+            mapping.metric_column = resolution.get("metric_column")
+            mapping.metric_expression = resolution.get("metric_expression")
+            mapping.metric_aggregation = resolution.get("metric_aggregation") or mapping.metric_aggregation
+            mapping.metric_alias = resolution.get("metric_alias") or mapping.metric_alias
+            mapping.match_scores["semantic_metric"] = 1.0
+        if resolution.get("semantic_grain_risk"):
+            mapping.semantic_grain_risk = True
+            mapping.match_scores["semantic_metric"] = min(mapping.match_scores.get("semantic_metric", 0.4), 0.4)
+        for warning in resolution.get("warnings", []):
+            if warning not in mapping.warnings:
+                mapping.warnings.append(warning)
 
     @staticmethod
     def _synonym_maps(

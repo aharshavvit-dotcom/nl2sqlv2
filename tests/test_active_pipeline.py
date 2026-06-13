@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from nl2sql_v1.executor import execute_select
+from execution.query_executor import execute_select
 from nl2sql_v1.retriever import TfidfRetriever
 from nl2sql_v1.schema import SchemaGraph, read_sqlite_schema
 from retriever.retrieval_nl2sql_model import RetrievalNL2SQLModel
@@ -81,5 +81,5 @@ def test_end_to_end_executes_on_sample_db(model: RetrievalNL2SQLModel, schema: S
     result = model.predict("Top 5 customers by sales", schema)
 
     assert result.sql is not None
-    df = execute_select(sample_db, result.sql)
+    df = execute_select(sample_db, result.sql, validation_result=result.validation)
     assert len(df) == 5

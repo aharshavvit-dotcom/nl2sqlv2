@@ -91,6 +91,9 @@ class SchemaAwareMapper:
             if candidates:
                 score, table, column = max(candidates, key=lambda item: item[0])
                 return {"table": table, "column": column, "score": round(max(score, 0.75), 4), "warnings": []}
+        deterministic = self._deterministic_metric(metric, schema_context)
+        if deterministic:
+            return deterministic
         aliases = self._aliases(metric, metric_synonyms)
         candidates = []
         for qualified in schema_context.get_numeric_columns():
@@ -180,6 +183,26 @@ class SchemaAwareMapper:
         for column in schema_context.get_table_columns(table):
             if column.endswith("_id") or column == "id":
                 return column
+        return None
+
+    @staticmethod
+    def _deterministic_metric(metric: str, schema_context: RuntimeSchemaContext) -> dict[str, Any] | None:
+        normalized = metric.lower().replace(" ", "_")
+        preferred = {
+            "sales": ("orders", "amount", 0.98),
+            "revenue": ("orders", "amount", 0.98),
+            "total_sales": ("orders", "amount", 0.98),
+            "average_order_value": ("orders", "amount", 0.95),
+            "quantity": ("order_items", "quantity", 0.95),
+            "profit": ("order_items", "profit", 0.95),
+            "discount": ("order_items", "discount", 0.95),
+        }
+        target = preferred.get(normalized)
+        if not target:
+            return None
+        table, column, score = target
+        if schema_context.has_column(table, column):
+            return {"table": table, "column": column, "score": score, "warnings": []}
         return None
 
     @staticmethod

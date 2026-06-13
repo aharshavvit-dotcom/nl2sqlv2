@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
+import re
 from typing import Any
 
 from nl2sql_v1.schema import SchemaGraph
@@ -51,6 +52,8 @@ class IRValidator:
         if any(metric.expression == "*" and metric.aggregation.upper() != "COUNT" for metric in query_ir.metrics):
             self._issue(issues, "error", "select_star", "Only COUNT(*) may use '*' in QueryIR.")
 
+        self._validate_semantics(issues, query_ir, schema_tables)
+
         if schema_tables:
             self._validate_tables(issues, query_ir, schema_tables)
             self._validate_columns(issues, query_ir, schema_tables)
@@ -93,10 +96,51 @@ class IRValidator:
     def _referenced_columns(query_ir: QueryIR) -> list[tuple[str, str]]:
         refs: list[tuple[str, str]] = []
         refs.extend((metric.table, metric.column) for metric in query_ir.metrics if metric.table and metric.column)
+        for metric in query_ir.metrics:
+            refs.extend(IRValidator._expression_refs(metric.expression))
         refs.extend((dimension.table, dimension.column) for dimension in query_ir.dimensions)
+        for dimension in query_ir.dimensions:
+            refs.extend(IRValidator._expression_refs(dimension.expression))
         refs.extend((item.table, item.column) for item in query_ir.filters)
+        for item in query_ir.filters:
+            refs.extend(IRValidator._expression_refs(item.expression))
         refs.extend((item.date_table, item.date_column) for item in query_ir.date_filters)
         return [(table, column) for table, column in refs if table and column]
+
+    def _validate_semantics(
+        self,
+        issues: list[IRValidationIssue],
+        query_ir: QueryIR,
+        schema_tables: dict[str, set[str]],
+    ) -> None:
+        dimension_names = {dimension.name.lower().replace(" ", "_") for dimension in query_ir.dimensions}
+        metric_names = {metric.name.lower().replace(" ", "_") for metric in query_ir.metrics}
+        asks_product_revenue = bool(dimension_names & {"product", "products", "item", "items", "sku"}) and bool(
+            metric_names & {"sales", "revenue", "total_sales"}
+        )
+        if not asks_product_revenue:
+            return
+        metric_expression = " ".join(metric.expression for metric in query_ir.metrics).lower()
+        safe_expression = (
+            "order_items.quantity" in metric_expression
+            and "order_items.price" in metric_expression
+            and "orders.amount" not in metric_expression
+        )
+        if safe_expression:
+            return
+        if schema_tables and {"order_items", "products"}.issubset(schema_tables):
+            self._issue(
+                issues,
+                "warning",
+                "semantic_grain_risk",
+                "Product-level revenue should use item-level quantity/price rather than order-level amount.",
+            )
+
+    @staticmethod
+    def _expression_refs(expression: str | None) -> list[tuple[str, str]]:
+        if not expression or expression == "*":
+            return []
+        return [(table, column) for table, column in re.findall(r"\b([A-Za-z_][\w]*)\.([A-Za-z_][\w]*)\b", expression)]
 
     @staticmethod
     def _schema_tables(schema: dict[str, Any] | SchemaGraph | None) -> dict[str, set[str]]:

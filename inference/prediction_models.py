@@ -32,7 +32,10 @@ class SchemaMapping(BaseModel):
     metric_name: str | None = None
     metric_table: str | None = None
     metric_column: str | None = None
+    metric_expression: str | None = None
     metric_aggregation: str | None = None
+    metric_alias: str | None = None
+    semantic_grain_risk: bool = False
     dimension_name: str | None = None
     dimension_table: str | None = None
     dimension_column: str | None = None

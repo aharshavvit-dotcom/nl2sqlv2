@@ -33,6 +33,8 @@ def load_synonym_config(path: str | Path = DEFAULT_SYNONYMS_PATH) -> dict[str, A
     if not target.exists():
         return SAFE_DEFAULTS
     raw = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+    if "business_terms" in raw or "sample_retail_physical_mappings" in raw:
+        raw = _flatten_nested_config(raw)
     return {**SAFE_DEFAULTS, **raw}
 
 
@@ -57,3 +59,23 @@ def normalize_section(section: dict[str, Any]) -> dict[str, list[str]]:
         values = [str(key), str(key).replace("_", " "), *[str(item) for item in raw_values]]
         normalized[str(key)] = list(dict.fromkeys(values))
     return normalized
+
+
+def _flatten_nested_config(raw: dict[str, Any]) -> dict[str, Any]:
+    business = raw.get("business_terms") or {}
+    physical = raw.get("sample_retail_physical_mappings") or {}
+    rules = raw.get("schema_mapping_rules") or {}
+    flattened: dict[str, Any] = {}
+    for section in ["metrics", "dimensions", "entities", "dates", "filters"]:
+        merged = {}
+        for source in [business.get(section), physical.get(section), rules.get(section), raw.get(section)]:
+            if isinstance(source, dict):
+                for key, value in source.items():
+                    existing = merged.get(key, {})
+                    if isinstance(existing, dict) and isinstance(value, dict):
+                        merged[key] = {**existing, **value}
+                    else:
+                        merged[key] = value
+        if merged:
+            flattened[section] = merged
+    return flattened

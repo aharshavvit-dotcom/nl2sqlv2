@@ -106,13 +106,17 @@ class OptionCToIRConverter:
             return []
         table = mapping.get("metric_table")
         column = mapping.get("metric_column")
+        expression = mapping.get("metric_expression")
         aggregation = str(mapping.get("metric_aggregation") or "SUM").upper()
         name = str(mapping.get("metric_name") or OptionCToIRConverter._slot_value(slots, "metric", "metric"))
-        if not table or not column:
+        if mapping.get("semantic_grain_risk"):
+            warnings.append("semantic grain risk: product-level revenue needs item-level quantity/price columns")
+        if not expression and table and column:
+            expression = f"{table}.{column}"
+        if not table or not expression:
             warnings.append("missing metric mapping")
             return []
-        expression = f"{table}.{column}"
-        alias = "revenue" if name in {"sales", "revenue"} else ("record_count" if aggregation == "COUNT" else name)
+        alias = str(mapping.get("metric_alias") or ("revenue" if name in {"sales", "revenue"} else ("record_count" if aggregation == "COUNT" else name)))
         return [
             IRMetric(
                 name=name,

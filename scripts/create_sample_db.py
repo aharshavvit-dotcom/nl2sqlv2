@@ -81,7 +81,7 @@ def build_database(db_path: Path = DB_PATH) -> None:
         Column("order_id", Integer, ForeignKey("orders.order_id"), nullable=False),
         Column("product_id", Integer, ForeignKey("products.product_id"), nullable=False),
         Column("quantity", Integer, nullable=False),
-        Column("unit_price", Float, nullable=False),
+        Column("price", Float, nullable=False),
         Column("discount", Float, nullable=False),
         Column("profit", Float, nullable=False),
     )
@@ -159,7 +159,7 @@ def build_database(db_path: Path = DB_PATH) -> None:
                 "order_id": order_id,
                 "product_id": product_a,
                 "quantity": quantity_a,
-                "unit_price": price_a,
+                "price": price_a,
                 "discount": discount_a,
                 "profit": round(price_a * quantity_a * 0.22 - discount_a, 2),
             }
@@ -171,7 +171,7 @@ def build_database(db_path: Path = DB_PATH) -> None:
                 "order_id": order_id,
                 "product_id": product_b,
                 "quantity": quantity_b,
-                "unit_price": price_b,
+                "price": price_b,
                 "discount": discount_b,
                 "profit": round(price_b * quantity_b * 0.18 - discount_b, 2),
             }

@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from execution.query_executor import execute_select
+from app.safe_preview import build_safe_preview_sql
 from nl2sql_v1.feedback import append_feedback
 from nl2sql_v1.schema import read_sqlite_schema
 from retriever.retrieval_nl2sql_model import RetrievalNL2SQLModel
@@ -29,7 +30,7 @@ MODEL_PATH = ROOT / "models" / "tfidf_retriever.joblib"
 ARTIFACT_DIR = ROOT / "artifacts" / "option_c_model"
 FEEDBACK_PATH = ROOT / "feedback" / "feedback.jsonl"
 EVALUATION_DIR = ROOT / "evaluation"
-GOLDEN_RESULTS_PATH = EVALUATION_DIR / "golden_test_results.json"
+GOLDEN_RESULTS_PATH = EVALUATION_DIR / "golden_runtime_report.json"
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -72,8 +73,8 @@ def _dataset_missing_messages(selected: list[str]) -> list[str]:
     return messages
 
 
-st.set_page_config(page_title="Local NL-to-SQL V1", layout="wide")
-st.title("Local Retrieval NL-to-SQL V1")
+st.set_page_config(page_title="Local QueryIR NL-to-SQL", layout="wide")
+st.title("Local QueryIR NL-to-SQL")
 
 with st.expander("Model Status", expanded=True):
     evaluation_path = ARTIFACT_DIR / "evaluation_report.json"
@@ -162,7 +163,7 @@ with st.expander("Testing", expanded=False):
     golden = _golden_results()
     if golden:
         st.metric("Golden accuracy", f"{golden.get('accuracy', 0):.1%}")
-        st.dataframe(pd.DataFrame(golden.get("results", [])), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(golden.get("case_results", [])), use_container_width=True, hide_index=True)
     else:
         st.caption("No golden test run yet.")
 
@@ -176,7 +177,7 @@ with left:
     generate = st.button("Generate SQL", type="primary")
 
 with right:
-    st.caption("Local only: TF-IDF retrieval, YAML templates, RapidFuzz matching, SQLGlot validation.")
+    st.caption("Local only: TF-IDF retrieval, QueryIR rendering, RapidFuzz matching, SQLGlot validation.")
 
 if not db_path.exists():
     st.warning(f"Database not found: {db_path}")
@@ -333,6 +334,9 @@ if st.checkbox("Show sample table preview"):
     if table_name not in schema.tables:
         st.error("Selected table is not present in the connected schema.")
     else:
-        preview_sql = f"SELECT * FROM {table_name} LIMIT 20"
-        df = execute_select(db_path, preview_sql)
-        st.dataframe(pd.DataFrame(df), use_container_width=True)
+        preview_sql = build_safe_preview_sql(table_name, schema)
+        if preview_sql is None:
+            st.info("No safe preview columns available for this table.")
+        else:
+            df = execute_select(db_path, preview_sql)
+            st.dataframe(pd.DataFrame(df), use_container_width=True)

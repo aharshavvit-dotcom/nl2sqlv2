@@ -12,6 +12,7 @@ class PredictionConfidenceCalculator:
         join_plan = result_parts.get("join_plan")
         validation = result_parts.get("validation") or {}
         ir_validation = result_parts.get("ir_validation") or {}
+        warnings = [str(item).lower() for item in result_parts.get("warnings", [])]
 
         retrieval_conf = float(candidates[0].rerank_score or candidates[0].similarity_score) if candidates else 0.0
         template_conf = float(selected_template.get("confidence") or 0.0)
@@ -31,33 +32,41 @@ class PredictionConfidenceCalculator:
             + 0.10 * validation_conf
         )
         if not ir_validation.get("is_valid", False):
-            confidence = min(confidence, 0.79)
+            confidence = min(confidence, 0.59)
         if not validation.get("is_valid", validation.get("ok", False)):
-            confidence = min(confidence, 0.79)
+            confidence = min(confidence, 0.59)
         metric_table = mapping.get("metric_table") if isinstance(mapping, dict) else getattr(mapping, "metric_table", None)
         dimension_table = mapping.get("dimension_table") if isinstance(mapping, dict) else getattr(mapping, "dimension_table", None)
         if mapping and (not metric_table or (self._needs_dimension(selected_template) and not dimension_table)):
             confidence = min(confidence, 0.45)
         if join_plan and join_plan.get("warnings"):
-            confidence = min(confidence, 0.55)
+            confidence = min(confidence, 0.49)
         if self._needs_metric(selected_template) and not self._slot_ok(slots, "metric"):
             confidence = min(confidence, 0.49)
         if self._needs_dimension(selected_template) and not self._slot_ok(slots, "dimension"):
             confidence = min(confidence, 0.49)
+        if any("semantic grain" in warning or "product-level revenue could not" in warning for warning in warnings):
+            confidence = min(confidence, 0.69)
+        if any("date filter requested" in warning or "date column" in warning for warning in warnings):
+            confidence = min(confidence, 0.69)
 
         tier = "high" if confidence >= 0.80 else "medium" if confidence >= 0.60 else "low"
+        final = round(max(0.0, min(1.0, confidence)), 4)
+        breakdown = {
+            "retrieval": round(retrieval_conf, 4),
+            "template": round(template_conf, 4),
+            "slots": round(slot_conf, 4),
+            "schema_mapping": round(mapping_conf, 4),
+            "join_planning": round(join_conf, 4),
+            "ir_validation": ir_conf,
+            "sql_validation": validation_conf,
+            "final": final,
+        }
         return {
-            "confidence": round(max(0.0, min(1.0, confidence)), 4),
+            "confidence": final,
             "confidence_tier": tier,
-            "components": {
-                "retrieval": round(retrieval_conf, 4),
-                "template": round(template_conf, 4),
-                "slots": round(slot_conf, 4),
-                "schema_mapping": round(mapping_conf, 4),
-                "join": round(join_conf, 4),
-                "ir_validation": ir_conf,
-                "sql_validation": validation_conf,
-            },
+            "components": breakdown,
+            "confidence_breakdown": breakdown,
         }
 
     @staticmethod

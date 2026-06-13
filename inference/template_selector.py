@@ -47,16 +47,24 @@ class TemplateSelector:
     @staticmethod
     def _question_template(question: str) -> str | None:
         q = question.lower()
+        has_filter_phrase = re.search(r"\b(where|with|excluding)\b|\bfor\s+(region|status|category)\b|\bin\s+(region|status|category)\b", q) is not None
+        has_metric_word = any(word in q for word in ["sales", "revenue", "profit", "quantity", "average", "amount"])
         if any(word in q for word in ["top", "highest", "best", "most"]):
             return "top_n_metric_by_dimension"
         if any(word in q for word in ["bottom", "lowest", "least", "worst"]):
             return "bottom_n_metric_by_dimension"
         if any(word in q for word in ["how many", "count", "number of"]):
             return "count_by_dimension" if re.search(r"\bby\b", q) else "count_records"
+        if any(phrase in q for phrase in ["last month", "this month", "last year", "this year", "last 30 days"]) and has_metric_word:
+            return "metric_summary"
         if any(word in q for word in ["by month", "monthly", "by year", "yearly", "trend"]):
             return "trend_by_date"
+        if has_filter_phrase and not has_metric_word:
+            return "simple_filter"
         if re.search(r"\bby\s+\w+", q):
             return "metric_by_dimension"
+        if has_filter_phrase and has_metric_word:
+            return "metric_summary"
         return None
 
     @classmethod

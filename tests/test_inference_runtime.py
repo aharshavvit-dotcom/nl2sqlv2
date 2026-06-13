@@ -212,8 +212,8 @@ def test_prediction_orchestrator_generates_valid_joined_product_sql(
     assert result.validation["ok"]
     assert result.sql is not None
     assert "products.product_name AS product" in result.sql
-    assert "SUM(orders.amount) AS revenue" in result.sql
-    assert "JOIN order_items" in result.sql
+    assert "SUM(order_items.quantity * order_items.price) AS revenue" in result.sql
+    assert "SUM(orders.amount)" not in result.sql
     assert "JOIN products" in result.sql
     assert "LIMIT 5" in result.sql
 

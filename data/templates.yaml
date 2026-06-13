@@ -1,5 +1,8 @@
+# Legacy/sample template config.
+# Current canonical runtime renders SQL from QueryIR using ir/ir_to_sql_renderer.py.
+# These IDs remain useful for retrieval/template selection and backward-compatible training data.
 templates:
-  # Canonical runtime template IDs.
+  # Runtime intent IDs.
   top_n_metric_by_dimension:
     description: Rank dimension values by an aggregate metric, highest first.
     legacy_aliases: [rank_dimension]

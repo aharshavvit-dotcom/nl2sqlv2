@@ -1,4 +1,8 @@
-"""Local CPU-only retrieval-based NL-to-SQL V1."""
+"""Legacy runtime/reference helpers.
+
+The active application, evaluator, and tests use:
+RetrievalNL2SQLModel -> PredictionOrchestrator -> QueryIR -> SQLValidator.
+"""
 
 __all__ = [
     "engine",

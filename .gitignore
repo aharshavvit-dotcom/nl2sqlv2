@@ -74,6 +74,7 @@ models/*
 # Local feedback and generated evaluation results
 feedback/*.jsonl
 evaluation/golden_test_results.json
+evaluation/*_report.json
 
 # Packaging/build outputs
 build/

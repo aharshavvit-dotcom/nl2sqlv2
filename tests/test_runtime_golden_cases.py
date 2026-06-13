@@ -9,6 +9,7 @@ from nl2sql_v1.retriever import TfidfRetriever
 from nl2sql_v1.schema import SchemaGraph, read_sqlite_schema
 from retriever.retrieval_nl2sql_model import RetrievalNL2SQLModel
 from scripts.create_sample_db import build_database
+from scripts.run_golden_tests import run_golden_tests
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,7 +68,13 @@ def model() -> RetrievalNL2SQLModel:
         ),
         (
             "Top 5 products by revenue",
-            ["products.product_name", "SUM", "JOIN order_items", "JOIN products", "GROUP BY products.product_name", "LIMIT 5"],
+            [
+                "products.product_name",
+                "SUM(order_items.quantity * order_items.price)",
+                "JOIN products",
+                "GROUP BY products.product_name",
+                "LIMIT 5",
+            ],
         ),
         (
             "Sales last month",
@@ -94,7 +101,26 @@ def test_runtime_golden_sql_shapes(
     assert result.sql is not None
     for fragment in contains:
         assert fragment in result.sql
+    if question == "Top 5 products by revenue":
+        assert "SUM(orders.amount)" not in result.sql
 
     df = execute_select(sample_db, result.sql, validation_result=result.validation)
     assert len(df) >= 0
     assert len(df.columns) >= 1
+
+
+def test_structured_runtime_golden_file_passes(tmp_path: Path) -> None:
+    db_path = tmp_path / "retail.db"
+    output_path = tmp_path / "golden_report.json"
+    build_database(db_path)
+
+    report = run_golden_tests(
+        db_path=db_path,
+        artifact_dir=tmp_path / "missing_artifact",
+        golden_file=ROOT / "evaluation" / "golden_runtime_tests.jsonl",
+        output=output_path,
+    )
+
+    assert report["total_cases"] == 7
+    assert report["passed_cases"] == 7
+    assert report["failures_by_category"] == {}

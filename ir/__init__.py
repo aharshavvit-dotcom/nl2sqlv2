@@ -3,6 +3,7 @@ from __future__ import annotations
 from .ir_to_sql_renderer import IRToSQLRenderer
 from .ir_validator import IRValidator
 from .option_c_to_ir import OptionCToIRConverter
+from .semantic_metric_resolver import SemanticMetricResolver
 from .query_ir_models import (
     IRDateFilter,
     IRDimension,
@@ -30,4 +31,5 @@ __all__ = [
     "IRValidator",
     "OptionCToIRConverter",
     "QueryIR",
+    "SemanticMetricResolver",
 ]

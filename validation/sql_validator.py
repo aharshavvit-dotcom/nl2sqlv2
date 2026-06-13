@@ -92,6 +92,7 @@ class SQLValidator:
         checks["no_select_star"] = not self._has_select_star(select)
         if not checks["no_select_star"]:
             issues.append("SELECT * is not allowed.")
+        select_aliases = {expression.alias for expression in select.expressions if expression.alias}
 
         for table in select.find_all(exp.Table):
             if table.name:
@@ -132,10 +133,15 @@ class SQLValidator:
 
             unknown_columns = []
             for qualified in referenced_columns:
-                if "." not in qualified:
+                if "." in qualified:
+                    table, column = qualified.split(".", 1)
+                    if table in schema_tables and column not in schema_tables[table]:
+                        unknown_columns.append(qualified)
                     continue
-                table, column = qualified.split(".", 1)
-                if table in schema_tables and column not in schema_tables[table]:
+                if qualified in select_aliases:
+                    continue
+                candidate_tables = referenced_tables or list(schema_tables)
+                if not any(qualified in schema_tables.get(table, set()) for table in candidate_tables):
                     unknown_columns.append(qualified)
             checks["columns_exist"] = not unknown_columns
             if unknown_columns:

@@ -91,8 +91,8 @@ def test_join_resolver_can_bridge_orders_to_products(sample_db: Path, model: Ret
     schema = read_sqlite_schema(sample_db)
     result = model.predict("Top 5 products by sales", schema)
 
-    assert "JOIN order_items" in result.sql
-    assert "order_items.order_id = orders.order_id" in result.sql
+    assert "SUM(order_items.quantity * order_items.price) AS revenue" in result.sql
+    assert "SUM(orders.amount)" not in result.sql
     assert "JOIN products" in result.sql
     assert "order_items.product_id = products.product_id" in result.sql
     assert result.validation["is_valid"]

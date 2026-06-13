@@ -1,4 +1,4 @@
-# Local Retrieval NL-to-SQL V1
+# Local QueryIR NL-to-SQL
 
 A CPU-only, local-first NL-to-SQL prototype for SQLite retail analytics.
 
@@ -8,6 +8,7 @@ It uses:
 - SQLAlchemy schema inspection
 - scikit-learn TF-IDF retrieval
 - Runtime schema-aware prediction orchestration
+- QueryIR conversion, validation, and SQL rendering
 - RapidFuzz slot, schema, and candidate reranking
 - SQLGlot validation
 - pandas result display
@@ -23,7 +24,8 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 python scripts\create_sample_db.py
 python scripts\train_retriever.py
-python -m pytest
+pytest tests/
+python scripts\run_golden_tests.py --db data\sample_retail.db --artifact-dir artifacts\option_c_model
 streamlit run app\streamlit_app.py
 ```
 
@@ -67,7 +69,7 @@ LIMIT 5
 11. Option C runtime state is converted into QueryIR.
 12. QueryIR validation checks required metrics/dimensions, schema references, joins, limits, and sensitive columns.
 13. `IRToSQLRenderer` renders bounded SQLite `SELECT` SQL from QueryIR.
-14. The central `SQLValidator` checks one safe statement, known tables/columns, no `SELECT *`, no mutation, no comments, and no sensitive columns.
+14. The central `SQLValidator` checks one safe statement, known tables/columns, no `SELECT *`, no mutation, no comments, bounded `LIMIT`, and no sensitive columns.
 15. The app shows SQL, confidence, intent/template, slots, schema mapping, join plan, IR validation, SQL validation checks, candidates, warnings, clarifications, and optional QueryIR debug details.
 16. Optional executor runs the SQL read-only only after central validation passes and displays a pandas dataframe.
 17. Feedback is appended to `feedback/feedback.jsonl`.
@@ -82,7 +84,9 @@ Architecture:
 Question
 -> RetrievalNL2SQLModel
 -> PredictionOrchestrator
+-> retrieval + rerank + slots + schema mapping + joins
 -> OptionCToIRConverter
+-> QueryIR
 -> IRValidator
 -> IRToSQLRenderer
 -> SQLValidator
@@ -105,13 +109,25 @@ Useful verification commands:
 python scripts\create_sample_db.py
 python -m compileall .
 pytest tests/
+python scripts\run_golden_tests.py --db data\sample_retail.db --artifact-dir artifacts\option_c_model
+python scripts\evaluate_runtime.py --db data\sample_retail.db --artifact-dir artifacts\option_c_model
 streamlit run app\streamlit_app.py
 ```
+
+Runtime state:
+
+- Canonical runtime: `RetrievalNL2SQLModel -> PredictionOrchestrator -> QueryIR -> IRToSQLRenderer -> SQLValidator`.
+- Streamlit uses the QueryIR runtime and executes SQL only through `execution.query_executor`.
+- `scripts/evaluate_runtime.py` is the active evaluator. `scripts/evaluate.py` is only a compatibility entrypoint that delegates to it.
+- `nl2sql_v1/` is legacy/reference code and is not used as the active SQL generation runtime.
+- `data/templates.yaml` is legacy/sample template config for IDs and training compatibility; SQL is rendered from QueryIR.
+- Product-level revenue uses `SUM(order_items.quantity * order_items.price)` when item-level columns exist.
 
 ## Project Layout
 
 ```text
 app/
+  safe_preview.py
   streamlit_app.py
 data/
   sample_retail.db
@@ -124,6 +140,8 @@ datasets/
   wikisql_adapter.py
 feedback/
   .gitkeep
+evaluation/
+  golden_runtime_tests.jsonl
 inference/
   candidate_generator.py
   candidate_reranker.py
@@ -138,6 +156,7 @@ ir/
   ir_validator.py
   ir_to_sql_renderer.py
   query_ir_models.py
+  semantic_metric_resolver.py
 validation/
   sql_validator.py
 execution/
@@ -159,10 +178,13 @@ nl2sql_v1/
 retriever/
   retrieval_nl2sql_model.py
 scripts/
+  check_project.py
   create_sample_db.py
   dataset_paths.py
   download_datasets.py
   evaluate.py
+  evaluate_runtime.py
+  run_golden_tests.py
   train_retriever.py
   verify_datasets.py
 tests/
@@ -176,10 +198,12 @@ training_data/
 ## CLI Evaluation
 
 ```powershell
-python scripts\evaluate.py --db data\sample_retail.db
+python scripts\evaluate_runtime.py --db data\sample_retail.db --artifact-dir artifacts\option_c_model
 ```
 
-The evaluator reports retrieval accuracy, SQL validation rate, executable query rate, and the generated SQL for the main smoke question.
+The active evaluator runs the structured QueryIR golden suite and writes `evaluation/runtime_evaluation_report.json`.
+It reports SQL validity, execution success, QueryIR match rate, failure categories, and per-case details.
+`scripts\evaluate.py` remains as a legacy compatibility shim that delegates to this evaluator.
 
 ## Notes
 
@@ -187,6 +211,14 @@ The evaluator reports retrieval accuracy, SQL validation rate, executable query 
 - `SQLGlot` rejects non-`SELECT` statements and multi-statement SQL.
 - The executor also enables SQLite `PRAGMA query_only = ON`.
 - The sample retail schema has customers, orders, order items, products, stores, and sales reps.
+
+## Roadmap
+
+After runtime stabilization:
+
+1. Build a SQL-to-IR dataset converter.
+2. Convert supported and unsupported examples into IR labels.
+3. Start an Option A neural IR model skeleton that emits QueryIR without changing validation, rendering, or execution.
 
 ## Dataset Training Pipeline
 
