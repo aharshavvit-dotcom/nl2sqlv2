@@ -17,6 +17,7 @@ TEXT_MARKERS = ["char", "text", "string", "varchar"]
 class RuntimeSchemaContext:
     def __init__(self, schema: SchemaGraph | dict[str, Any]):
         self.schema = schema
+        self.dialect = self._detect_dialect(schema)
         self.tables: dict[str, dict[str, Any]] = self._normalize_schema(schema)
         self.foreign_keys: list[dict[str, str]] = self._extract_foreign_keys(schema)
         self.relationships = self._build_relationships()
@@ -56,6 +57,7 @@ class RuntimeSchemaContext:
             "tables": self.tables,
             "foreign_keys": self.foreign_keys,
             "relationships": dict(self.relationships),
+            "dialect": self.dialect,
             "numeric_columns": self.get_numeric_columns(),
             "text_columns": self.get_text_columns(),
             "date_columns": self.get_date_columns(),
@@ -69,6 +71,12 @@ class RuntimeSchemaContext:
                 if predicate(info):
                     values.append(f"{table}.{column}")
         return values
+
+    @staticmethod
+    def _detect_dialect(schema: SchemaGraph | dict[str, Any]) -> str:
+        if isinstance(schema, SchemaGraph):
+            return getattr(schema, "dialect", "sqlite") or "sqlite"
+        return str(schema.get("dialect") or "sqlite").lower()
 
     @staticmethod
     def _normalize_schema(schema: SchemaGraph | dict[str, Any]) -> dict[str, dict[str, Any]]:

@@ -28,6 +28,11 @@ def train_from_datasets(
 ) -> dict[str, Any]:
     ensure_dataset_dirs()
     requested = parse_dataset_list(dataset_names)
+    if requested == ["handwritten"]:
+        return _train_from_handwritten_examples(
+            artifact_dir=artifact_dir,
+            train_splits=train_splits or ["train"],
+        )
     builder = CorpusBuilder(output_dir=output_dir)
     payload = builder.build_corpus(
         requested,
@@ -92,6 +97,78 @@ def train_from_datasets(
         "output_dir": str(output_dir),
         "training_report": report,
         "dataset_stats": payload["stats"].to_dict(),
+    }
+
+
+def _train_from_handwritten_examples(
+    artifact_dir: Path,
+    train_splits: list[str],
+) -> dict[str, Any]:
+    examples_path = ROOT / "training_data" / "examples.jsonl"
+    if not examples_path.exists():
+        raise FileNotFoundError(f"Hand-written examples file not found: {examples_path}")
+
+    rows: list[dict[str, Any]] = []
+    with examples_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    if not rows:
+        raise ValueError(f"No hand-written examples found in {examples_path}")
+
+    split_set = set(train_splits)
+    training_examples = [row for row in rows if row.get("split") in split_set]
+    validation_examples = [row for row in rows if row.get("split") == "validation"]
+    test_examples = [row for row in rows if row.get("split") == "test"]
+    if not training_examples:
+        raise ValueError("No hand-written training examples found for the requested train splits.")
+
+    vectorizer = TfidfVectorizer(ngram_range=(1, 2), lowercase=True, min_df=1)
+    matrix = vectorizer.fit_transform([row["training_text"] for row in training_examples])
+    report = build_training_report(
+        datasets_used=["handwritten"],
+        total_loaded=len(rows),
+        supported=len(training_examples),
+        unsupported=0,
+        examples=rows,
+        vocabulary_size=len(vectorizer.vocabulary_),
+        include_schema_text=False,
+    )
+    report["supported_examples_all_splits"] = len(rows)
+    report["train_examples"] = len(training_examples)
+    report["validation_examples"] = len(validation_examples)
+    report["test_examples"] = len(test_examples)
+    report["train_splits"] = sorted(split_set)
+    report["used_fallback_all_splits"] = False
+    dataset_stats = {
+        "total_examples": len(rows),
+        "supported_examples": len(rows),
+        "unsupported_examples": 0,
+        "by_dataset": {"handwritten": len(rows)},
+        "by_template": report["by_template"],
+        "by_split": {
+            split: sum(1 for row in rows if row.get("split") == split)
+            for split in sorted({str(row.get("split")) for row in rows})
+        },
+        "unsupported_reasons": {},
+    }
+
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    _atomic_joblib(artifact_dir / "tfidf_vectorizer.pkl", vectorizer)
+    _atomic_joblib(artifact_dir / "tfidf_matrix.pkl", matrix)
+    _atomic_jsonl(artifact_dir / "training_examples.jsonl", training_examples)
+    _atomic_jsonl(artifact_dir / "train_examples.jsonl", training_examples)
+    _atomic_jsonl(artifact_dir / "validation_examples.jsonl", validation_examples)
+    _atomic_jsonl(artifact_dir / "test_examples.jsonl", test_examples)
+    _atomic_json(artifact_dir / "supported_patterns.json", report["by_template"])
+    _atomic_json(artifact_dir / "dataset_stats.json", dataset_stats)
+    _atomic_json(artifact_dir / "training_report.json", report)
+    return {
+        "artifact_dir": str(artifact_dir),
+        "output_dir": str(PROCESSED_DATA_DIR),
+        "training_report": report,
+        "dataset_stats": dataset_stats,
     }
 
 

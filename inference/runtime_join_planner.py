@@ -29,7 +29,13 @@ class RuntimeJoinPlanner:
                 next_table = edge["neighbor"]
                 if next_table in joined:
                     continue
-                steps.append(edge)
+                steps.append(
+                    {
+                        **edge,
+                        "join_type": "INNER",
+                        "condition": f"{edge['from_table']}.{edge['from_column']} = {edge['to_table']}.{edge['to_column']}",
+                    }
+                )
                 joined.add(next_table)
 
         join_sql = "\n".join(self._join_sql(edge) for edge in steps)

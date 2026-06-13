@@ -32,6 +32,7 @@ class TableInfo:
 @dataclass
 class SchemaGraph:
     tables: dict[str, TableInfo]
+    dialect: str = "sqlite"
 
     def has_table(self, table: str) -> bool:
         return table in self.tables
@@ -87,4 +88,4 @@ def read_sqlite_schema(db_path: str | Path) -> SchemaGraph:
                     )
                 )
         tables[table_name] = table
-    return SchemaGraph(tables=tables)
+    return SchemaGraph(tables=tables, dialect="sqlite")

@@ -11,26 +11,39 @@ class PredictionConfidenceCalculator:
         mapping = result_parts.get("schema_mapping")
         join_plan = result_parts.get("join_plan")
         validation = result_parts.get("validation") or {}
+        ir_validation = result_parts.get("ir_validation") or {}
 
         retrieval_conf = float(candidates[0].rerank_score or candidates[0].similarity_score) if candidates else 0.0
         template_conf = float(selected_template.get("confidence") or 0.0)
         slot_conf = self._slot_confidence(slots)
         mapping_conf = self._mapping_confidence(mapping)
-        validation_conf = 1.0 if validation.get("ok") else 0.0
+        join_conf = float(join_plan.get("confidence", 1.0)) if isinstance(join_plan, dict) else 1.0
+        ir_conf = 1.0 if ir_validation.get("is_valid", False) else 0.0
+        validation_conf = 1.0 if validation.get("is_valid", validation.get("ok", False)) else 0.0
 
         confidence = (
-            0.30 * retrieval_conf
-            + 0.20 * template_conf
-            + 0.20 * slot_conf
+            0.20 * retrieval_conf
+            + 0.15 * template_conf
+            + 0.15 * slot_conf
             + 0.20 * mapping_conf
+            + 0.10 * join_conf
+            + 0.10 * ir_conf
             + 0.10 * validation_conf
         )
-        if not validation.get("ok"):
-            confidence = min(confidence, 0.59)
-        if mapping and (not mapping.metric_table or (self._needs_dimension(selected_template) and not mapping.dimension_table)):
+        if not ir_validation.get("is_valid", False):
+            confidence = min(confidence, 0.79)
+        if not validation.get("is_valid", validation.get("ok", False)):
+            confidence = min(confidence, 0.79)
+        metric_table = mapping.get("metric_table") if isinstance(mapping, dict) else getattr(mapping, "metric_table", None)
+        dimension_table = mapping.get("dimension_table") if isinstance(mapping, dict) else getattr(mapping, "dimension_table", None)
+        if mapping and (not metric_table or (self._needs_dimension(selected_template) and not dimension_table)):
             confidence = min(confidence, 0.45)
         if join_plan and join_plan.get("warnings"):
             confidence = min(confidence, 0.55)
+        if self._needs_metric(selected_template) and not self._slot_ok(slots, "metric"):
+            confidence = min(confidence, 0.49)
+        if self._needs_dimension(selected_template) and not self._slot_ok(slots, "dimension"):
+            confidence = min(confidence, 0.49)
 
         tier = "high" if confidence >= 0.80 else "medium" if confidence >= 0.60 else "low"
         return {
@@ -41,7 +54,9 @@ class PredictionConfidenceCalculator:
                 "template": round(template_conf, 4),
                 "slots": round(slot_conf, 4),
                 "schema_mapping": round(mapping_conf, 4),
-                "validation": validation_conf,
+                "join": round(join_conf, 4),
+                "ir_validation": ir_conf,
+                "sql_validation": validation_conf,
             },
         }
 
@@ -54,7 +69,7 @@ class PredictionConfidenceCalculator:
     def _mapping_confidence(mapping: Any) -> float:
         if not mapping:
             return 0.0
-        scores = list(mapping.match_scores.values())
+        scores = list((mapping.get("match_scores") if isinstance(mapping, dict) else mapping.match_scores).values())
         return sum(scores) / len(scores) if scores else 0.0
 
     @staticmethod
@@ -64,5 +79,22 @@ class PredictionConfidenceCalculator:
             "metric_by_dimension",
             "top_n_metric_by_dimension",
             "bottom_n_metric_by_dimension",
+        }
+
+    @staticmethod
+    def _needs_metric(selected_template: dict[str, Any]) -> bool:
+        return selected_template.get("template_id") in {
+            "metric_summary",
+            "metric_by_dimension",
+            "top_n_metric_by_dimension",
+            "bottom_n_metric_by_dimension",
             "trend_by_date",
         }
+
+    @staticmethod
+    def _slot_ok(slots: dict[str, Any], slot_name: str) -> bool:
+        slot = slots.get(slot_name)
+        if not isinstance(slot, dict):
+            return False
+        has_value = "value" not in slot or slot.get("value") is not None
+        return bool(has_value and float(slot.get("confidence", 0.0)) >= 0.55)

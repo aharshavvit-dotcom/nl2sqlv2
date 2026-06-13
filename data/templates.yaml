@@ -1,6 +1,121 @@
 templates:
+  # Canonical runtime template IDs.
+  top_n_metric_by_dimension:
+    description: Rank dimension values by an aggregate metric, highest first.
+    legacy_aliases: [rank_dimension]
+    sql: |
+      SELECT
+        {{ dimension.expression }} AS {{ dimension.alias }},
+        {{ metric.aggregate }}({{ metric.expression }}) AS {{ metric.alias }}
+      FROM {{ base_table }}
+      {{ joins }}
+      {{ where_clause }}
+      GROUP BY {{ dimension.expression }}
+      ORDER BY {{ metric.alias }} DESC
+      LIMIT {{ limit }}
+
+  bottom_n_metric_by_dimension:
+    description: Rank dimension values by an aggregate metric, lowest first.
+    legacy_aliases: [rank_dimension]
+    sql: |
+      SELECT
+        {{ dimension.expression }} AS {{ dimension.alias }},
+        {{ metric.aggregate }}({{ metric.expression }}) AS {{ metric.alias }}
+      FROM {{ base_table }}
+      {{ joins }}
+      {{ where_clause }}
+      GROUP BY {{ dimension.expression }}
+      ORDER BY {{ metric.alias }} ASC
+      LIMIT {{ limit }}
+
+  metric_by_dimension:
+    description: Group an aggregate metric by a dimension.
+    sql: |
+      SELECT
+        {{ dimension.expression }} AS {{ dimension.alias }},
+        {{ metric.aggregate }}({{ metric.expression }}) AS {{ metric.alias }}
+      FROM {{ base_table }}
+      {{ joins }}
+      {{ where_clause }}
+      GROUP BY {{ dimension.expression }}
+      ORDER BY {{ metric.alias }} {{ order }}
+      LIMIT {{ limit }}
+
+  metric_summary:
+    description: Return one aggregate metric.
+    legacy_aliases: [aggregate_metric]
+    sql: |
+      SELECT
+        {{ metric.aggregate }}({{ metric.expression }}) AS {{ metric.alias }}
+      FROM {{ base_table }}
+      {{ joins }}
+      {{ where_clause }}
+      LIMIT {{ limit }}
+
+  count_records:
+    description: Count records in the selected entity.
+    sql: |
+      SELECT
+        COUNT(*) AS row_count
+      FROM {{ base_table }}
+      {{ joins }}
+      {{ where_clause }}
+      LIMIT {{ limit }}
+
+  count_by_dimension:
+    description: Count rows by a dimension.
+    legacy_aliases: [count_dimension]
+    sql: |
+      SELECT
+        {{ dimension.expression }} AS {{ dimension.alias }},
+        COUNT(*) AS row_count
+      FROM {{ base_table }}
+      {{ joins }}
+      {{ where_clause }}
+      GROUP BY {{ dimension.expression }}
+      ORDER BY row_count {{ order }}
+      LIMIT {{ limit }}
+
+  trend_by_date:
+    description: Group an aggregate metric by a time dimension.
+    legacy_aliases: [time_series_metric]
+    sql: |
+      SELECT
+        {{ dimension.expression }} AS {{ dimension.alias }},
+        {{ metric.aggregate }}({{ metric.expression }}) AS {{ metric.alias }}
+      FROM {{ base_table }}
+      {{ joins }}
+      {{ where_clause }}
+      GROUP BY {{ dimension.expression }}
+      ORDER BY {{ dimension.alias }} ASC
+      LIMIT {{ limit }}
+
+  simple_filter:
+    description: Return rows constrained by a simple equality filter.
+    legacy_aliases: [filtered_rank_dimension]
+    sql: |
+      SELECT
+        {{ dimension.expression }} AS {{ dimension.alias }}
+      FROM {{ base_table }}
+      {{ joins }}
+      {{ where_clause }}
+      LIMIT {{ limit }}
+
+  show_records:
+    description: Return detail rows.
+    legacy_aliases: [detail_rows, distinct_dimension_values]
+    sql: |
+      SELECT
+        {{ dimension.expression }} AS {{ dimension.alias }}
+      FROM {{ base_table }}
+      {{ joins }}
+      {{ where_clause }}
+      LIMIT {{ limit }}
+
+  # Legacy nl2sql_v1 template IDs retained for compatibility.
   rank_dimension:
     description: Rank dimension values by an aggregate metric.
+    canonical_template_id: top_n_metric_by_dimension
     sql: |
       SELECT
         {{ dimension.expression }} AS {{ dimension.alias }},
@@ -14,6 +129,7 @@ templates:
 
   aggregate_metric:
     description: Return one aggregate metric.
+    canonical_template_id: metric_summary
     sql: |
       SELECT
         {{ metric.aggregate }}({{ metric.expression }}) AS {{ metric.alias }}
@@ -48,6 +164,7 @@ templates:
 
   time_series_metric:
     description: Group an aggregate metric by a time dimension.
+    canonical_template_id: trend_by_date
     sql: |
       SELECT
         {{ dimension.expression }} AS {{ dimension.alias }},
@@ -83,6 +200,7 @@ templates:
 
   count_dimension:
     description: Count rows by a dimension.
+    canonical_template_id: count_by_dimension
     sql: |
       SELECT
         {{ dimension.expression }} AS {{ dimension.alias }},

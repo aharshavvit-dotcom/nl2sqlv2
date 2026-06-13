@@ -8,14 +8,6 @@ from .prediction_models import RetrievedCandidate
 from .runtime_schema_context import RuntimeSchemaContext
 
 
-METRIC_HINTS = {
-    "revenue": ["amount", "revenue", "sales", "price", "value", "total"],
-    "sales": ["amount", "revenue", "sales", "price", "value", "total"],
-    "quantity": ["quantity", "qty", "units"],
-    "order_count": ["order_id", "orders"],
-}
-
-
 class CandidateReranker:
     def rerank_candidates(
         self,
@@ -51,16 +43,15 @@ class CandidateReranker:
         date_names = " ".join(schema_context.get_date_columns()).lower()
 
         metric_slot = str(candidate.slots.get("metric") or "").lower()
-        for canonical, aliases in METRIC_HINTS.items():
-            if canonical in metric_slot or any(alias in q for alias in aliases):
-                scores.append(max(fuzz.partial_ratio(alias, numeric_names) for alias in aliases) / 100)
-                break
-        if any(word in q for word in ["customer", "client", "buyer", "region", "product", "status"]):
+        if metric_slot:
+            metric_terms = [metric_slot, metric_slot.replace("_", " ")]
+            scores.append(max(fuzz.partial_ratio(term, numeric_names) for term in metric_terms) / 100)
+        if re.search(r"\bby\s+\w+", q):
             scores.append(fuzz.partial_ratio(q, text_names + " " + table_names) / 100)
         if any(word in q for word in ["month", "year", "date", "trend"]):
             scores.append(1.0 if date_names else 0.2)
         if not scores:
-            scores.append(0.65)
+            scores.append(0.0)
         return max(0.0, min(1.0, sum(scores) / len(scores)))
 
     @staticmethod
@@ -78,13 +69,13 @@ class CandidateReranker:
         elif re.search(r"\bby\s+\w+", q):
             desired = "metric_by_dimension"
         if not desired:
-            return 0.55
+            return 0.3
         return 1.0 if template_id in {desired, "rank_dimension", "count_dimension"} else 0.35
 
     @staticmethod
     def _slot_detectability(question: str, candidate: RetrievedCandidate) -> float:
         q = question.lower()
-        score = 0.25
+        score = 0.0
         if any(word in q for word in ["sales", "revenue", "amount", "quantity", "orders", "count"]):
             score += 0.25
         if re.search(r"\bby\s+\w+", q) or any(word in q for word in ["customer", "product", "region", "status"]):

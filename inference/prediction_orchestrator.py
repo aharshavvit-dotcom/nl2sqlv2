@@ -3,8 +3,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
-import sqlglot
-from sqlglot import exp
+from ir.ir_to_sql_renderer import IRToSQLRenderer
+from ir.ir_validator import IRValidator
+from ir.option_c_to_ir import OptionCToIRConverter
+from validation.sql_validator import SQLValidator
 
 from .candidate_generator import CandidateGenerator
 from .candidate_reranker import CandidateReranker
@@ -14,6 +16,7 @@ from .runtime_join_planner import RuntimeJoinPlanner
 from .runtime_schema_context import RuntimeSchemaContext
 from .schema_aware_mapper import SchemaAwareMapper
 from .slot_resolver import SlotResolver
+from .synonym_loader import load_metric_dimension_maps, normalize_section
 from .template_selector import TemplateSelector
 
 
@@ -27,6 +30,10 @@ class PredictionOrchestrator:
         self.slot_resolver = SlotResolver()
         self.mapper = SchemaAwareMapper()
         self.join_planner = RuntimeJoinPlanner()
+        self.ir_converter = OptionCToIRConverter()
+        self.ir_validator = IRValidator(max_limit=max_limit)
+        self.sql_renderer = IRToSQLRenderer(max_limit=max_limit)
+        self.sql_validator = SQLValidator()
         self.confidence = PredictionConfidenceCalculator()
 
     def predict(
@@ -41,6 +48,8 @@ class PredictionOrchestrator:
     ) -> PredictionResult:
         normalized_question = self._normalize_question(question)
         schema_context = RuntimeSchemaContext(schema)
+        metric_synonyms, dimension_synonyms = self._synonym_maps(metric_synonyms, dimension_synonyms)
+
         candidates = self.generator.generate_candidates(question, retriever, top_k=self.top_k)
         candidates = self.reranker.rerank_candidates(question, candidates, schema_context)
         selected_template = self.selector.select_template(candidates, question)
@@ -49,15 +58,29 @@ class PredictionOrchestrator:
             selected_template,
             candidates,
             schema_context,
-            {"metrics": metric_synonyms or {}, "dimensions": dimension_synonyms or {}},
+            {"metrics": metric_synonyms, "dimensions": dimension_synonyms},
         )
         slots = slot_payload["slots"]
         schema_mapping = self.mapper.map_slots_to_schema(slots, schema_context, metric_synonyms, dimension_synonyms)
         base_table = self._select_base_table(schema_mapping, slots)
         required_tables = self._required_tables(selected_template.get("template_id"), schema_mapping)
         join_plan = self.join_planner.plan_joins(schema_context, base_table, required_tables)
-        sql = self._render_sql(selected_template.get("template_id"), slots, schema_mapping, join_plan)
-        validation = self._validate_sql(sql, schema_context)
+
+        query_ir = self.ir_converter.convert(
+            question=question,
+            normalized_question=normalized_question,
+            intent=selected_template.get("intent") or selected_template.get("template_id") or "unknown",
+            template_id=selected_template.get("template_id"),
+            slots=slots,
+            schema_mapping=schema_mapping,
+            join_plan=join_plan,
+            validation_context={"schema_context": schema_context.serialize_for_debug()},
+            dialect=schema_context.dialect,
+        )
+        ir_validation = self.ir_validator.validate(query_ir, schema=schema)
+        sql = self.sql_renderer.render(query_ir) if ir_validation.is_valid else None
+        sql_validation = self.sql_validator.validate(sql, schema=schema, max_limit=self.max_limit, dialect=schema_context.dialect)
+
         confidence = self.confidence.calculate(
             {
                 "candidates": candidates,
@@ -65,17 +88,19 @@ class PredictionOrchestrator:
                 "slots": slots,
                 "schema_mapping": schema_mapping,
                 "join_plan": join_plan.model_dump(),
-                "validation": validation,
+                "ir_validation": ir_validation.model_dump(),
+                "validation": sql_validation,
             }
         )
         warnings = [
             *schema_mapping.warnings,
             *join_plan.warnings,
-            *([] if validation.get("ok") else [validation.get("message", "validation failed")]),
+            *query_ir.warnings,
+            *ir_validation.warnings,
+            *ir_validation.errors,
+            *([] if sql_validation.get("is_valid") else sql_validation.get("issues", [])),
         ]
-        clarification = list(slot_payload["clarification_questions"])
-        if confidence["confidence_tier"] == "low" and not clarification:
-            clarification.append("Can you clarify the metric or grouping you want?")
+        clarification = self._clarification_questions(confidence["confidence"], selected_template.get("template_id"), slots)
 
         return PredictionResult(
             question=question,
@@ -85,13 +110,15 @@ class PredictionOrchestrator:
             slots=slots,
             schema_mapping=schema_mapping.model_dump(),
             join_plan=join_plan.model_dump(),
+            query_ir=query_ir.model_dump(),
+            ir_validation=ir_validation.model_dump(),
             sql=sql,
-            validation=validation,
+            validation=sql_validation,
             confidence=confidence["confidence"],
             confidence_tier=confidence["confidence_tier"],
             retrieved_candidates=[candidate.model_dump() for candidate in candidates],
             selected_candidate=candidates[0].model_dump() if candidates else None,
-            warnings=warnings,
+            warnings=list(dict.fromkeys(str(warning) for warning in warnings if warning)),
             clarification_questions=clarification,
             debug={
                 "schema_context": schema_context.serialize_for_debug(),
@@ -113,6 +140,7 @@ class PredictionOrchestrator:
                 mapping.dimension_table,
                 mapping.entity_table,
                 mapping.date_table,
+                mapping.filter_table,
             ]
             if table
         ]
@@ -123,138 +151,49 @@ class PredictionOrchestrator:
         tables = [mapping.metric_table or mapping.entity_table]
         if template_id in {"metric_by_dimension", "top_n_metric_by_dimension", "bottom_n_metric_by_dimension", "count_by_dimension", "trend_by_date"}:
             tables.append(mapping.dimension_table)
-        if template_id == "trend_by_date":
+        if mapping.date_table:
             tables.append(mapping.date_table)
+        if template_id == "simple_filter":
+            tables.append(mapping.filter_table)
         return [table for table in dict.fromkeys(tables) if table]
 
-    def _render_sql(
-        self,
-        template_id: str | None,
-        slots: dict[str, Any],
-        mapping: SchemaMapping,
-        join_plan: Any,
-    ) -> str | None:
-        if not mapping.metric_table and template_id not in {"show_records"}:
-            return None
-        limit = min(int(slots.get("limit", {}).get("value") or 100), self.max_limit)
-        order = str(slots.get("sort_direction", {}).get("value") or "DESC")
-        metric_expr = self._metric_expression(mapping)
-        metric_alias = self._metric_alias(mapping)
-        dimension_expr, dimension_alias = self._dimension_expression(template_id, slots, mapping)
-        from_table = join_plan.base_table
-        joins = join_plan.join_clause
-        lines: list[str]
-
-        if template_id == "count_records":
-            lines = ["SELECT", "  COUNT(*) AS row_count", f"FROM {from_table}", joins, f"LIMIT {limit}"]
-        elif template_id == "count_by_dimension":
-            lines = [
-                "SELECT",
-                f"  {dimension_expr} AS {dimension_alias},",
-                "  COUNT(*) AS row_count",
-                f"FROM {from_table}",
-                joins,
-                f"GROUP BY {dimension_expr}",
-                f"ORDER BY row_count {order}",
-                f"LIMIT {limit}",
-            ]
-        elif template_id in {"metric_by_dimension", "top_n_metric_by_dimension", "bottom_n_metric_by_dimension", "trend_by_date"}:
-            if template_id == "bottom_n_metric_by_dimension":
-                order = "ASC"
-            elif template_id == "top_n_metric_by_dimension":
-                order = "DESC"
-            lines = [
-                "SELECT",
-                f"  {dimension_expr} AS {dimension_alias},",
-                f"  {metric_expr} AS {metric_alias}",
-                f"FROM {from_table}",
-                joins,
-                f"GROUP BY {dimension_expr}",
-                f"ORDER BY {metric_alias if template_id != 'trend_by_date' else dimension_alias} {order if template_id != 'trend_by_date' else 'ASC'}",
-                f"LIMIT {limit}",
-            ]
-        elif template_id == "simple_filter":
-            select_columns = self._safe_select_columns(mapping, fallback_table=from_table)
-            lines = ["SELECT", f"  {select_columns}", f"FROM {from_table}", joins, f"LIMIT {limit}"]
-        elif template_id == "show_records":
-            select_columns = self._safe_select_columns(mapping, fallback_table=from_table)
-            lines = ["SELECT", f"  {select_columns}", f"FROM {from_table}", joins, f"LIMIT {limit}"]
-        else:
-            lines = ["SELECT", f"  {metric_expr} AS {metric_alias}", f"FROM {from_table}", joins, f"LIMIT {limit}"]
-        return self._clean_sql("\n".join(line for line in lines if line))
+    @staticmethod
+    def _synonym_maps(
+        metric_synonyms: dict[str, Any] | None,
+        dimension_synonyms: dict[str, Any] | None,
+    ) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+        if metric_synonyms or dimension_synonyms:
+            return normalize_section(metric_synonyms or {}), normalize_section(dimension_synonyms or {})
+        return load_metric_dimension_maps()
 
     @staticmethod
-    def _metric_expression(mapping: SchemaMapping) -> str:
-        if mapping.metric_aggregation == "COUNT":
-            return "COUNT(*)"
-        return f"{mapping.metric_aggregation or 'SUM'}({mapping.metric_table}.{mapping.metric_column})"
-
-    @staticmethod
-    def _metric_alias(mapping: SchemaMapping) -> str:
-        if mapping.metric_aggregation == "COUNT":
-            return "row_count"
-        if mapping.metric_name in {"sales", "revenue"}:
-            return "revenue"
-        return str(mapping.metric_name or "metric")
-
-    @staticmethod
-    def _dimension_expression(template_id: str | None, slots: dict[str, Any], mapping: SchemaMapping) -> tuple[str, str]:
-        date_grain = slots.get("date_grain", {}).get("value")
-        dimension = slots.get("dimension", {}).get("value")
-        if template_id == "trend_by_date" or dimension in {"month", "year"}:
-            fmt = "%Y" if date_grain == "year" or dimension == "year" else "%Y-%m"
-            return f"strftime('{fmt}', {mapping.date_table}.{mapping.date_column})", str(dimension or date_grain or "date")
-        return f"{mapping.dimension_table}.{mapping.dimension_column}", str(dimension or mapping.dimension_column or "dimension")
-
-    @staticmethod
-    def _safe_select_columns(mapping: SchemaMapping, fallback_table: str) -> str:
-        if mapping.dimension_table and mapping.dimension_column:
-            return f"{mapping.dimension_table}.{mapping.dimension_column}"
-        if mapping.metric_table and mapping.metric_column:
-            return f"{mapping.metric_table}.{mapping.metric_column}"
-        return f"{fallback_table}.rowid"
-
-    def _validate_sql(self, sql: str | None, schema_context: RuntimeSchemaContext) -> dict[str, Any]:
-        if not sql:
-            return {"ok": False, "message": "SQL was not generated", "checks": {"generated": False}}
-        checks: dict[str, bool] = {}
-        try:
-            parsed = sqlglot.parse(sql, read="sqlite")
-        except Exception as exc:
-            return {"ok": False, "message": f"SQL parse failed: {exc}", "checks": {"parse": False}}
-        checks["single_statement"] = len(parsed) == 1
-        statement = parsed[0] if parsed else None
-        checks["select_only"] = isinstance(statement, exp.Select)
-        checks["no_mutation"] = not any(word in sql.upper() for word in ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE"])
-        checks["no_select_star"] = "*" not in [item.sql() for item in statement.expressions] if isinstance(statement, exp.Select) else False
-        limit = statement.args.get("limit") if isinstance(statement, exp.Select) else None
-        checks["has_limit"] = limit is not None
-        checks["limit_ok"] = True
-        if limit is not None and limit.expression is not None:
-            try:
-                checks["limit_ok"] = int(limit.expression.name) <= self.max_limit
-            except ValueError:
-                checks["limit_ok"] = False
-        table_ok = True
-        column_ok = True
-        sensitive_ok = True
-        if statement is not None:
-            for table in statement.find_all(exp.Table):
-                table_ok = table_ok and schema_context.has_table(table.name)
-            for column in statement.find_all(exp.Column):
-                table = column.table
-                name = column.name
-                if table and schema_context.has_table(table):
-                    column_ok = column_ok and schema_context.has_column(table, name)
-                    if schema_context.has_column(table, name):
-                        sensitive_ok = sensitive_ok and not schema_context.column_info(table, name)["is_sensitive"]
-        checks["known_tables"] = table_ok
-        checks["known_columns"] = column_ok
-        checks["no_sensitive_columns"] = sensitive_ok
-        ok = all(checks.values())
-        return {"ok": ok, "message": "ok" if ok else "SQL validation failed", "checks": checks}
-
-    @staticmethod
-    def _clean_sql(sql: str) -> str:
-        lines = [re.sub(r"\s+", " ", line).rstrip() for line in sql.splitlines()]
-        return "\n".join(line for line in lines if line.strip())
+    def _clarification_questions(confidence: float, template_id: str | None, slots: dict[str, Any]) -> list[str]:
+        if confidence >= 0.60:
+            return []
+        metric = slots.get("metric") or {}
+        dimension = slots.get("dimension") or {}
+        metric_value = metric.get("value") if isinstance(metric, dict) else None
+        dimension_value = dimension.get("value") if isinstance(dimension, dict) else None
+        metric_conf = float(metric.get("confidence", 0.0)) if isinstance(metric, dict) else 0.0
+        dimension_conf = float(dimension.get("confidence", 0.0)) if isinstance(dimension, dict) else 0.0
+        needs_metric = template_id in {
+            "metric_summary",
+            "metric_by_dimension",
+            "top_n_metric_by_dimension",
+            "bottom_n_metric_by_dimension",
+            "trend_by_date",
+        }
+        needs_dimension = template_id in {
+            "metric_by_dimension",
+            "top_n_metric_by_dimension",
+            "bottom_n_metric_by_dimension",
+            "count_by_dimension",
+        }
+        questions = []
+        if needs_metric and (metric_value is None or metric_conf < 0.55):
+            questions.append("Which metric or value should I aggregate? (e.g. revenue, count, quantity)")
+        if needs_dimension and (dimension_value is None or dimension_conf < 0.55):
+            questions.append("Which column should I group by? (e.g. customer, product, region)")
+        if not questions and confidence < 0.60:
+            questions.append(f"Can you rephrase your question? I found {metric_value} and {dimension_value} but the pattern is unclear.")
+        return questions

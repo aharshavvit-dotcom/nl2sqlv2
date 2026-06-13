@@ -7,6 +7,7 @@ from typing import Any
 
 from inference.prediction_models import PredictionResult
 from inference.prediction_orchestrator import PredictionOrchestrator
+from inference.synonym_loader import load_metric_dimension_maps
 from nl2sql_v1.retriever import TfidfRetriever
 from nl2sql_v1.schema import SchemaGraph
 
@@ -27,6 +28,8 @@ class RetrievalNL2SQLModel:
     artifact_dir: Path | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     orchestrator: PredictionOrchestrator = field(default_factory=PredictionOrchestrator)
+    metric_synonyms: dict[str, list[str]] = field(default_factory=dict)
+    dimension_synonyms: dict[str, list[str]] = field(default_factory=dict)
 
     @classmethod
     def load(
@@ -40,6 +43,7 @@ class RetrievalNL2SQLModel:
         artifact_path = Path(artifact_dir)
         templates = Path(templates_path)
         synonyms = Path(synonyms_path)
+        metric_synonyms, dimension_synonyms = cls._load_synonyms(synonyms)
         if cls.artifact_ready(artifact_path):
             return cls(
                 retriever=TfidfRetriever.load(artifact_path),
@@ -47,6 +51,8 @@ class RetrievalNL2SQLModel:
                 synonyms_path=synonyms,
                 artifact_dir=artifact_path,
                 metadata=cls._load_metadata(artifact_path),
+                metric_synonyms=metric_synonyms,
+                dimension_synonyms=dimension_synonyms,
             )
         return cls(
             retriever=TfidfRetriever.load_or_train(sample_model_path, sample_examples_path),
@@ -54,6 +60,8 @@ class RetrievalNL2SQLModel:
             synonyms_path=synonyms,
             artifact_dir=None,
             metadata={},
+            metric_synonyms=metric_synonyms,
+            dimension_synonyms=dimension_synonyms,
         )
 
     @staticmethod
@@ -71,8 +79,8 @@ class RetrievalNL2SQLModel:
             schema=schema,
             retriever=self.retriever,
             templates=None,
-            metric_synonyms=None,
-            dimension_synonyms=None,
+            metric_synonyms=self.metric_synonyms,
+            dimension_synonyms=self.dimension_synonyms,
             validator=None,
         )
 
@@ -89,3 +97,7 @@ class RetrievalNL2SQLModel:
             if path.exists():
                 metadata[path.stem] = json.loads(path.read_text(encoding="utf-8"))
         return metadata
+
+    @staticmethod
+    def _load_synonyms(path: Path) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+        return load_metric_dimension_maps(path)

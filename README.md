@@ -64,11 +64,49 @@ LIMIT 5
 8. Slot resolution detects metric, dimension, entity, limit, sort direction, and date grain.
 9. Schema-aware mapping binds slots to real non-sensitive table columns in the connected SQLite schema.
 10. Join planning finds required foreign-key paths at runtime.
-11. SQL rendering produces a bounded `SELECT` statement with `LIMIT`.
-12. SQLGlot validates one safe statement, known tables/columns, no `SELECT *`, no mutation, and no sensitive columns.
-13. The app shows SQL, confidence, intent/template, slots, schema mapping, join plan, validation checks, candidates, warnings, clarifications, and optional debug details.
-14. Optional executor runs the SQL read-only and displays a pandas dataframe.
-15. Feedback is appended to `feedback/feedback.jsonl`.
+11. Option C runtime state is converted into QueryIR.
+12. QueryIR validation checks required metrics/dimensions, schema references, joins, limits, and sensitive columns.
+13. `IRToSQLRenderer` renders bounded SQLite `SELECT` SQL from QueryIR.
+14. The central `SQLValidator` checks one safe statement, known tables/columns, no `SELECT *`, no mutation, no comments, and no sensitive columns.
+15. The app shows SQL, confidence, intent/template, slots, schema mapping, join plan, IR validation, SQL validation checks, candidates, warnings, clarifications, and optional QueryIR debug details.
+16. Optional executor runs the SQL read-only only after central validation passes and displays a pandas dataframe.
+17. Feedback is appended to `feedback/feedback.jsonl`.
+
+## QueryIR Runtime Refactor
+
+The previous runtime rendered SQL directly inside `PredictionOrchestrator`. The canonical runtime now creates a shared QueryIR first, validates that IR, renders SQL from QueryIR, then validates the final SQL with one central validator.
+
+Architecture:
+
+```text
+Question
+-> RetrievalNL2SQLModel
+-> PredictionOrchestrator
+-> OptionCToIRConverter
+-> IRValidator
+-> IRToSQLRenderer
+-> SQLValidator
+-> SQL / Execution
+```
+
+The primary interface is:
+
+```python
+result = RetrievalNL2SQLModel.load().predict(question, schema)
+```
+
+`PredictionResult` includes `query_ir`, `ir_validation`, generated `sql`, SQL `validation`, confidence, slots, schema mapping, join plan, retrieved candidates, warnings, and clarification questions.
+
+This prepares the project for a future Option A neural model without adding one now. Option A can later replace retrieval, slot resolution, and schema mapping with a model that emits the same QueryIR, while keeping the IR validator, SQL renderer, SQL validator, Streamlit output, and execution safety unchanged.
+
+Useful verification commands:
+
+```powershell
+python scripts\create_sample_db.py
+python -m compileall .
+pytest tests/
+streamlit run app\streamlit_app.py
+```
 
 ## Project Layout
 
@@ -95,6 +133,15 @@ inference/
   schema_aware_mapper.py
   slot_resolver.py
   template_selector.py
+ir/
+  option_c_to_ir.py
+  ir_validator.py
+  ir_to_sql_renderer.py
+  query_ir_models.py
+validation/
+  sql_validator.py
+execution/
+  query_executor.py
 models/
   .gitkeep
 nl2sql_v1/

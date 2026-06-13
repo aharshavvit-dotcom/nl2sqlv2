@@ -15,7 +15,9 @@ from inference.schema_aware_mapper import SchemaAwareMapper
 from inference.slot_resolver import SlotResolver
 from inference.template_selector import TemplateSelector
 from nl2sql_v1.retriever import RetrievalResult
+from nl2sql_v1.retriever import TfidfRetriever
 from nl2sql_v1.schema import read_sqlite_schema
+from retriever.retrieval_nl2sql_model import RetrievalNL2SQLModel
 from scripts.create_sample_db import build_database
 
 
@@ -160,7 +162,8 @@ def test_prediction_confidence_calculator_uses_validation_and_mapping() -> None:
             },
             "schema_mapping": mapping,
             "join_plan": {"warnings": []},
-            "validation": {"ok": True},
+            "ir_validation": {"is_valid": True},
+            "validation": {"is_valid": True, "ok": True},
         }
     )
 
@@ -186,7 +189,7 @@ def test_prediction_orchestrator_generates_valid_count_by_status_sql(
     assert result.validation["ok"]
     assert result.sql is not None
     assert "orders.status AS status" in result.sql
-    assert "COUNT(*) AS row_count" in result.sql
+    assert "COUNT(*) AS record_count" in result.sql
     assert "GROUP BY orders.status" in result.sql
     assert result.confidence_tier in {"medium", "high"}
 
@@ -213,3 +216,24 @@ def test_prediction_orchestrator_generates_valid_joined_product_sql(
     assert "JOIN order_items" in result.sql
     assert "JOIN products" in result.sql
     assert "LIMIT 5" in result.sql
+
+
+def test_orchestrator_with_real_retriever_and_sample_db(tmp_path: Path) -> None:
+    db_path = tmp_path / "retail.db"
+    build_database(db_path)
+    schema = read_sqlite_schema(db_path)
+    retriever = TfidfRetriever.train(Path(__file__).resolve().parents[1] / "training_data" / "examples.jsonl")
+    metric_synonyms, dimension_synonyms = RetrievalNL2SQLModel._load_synonyms(
+        Path(__file__).resolve().parents[1] / "data" / "synonyms.yaml"
+    )
+
+    result = PredictionOrchestrator().predict(
+        "Top 5 customers by sales",
+        schema=schema,
+        retriever=retriever,
+        metric_synonyms=metric_synonyms,
+        dimension_synonyms=dimension_synonyms,
+    )
+
+    assert result.sql is not None
+    assert result.validation["ok"] is True

@@ -6,31 +6,8 @@ from rapidfuzz import fuzz
 
 from .prediction_models import SchemaMapping
 from .runtime_schema_context import RuntimeSchemaContext
+from .synonym_loader import normalize_section
 
-
-METRIC_COLUMNS = {
-    "revenue": ["amount", "revenue", "sales", "total", "total_amount", "price", "value", "net_sales"],
-    "sales": ["amount", "revenue", "sales", "total", "total_amount", "price", "value", "net_sales"],
-    "quantity": ["quantity", "qty", "units", "count"],
-    "order_count": ["order_id", "id"],
-    "profit": ["profit", "margin"],
-    "discount": ["discount", "markdown"],
-    "average_order_value": ["amount", "order_amount", "order_value", "revenue", "sales", "total"],
-}
-
-DIMENSION_COLUMNS = {
-    "customer": ["customer_name", "customer", "client_name", "buyer_name", "name"],
-    "product": ["product_name", "product", "item_name", "sku_name", "name"],
-    "region": ["region", "area", "territory", "zone"],
-    "status": ["status", "state", "condition"],
-    "category": ["category", "department"],
-    "store": ["store_name", "store", "branch", "shop"],
-    "brand": ["brand", "manufacturer"],
-    "city": ["city", "town"],
-    "state": ["state", "province"],
-    "customer_segment": ["segment", "customer_segment", "tier"],
-    "sales_rep": ["rep_name", "sales_rep", "representative", "salesperson"],
-}
 
 ENTITY_TABLES = {
     "orders": ["orders", "sales", "transactions", "invoices"],
@@ -48,13 +25,15 @@ class SchemaAwareMapper:
         metric_synonyms: dict[str, Any] | None = None,
         dimension_synonyms: dict[str, Any] | None = None,
     ) -> SchemaMapping:
+        metric_synonyms = normalize_section(metric_synonyms or {})
+        dimension_synonyms = normalize_section(dimension_synonyms or {})
         slot_values = {key: value.get("value") if isinstance(value, dict) else value for key, value in slots.items()}
         mapping = SchemaMapping()
-        metric = str(slot_values.get("metric") or "revenue")
+        metric = str(slot_values.get("metric") or self._default_metric(metric_synonyms))
         dimension = slot_values.get("dimension")
         entity = slot_values.get("entity")
 
-        metric_match = self._map_metric(metric, schema_context)
+        metric_match = self._map_metric(metric, schema_context, metric_synonyms, str(entity) if entity else None)
         mapping.metric_name = metric
         mapping.metric_table = metric_match.get("table")
         mapping.metric_column = metric_match.get("column")
@@ -63,12 +42,20 @@ class SchemaAwareMapper:
         mapping.warnings.extend(metric_match.get("warnings", []))
 
         if dimension:
-            dimension_match = self._map_dimension(str(dimension), schema_context, mapping.metric_table)
+            dimension_match = self._map_dimension(str(dimension), schema_context, mapping.metric_table, dimension_synonyms)
             mapping.dimension_name = str(dimension)
             mapping.dimension_table = dimension_match.get("table")
             mapping.dimension_column = dimension_match.get("column")
             mapping.match_scores["dimension"] = dimension_match.get("score", 0.0)
             mapping.warnings.extend(dimension_match.get("warnings", []))
+
+        filter_column = slot_values.get("filter_column")
+        if filter_column:
+            filter_match = self._map_dimension(str(filter_column), schema_context, mapping.metric_table, dimension_synonyms)
+            mapping.filter_table = filter_match.get("table")
+            mapping.filter_column = filter_match.get("column")
+            mapping.match_scores["filter"] = filter_match.get("score", 0.0)
+            mapping.warnings.extend(filter_match.get("warnings", []))
 
         entity_match = self._map_entity(str(entity) if entity else None, schema_context)
         mapping.entity_table = entity_match.get("table")
@@ -82,24 +69,37 @@ class SchemaAwareMapper:
             mapping.warnings.append("missing date column")
         return mapping
 
-    def _map_metric(self, metric: str, schema_context: RuntimeSchemaContext) -> dict[str, Any]:
+    def _map_metric(
+        self,
+        metric: str,
+        schema_context: RuntimeSchemaContext,
+        metric_synonyms: dict[str, list[str]],
+        preferred_table: str | None = None,
+    ) -> dict[str, Any]:
         if metric == "order_count":
-            for table in ["orders", "transactions", "invoices"]:
-                if schema_context.has_table(table):
-                    pk = self._primary_key_or_id(schema_context, table)
-                    if pk:
-                        return {"table": table, "column": pk, "score": 0.95, "warnings": []}
-        aliases = METRIC_COLUMNS.get(metric, [metric])
+            if preferred_table and schema_context.has_table(preferred_table):
+                pk = self._primary_key_or_id(schema_context, preferred_table)
+                if pk:
+                    return {"table": preferred_table, "column": pk, "score": 0.95, "warnings": []}
+            candidates = []
+            for table in schema_context.get_tables():
+                pk = self._primary_key_or_id(schema_context, table)
+                if pk:
+                    aliases = self._aliases(metric, metric_synonyms)
+                    score = max(fuzz.WRatio(alias, f"{table}.{pk}") for alias in aliases) / 100
+                    candidates.append((score, table, pk))
+            if candidates:
+                score, table, column = max(candidates, key=lambda item: item[0])
+                return {"table": table, "column": column, "score": round(max(score, 0.75), 4), "warnings": []}
+        aliases = self._aliases(metric, metric_synonyms)
         candidates = []
         for qualified in schema_context.get_numeric_columns():
             table, column = qualified.split(".", 1)
-            score = max(fuzz.WRatio(alias, column) for alias in aliases) / 100
-            if table in {"orders", "sales", "transactions", "invoices", "order_items"}:
-                score += 0.08
+            score = max(max(fuzz.WRatio(alias, column), fuzz.WRatio(alias, qualified)) for alias in aliases) / 100
             candidates.append((min(score, 1.0), table, column))
         if not candidates:
             return {"table": None, "column": None, "score": 0.0, "warnings": ["low metric match"]}
-        score, table, column = max(candidates)
+        score, table, column = max(candidates, key=lambda item: item[0])
         warnings = [] if score >= 0.55 else ["low metric match"]
         return {"table": table, "column": column, "score": round(score, 4), "warnings": warnings}
 
@@ -108,11 +108,12 @@ class SchemaAwareMapper:
         dimension: str,
         schema_context: RuntimeSchemaContext,
         metric_table: str | None,
+        dimension_synonyms: dict[str, list[str]],
     ) -> dict[str, Any]:
         if dimension in {"month", "year"}:
             date = self._map_date(schema_context, preferred_table=metric_table)
             return date if date.get("column") else {"table": None, "column": None, "score": 0.0, "warnings": ["missing date column"]}
-        aliases = DIMENSION_COLUMNS.get(dimension, [dimension])
+        aliases = self._aliases(dimension, dimension_synonyms)
         candidates = []
         for qualified in [*schema_context.get_text_columns(), *schema_context.get_numeric_columns()]:
             table, column = qualified.split(".", 1)
@@ -121,7 +122,7 @@ class SchemaAwareMapper:
                 continue
             alias_names = [alias.lower() for alias in aliases]
             column_name = column.lower()
-            score = max(fuzz.WRatio(alias, column) for alias in aliases) / 100
+            score = max(max(fuzz.WRatio(alias, column), fuzz.WRatio(alias, qualified)) for alias in aliases) / 100
             if column_name == dimension.lower():
                 score += 0.25
             if column_name in alias_names:
@@ -135,7 +136,7 @@ class SchemaAwareMapper:
             candidates.append((max(0.0, score), table, column))
         if not candidates:
             return {"table": None, "column": None, "score": 0.0, "warnings": ["low dimension match"]}
-        score, table, column = max(candidates)
+        score, table, column = max(candidates, key=lambda item: item[0])
         warnings = [] if score >= 0.5 else ["low dimension match"]
         return {"table": table, "column": column, "score": round(min(score, 1.0), 4), "warnings": warnings}
 
@@ -147,12 +148,10 @@ class SchemaAwareMapper:
         candidates = []
         for table in schema_context.get_tables():
             score = max([fuzz.WRatio(alias, table) for alias in aliases] or [0]) / 100
-            if table in {"orders", "sales", "transactions", "invoices"}:
-                score += 0.1
             candidates.append((min(score, 1.0), table))
         if not candidates:
             return {"table": None, "score": 0.0}
-        score, table = max(candidates)
+        score, table = max(candidates, key=lambda item: item[0])
         return {"table": table, "score": round(score, 4)}
 
     @staticmethod
@@ -169,7 +168,7 @@ class SchemaAwareMapper:
             if column in {"order_date", "created_date", "transaction_date", "invoice_date", "sale_date"}:
                 score += 0.1
             candidates.append((min(score, 1.0), table, column))
-        score, table, column = max(candidates)
+        score, table, column = max(candidates, key=lambda item: item[0])
         return {"table": table, "column": column, "score": round(score, 4)}
 
     @staticmethod
@@ -182,3 +181,12 @@ class SchemaAwareMapper:
             if column.endswith("_id") or column == "id":
                 return column
         return None
+
+    @staticmethod
+    def _aliases(key: str, synonyms: dict[str, list[str]]) -> list[str]:
+        base = [key, key.replace("_", " ")]
+        return [*base, *synonyms.get(key, [])]
+
+    @staticmethod
+    def _default_metric(metric_synonyms: dict[str, list[str]]) -> str:
+        return next(iter(metric_synonyms), "metric")

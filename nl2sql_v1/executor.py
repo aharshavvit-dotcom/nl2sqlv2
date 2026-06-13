@@ -6,7 +6,7 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 
 from .schema import read_sqlite_schema
-from .validator import validate_select_sql
+from validation.sql_validator import SQLValidator
 
 
 def sqlite_url(db_path: str | Path) -> str:
@@ -16,9 +16,9 @@ def sqlite_url(db_path: str | Path) -> str:
 
 def execute_select(db_path: str | Path, sql: str, max_rows: int = 1000) -> pd.DataFrame:
     schema = read_sqlite_schema(db_path)
-    validation = validate_select_sql(sql, schema)
-    if not validation.ok:
-        raise ValueError(validation.message)
+    validation = SQLValidator().validate(sql, schema=schema, max_limit=max_rows)
+    if not validation["is_valid"]:
+        raise ValueError("; ".join(validation["issues"]))
 
     engine = create_engine(sqlite_url(db_path), future=True)
     with engine.connect() as conn:

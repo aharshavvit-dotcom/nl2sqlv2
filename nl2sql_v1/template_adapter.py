@@ -40,6 +40,12 @@ class TemplateAdapter:
     ) -> RenderPlan:
         if template_id not in self.templates:
             template_id = "rank_dimension" if dimension else "aggregate_metric"
+        if dimension is not None and metric.key != "order_count" and template_id in {
+            "count_records",
+            "aggregate_metric",
+            "metric_summary",
+        }:
+            template_id = "rank_dimension"
         if template_id == "rank_dimension" and dimension is None:
             template_id = "aggregate_metric"
 

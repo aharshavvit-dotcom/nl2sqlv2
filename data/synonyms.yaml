@@ -1,84 +1,171 @@
 metrics:
   sales:
     aliases: [sales, revenue, total sales, total revenue, gross sales, order value, amount, money, spend]
+    synonyms: [sales, revenue, total sales, total revenue, amount, order value]
+    candidate_columns: [amount, revenue, sales, total, total_amount, price, value, net_sales]
     expression: orders.amount
     aggregate: SUM
+    aggregation: SUM
     alias: revenue
   order_count:
     aliases: [orders, order count, number of orders, total orders, purchases, transactions]
+    synonyms: [orders, order count, number of orders, transactions]
+    candidate_columns: [order_id, transaction_id, id]
     expression: orders.order_id
     aggregate: COUNT
+    aggregation: COUNT
     alias: order_count
   average_order_value:
     aliases: [average order value, avg order value, average sales, avg sales, mean order amount]
+    synonyms: [average order value, avg order value, aov, average sales]
+    candidate_columns: [amount, order_amount, order_value, revenue, sales, total]
     expression: orders.amount
     aggregate: AVG
+    aggregation: AVG
     alias: average_order_value
   quantity:
     aliases: [quantity, units, units sold, items sold, volume]
+    synonyms: [quantity, qty, units, items sold, volume]
+    candidate_columns: [quantity, qty, units]
     expression: order_items.quantity
     aggregate: SUM
+    aggregation: SUM
     alias: total_quantity
   profit:
     aliases: [profit, margin, gross profit, total profit]
+    synonyms: [profit, margin, gross profit, total profit]
+    candidate_columns: [profit, margin]
     expression: order_items.profit
     aggregate: SUM
+    aggregation: SUM
     alias: profit
   discount:
     aliases: [discount, discounts, markdown, total discount]
+    synonyms: [discount, discounts, markdown, total discount]
+    candidate_columns: [discount, markdown]
     expression: order_items.discount
     aggregate: SUM
+    aggregation: SUM
     alias: discount
 
 dimensions:
   customer:
     aliases: [customer, customers, client, clients, buyer, buyers, customer name]
+    synonyms: [customer, customers, client, buyer, account]
+    candidate_columns: [customer_name, customer, client_name, buyer_name, name]
+    preferred_tables: [customers]
     column: customers.customer_name
     alias: customer
   customer_segment:
     aliases: [segment, customer segment, tier, customer tier]
+    synonyms: [segment, customer segment, tier, customer tier]
+    candidate_columns: [segment, customer_segment, tier]
+    preferred_tables: [customers]
     column: customers.segment
     alias: segment
   city:
     aliases: [city, cities, town, location]
+    synonyms: [city, cities, town, location]
+    candidate_columns: [customers.city, city, town]
+    preferred_tables: [customers]
     column: customers.city
     alias: city
   state:
     aliases: [state, states, province, territory]
+    synonyms: [state, states, province]
+    candidate_columns: [customers.state, state, province]
+    preferred_tables: [customers]
     column: customers.state
     alias: state
   region:
     aliases: [region, regions, area, geography]
+    synonyms: [region, regions, area, zone, territory, geography]
+    candidate_columns: [customers.region, region, area, zone, territory]
+    preferred_tables: [customers]
     column: customers.region
     alias: region
+  status:
+    aliases: [status, order status, condition]
+    synonyms: [status, order status, condition]
+    candidate_columns: [status, condition]
+    preferred_tables: [orders]
+    column: orders.status
+    alias: status
   product:
     aliases: [product, products, sku, item, items, product name]
+    synonyms: [product, products, item, sku]
+    candidate_columns: [product_name, product, item_name, sku_name, name]
+    preferred_tables: [products]
     column: products.product_name
     alias: product
   category:
     aliases: [category, categories, product category, department]
+    synonyms: [category, categories, product category, department]
+    candidate_columns: [category, department]
+    preferred_tables: [products]
     column: products.category
     alias: category
   brand:
     aliases: [brand, brands, manufacturer]
+    synonyms: [brand, brands, manufacturer]
+    candidate_columns: [brand, manufacturer]
+    preferred_tables: [products]
     column: products.brand
     alias: brand
   store:
     aliases: [store, stores, branch, shop]
+    synonyms: [store, stores, branch, shop]
+    candidate_columns: [store_name, store, branch, shop]
+    preferred_tables: [stores]
     column: stores.store_name
     alias: store
   sales_rep:
     aliases: [sales rep, representative, rep, salesperson, seller]
+    synonyms: [sales rep, representative, rep, salesperson, seller]
+    candidate_columns: [rep_name, sales_rep, representative, salesperson]
+    preferred_tables: [sales_reps]
     column: sales_reps.rep_name
     alias: sales_rep
   month:
     aliases: [month, months, monthly, order month]
+    synonyms: [month, months, monthly, order month]
+    candidate_columns: [order_date, date, month]
     expression: strftime('%Y-%m', orders.order_date)
     alias: month
   year:
     aliases: [year, years, yearly, annual]
+    synonyms: [year, years, yearly, annual]
+    candidate_columns: [order_date, date, year]
     expression: strftime('%Y', orders.order_date)
     alias: year
+
+dates:
+  order_date:
+    aliases: [date, order date, transaction date, sales date, created date]
+    synonyms: [date, order date, transaction date, sales date, created date]
+    candidate_columns: [order_date, transaction_date, sale_date, created_date, date]
+
+entities:
+  orders:
+    aliases: [orders, order, transactions, sales]
+    synonyms: [orders, order, transactions, sales]
+    candidate_tables: [orders, transactions, sales]
+  customers:
+    aliases: [customers, customer, clients, buyers]
+    synonyms: [customers, customer, clients, buyers]
+    candidate_tables: [customers, clients]
+  products:
+    aliases: [products, product, items, skus]
+    synonyms: [products, product, items, skus]
+    candidate_tables: [products, items]
+  stores:
+    aliases: [stores, store, branches, shops]
+    synonyms: [stores, store, branches, shops]
+    candidate_tables: [stores]
+  sales_reps:
+    aliases: [sales reps, sales rep, reps, representatives]
+    synonyms: [sales reps, sales rep, reps, representatives]
+    candidate_tables: [sales_reps, representatives]
 
 filters:
   year:
@@ -100,4 +187,8 @@ filters:
   region:
     aliases: [region, in region]
     column: customers.region
+    operator: "="
+  status:
+    aliases: [status, order status, with status]
+    column: orders.status
     operator: "="

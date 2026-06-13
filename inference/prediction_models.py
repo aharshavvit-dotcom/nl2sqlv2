@@ -39,6 +39,8 @@ class SchemaMapping(BaseModel):
     entity_table: str | None = None
     date_table: str | None = None
     date_column: str | None = None
+    filter_table: str | None = None
+    filter_column: str | None = None
     match_scores: dict[str, float] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
 
@@ -60,6 +62,8 @@ class PredictionResult(BaseModel):
     slots: dict[str, Any] = Field(default_factory=dict)
     schema_mapping: dict[str, Any] = Field(default_factory=dict)
     join_plan: dict[str, Any] | None = None
+    query_ir: dict[str, Any] | None = None
+    ir_validation: dict[str, Any] | None = None
     sql: str | None = None
     validation: dict[str, Any] = Field(default_factory=dict)
     confidence: float = 0.0

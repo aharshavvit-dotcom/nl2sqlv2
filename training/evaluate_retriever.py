@@ -23,9 +23,11 @@ def evaluate_retriever(
     retriever = TfidfRetriever.load(artifact_dir)
     examples = _load_eval_examples(artifact_dir, splits=splits or ["validation", "test"])
     if not examples:
-        examples = retriever.examples
-    if not examples:
-        raise ValueError(f"No training examples found in {artifact_dir}")
+        raise ValueError(
+            "No validation examples found. Add examples with split='validation' to "
+            "training_data/examples.jsonl before evaluating. Evaluating against the "
+            "training set produces meaningless accuracy numbers."
+        )
 
     top_1 = 0
     top_3 = 0
@@ -83,6 +85,20 @@ def _load_eval_examples(artifact_dir: Path, splits: list[str]) -> list[dict[str,
                 line = line.strip()
                 if line:
                     examples.append(json.loads(line))
+    if examples:
+        return examples
+
+    fallback = ROOT / "training_data" / "examples.jsonl"
+    if not fallback.exists():
+        return []
+    with fallback.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            if row.get("split") == "validation":
+                examples.append(row)
     return examples
 
 

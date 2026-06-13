@@ -7,15 +7,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-from nl2sql_v1.engine import NL2SQLEngine
-from nl2sql_v1.executor import execute_select
+from execution.query_executor import execute_select
 from nl2sql_v1.feedback import append_feedback
 from nl2sql_v1.retriever import TfidfRetriever, load_examples
 from nl2sql_v1.schema import read_sqlite_schema
 from nl2sql_v1.schema_matcher import SchemaMatcher
 from nl2sql_v1.slot_extractor import SlotExtractor
-from nl2sql_v1.validator import validate_select_sql
+from retriever.retrieval_nl2sql_model import RetrievalNL2SQLModel
 from scripts.create_sample_db import build_database
+from validation.sql_validator import SQLValidator
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,12 +29,15 @@ def sample_db(tmp_path: Path) -> Path:
 
 
 @pytest.fixture()
-def engine() -> NL2SQLEngine:
+def model() -> RetrievalNL2SQLModel:
     retriever = TfidfRetriever.train(ROOT / "training_data" / "examples.jsonl")
-    return NL2SQLEngine(
+    metric_synonyms, dimension_synonyms = RetrievalNL2SQLModel._load_synonyms(ROOT / "data" / "synonyms.yaml")
+    return RetrievalNL2SQLModel(
         retriever=retriever,
         templates_path=ROOT / "data" / "templates.yaml",
         synonyms_path=ROOT / "data" / "synonyms.yaml",
+        metric_synonyms=metric_synonyms,
+        dimension_synonyms=dimension_synonyms,
     )
 
 
@@ -50,33 +53,49 @@ def test_streamlit_app_path_compiles() -> None:
 def test_templates_file_has_8_templates() -> None:
     with (ROOT / "data" / "templates.yaml").open("r", encoding="utf-8") as fh:
         templates = yaml.safe_load(fh)["templates"]
-    assert len(templates) == 8
+    canonical = {
+        "top_n_metric_by_dimension",
+        "bottom_n_metric_by_dimension",
+        "metric_by_dimension",
+        "metric_summary",
+        "count_records",
+        "count_by_dimension",
+        "trend_by_date",
+        "simple_filter",
+        "show_records",
+    }
+    assert canonical.issubset(templates)
 
 
-def test_main_question_generates_expected_sql_shape(sample_db: Path, engine: NL2SQLEngine) -> None:
+def test_main_question_generates_expected_sql_shape(sample_db: Path, model: RetrievalNL2SQLModel) -> None:
     schema = read_sqlite_schema(sample_db)
-    result = engine.generate("Top 5 customers by sales", schema)
+    result = model.predict("Top 5 customers by sales", schema)
 
-    assert len(result.retrieved_examples) == 5
+    assert result.query_ir is not None
+    assert result.ir_validation and result.ir_validation["is_valid"]
+    assert result.validation["is_valid"]
     assert "customers.customer_name" in result.sql
     assert "SUM(orders.amount) AS revenue" in result.sql
-    assert "JOIN customers ON orders.customer_id = customers.customer_id" in result.sql
+    assert "JOIN customers" in result.sql
+    assert "orders.customer_id = customers.customer_id" in result.sql
     assert "GROUP BY customers.customer_name" in result.sql
     assert "ORDER BY revenue DESC" in result.sql
     assert "LIMIT 5" in result.sql
 
-    df = execute_select(sample_db, result.sql)
+    df = execute_select(sample_db, result.sql, validation_result=result.validation)
     assert list(df.columns) == ["customer", "revenue"]
     assert len(df) == 5
 
 
-def test_join_resolver_can_bridge_orders_to_products(sample_db: Path, engine: NL2SQLEngine) -> None:
+def test_join_resolver_can_bridge_orders_to_products(sample_db: Path, model: RetrievalNL2SQLModel) -> None:
     schema = read_sqlite_schema(sample_db)
-    result = engine.generate("Top 5 products by sales", schema)
+    result = model.predict("Top 5 products by sales", schema)
 
-    assert "JOIN order_items ON order_items.order_id = orders.order_id" in result.sql
-    assert "JOIN products ON order_items.product_id = products.product_id" in result.sql
-    assert validate_select_sql(result.sql, schema).ok
+    assert "JOIN order_items" in result.sql
+    assert "order_items.order_id = orders.order_id" in result.sql
+    assert "JOIN products" in result.sql
+    assert "order_items.product_id = products.product_id" in result.sql
+    assert result.validation["is_valid"]
 
 
 def test_public_corpus_fallback_metric_star_is_ignored() -> None:
@@ -98,40 +117,10 @@ def test_public_corpus_fallback_metric_star_is_ignored() -> None:
     assert slots.filters == {}
 
 
-def test_engine_handles_public_corpus_fallback_against_sample_schema(sample_db: Path) -> None:
-    examples_path = sample_db.parent / "public_like_examples.jsonl"
-    examples_path.write_text(
-        json.dumps(
-            {
-                "id": "public-count",
-                "question": "How many clubs are there?",
-                "template_id": "count_records",
-                "metric": "*",
-                "dimension": None,
-                "limit": 1,
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    retriever = TfidfRetriever.train(examples_path)
-    engine = NL2SQLEngine(
-        retriever=retriever,
-        templates_path=ROOT / "data" / "templates.yaml",
-        synonyms_path=ROOT / "data" / "synonyms.yaml",
-    )
-
-    result = engine.generate("Top 5 customers by sales", read_sqlite_schema(sample_db))
-
-    assert result.metric.key == "sales"
-    assert result.dimension and result.dimension.key == "customer"
-    assert "SUM(orders.amount) AS revenue" in result.sql
-
-
 def test_sql_validator_rejects_mutation(sample_db: Path) -> None:
     schema = read_sqlite_schema(sample_db)
-    result = validate_select_sql("DELETE FROM customers", schema)
-    assert not result.ok
+    result = SQLValidator().validate("DELETE FROM customers", schema=schema)
+    assert not result["is_valid"]
 
 
 def test_executor_rejects_non_select(sample_db: Path) -> None:

@@ -69,6 +69,14 @@ class TemplateSelector:
             return "count_by_dimension"
         if template_id == "time_series_metric":
             return "trend_by_date"
+        if template_id == "detail_rows":
+            return "show_records"
+        if template_id == "filtered_rank_dimension":
+            return "simple_filter" if "where" in question.lower() else cls._question_template(question) or "top_n_metric_by_dimension"
+        if template_id == "distinct_dimension_values":
+            return "show_records"
+        if template_id == "metric_distribution":
+            return "metric_summary"
         if template_id in {
             "show_records",
             "count_records",

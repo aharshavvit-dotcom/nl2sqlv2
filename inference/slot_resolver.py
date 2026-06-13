@@ -6,32 +6,7 @@ from typing import Any
 
 from .prediction_models import RetrievedCandidate, RuntimeSlot
 from .runtime_schema_context import RuntimeSchemaContext
-
-
-METRIC_SYNONYMS = {
-    "revenue": ["sales", "revenue", "amount", "value", "order value", "total sales"],
-    "quantity": ["qty", "quantity", "units", "units sold"],
-    "order_count": ["orders", "transactions", "order count", "number of orders", "count"],
-    "profit": ["profit", "margin"],
-    "discount": ["discount", "markdown"],
-    "average_order_value": ["average order value", "avg order value", "aov", "average revenue"],
-}
-
-DIMENSION_SYNONYMS = {
-    "customer": ["customer", "customers", "client", "clients", "buyer", "buyers"],
-    "product": ["product", "products", "item", "items", "sku"],
-    "region": ["region", "regions", "area", "zone", "territory"],
-    "status": ["status", "state", "condition"],
-    "month": ["month", "monthly"],
-    "year": ["year", "yearly"],
-    "category": ["category", "categories"],
-    "store": ["store", "stores"],
-    "brand": ["brand", "brands"],
-    "city": ["city", "cities"],
-    "state": ["state", "states"],
-    "customer_segment": ["segment", "customer segment", "customer tier", "tier"],
-    "sales_rep": ["sales rep", "sales reps", "representative", "representatives", "salesperson", "salespeople"],
-}
+from .synonym_loader import load_synonym_config, normalize_section
 
 
 class SlotResolver:
@@ -44,9 +19,10 @@ class SlotResolver:
         synonym_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         q = question.lower()
+        synonyms = self._synonym_config(synonym_config)
         slots: dict[str, RuntimeSlot] = {}
-        slots["metric"] = self._metric_slot(q, candidates, selected_template)
-        slots["dimension"] = self._dimension_slot(q, candidates, selected_template)
+        slots["metric"] = self._metric_slot(q, candidates, selected_template, synonyms["metrics"])
+        slots["dimension"] = self._dimension_slot(q, candidates, selected_template, synonyms["dimensions"])
         slots["entity"] = self._entity_slot(q, schema_context)
         slots["limit"] = self._limit_slot(q)
         slots["sort_direction"] = RuntimeSlot(
@@ -57,8 +33,10 @@ class SlotResolver:
         )
         slots["date_grain"] = self._date_grain_slot(q)
         slots["date_filter"] = self._date_filter_slot(q)
-        slots["filter_column"] = RuntimeSlot(slot_name="filter_column", value=None, source="default", confidence=0.0)
-        slots["filter_value"] = RuntimeSlot(slot_name="filter_value", value=None, source="default", confidence=0.0)
+        filter_column, filter_value, filter_operator = self._filter_slots(q, synonyms["dimensions"])
+        slots["filter_column"] = filter_column
+        slots["filter_value"] = filter_value
+        slots["filter_operator"] = filter_operator
 
         template_id = selected_template.get("template_id")
         if template_id in {"count_records"} and not slots["metric"].value:
@@ -68,35 +46,46 @@ class SlotResolver:
             if voted:
                 slots["dimension"] = RuntimeSlot(slot_name="dimension", value=voted, source="retrieved_example", confidence=0.5)
 
-        clarification_questions = []
-        if template_id not in {"show_records", "count_records"} and not slots["metric"].value:
-            clarification_questions.append("Which metric should I aggregate?")
-        if template_id in {"metric_by_dimension", "top_n_metric_by_dimension", "bottom_n_metric_by_dimension", "count_by_dimension"} and not slots["dimension"].value:
-            clarification_questions.append("Which dimension should I group by?")
-
         return {
             "slots": {key: value.model_dump() for key, value in slots.items()},
-            "clarification_questions": clarification_questions,
+            "clarification_questions": [],
         }
 
-    def _metric_slot(self, q: str, candidates: list[RetrievedCandidate], selected_template: dict[str, Any]) -> RuntimeSlot:
-        for metric, aliases in METRIC_SYNONYMS.items():
-            if any(alias in q for alias in aliases):
+    def _metric_slot(
+        self,
+        q: str,
+        candidates: list[RetrievedCandidate],
+        selected_template: dict[str, Any],
+        metric_synonyms: dict[str, list[str]],
+    ) -> RuntimeSlot:
+        metric_aliases = [
+            (metric, alias)
+            for metric, aliases in metric_synonyms.items()
+            for alias in self._aliases(metric, aliases)
+        ]
+        for metric, alias in sorted(metric_aliases, key=lambda item: len(item[1]), reverse=True):
+            if self._contains_alias(q, alias):
                 return RuntimeSlot(slot_name="metric", value=metric, source="question", confidence=0.92)
         voted = self._candidate_vote(candidates, "metric")
         if voted and voted not in {"*", "None"}:
             return RuntimeSlot(slot_name="metric", value=str(voted), source="retrieved_example", confidence=0.45)
         if selected_template.get("template_id") in {"count_records", "count_by_dimension"}:
             return RuntimeSlot(slot_name="metric", value="order_count", source="default", confidence=0.8)
-        return RuntimeSlot(slot_name="metric", value="revenue", source="default", confidence=0.55)
+        return RuntimeSlot(slot_name="metric", value=None, source="default", confidence=0.0)
 
-    def _dimension_slot(self, q: str, candidates: list[RetrievedCandidate], selected_template: dict[str, Any]) -> RuntimeSlot:
+    def _dimension_slot(
+        self,
+        q: str,
+        candidates: list[RetrievedCandidate],
+        selected_template: dict[str, Any],
+        dimension_synonyms: dict[str, list[str]],
+    ) -> RuntimeSlot:
         if "by month" in q or "monthly" in q:
             return RuntimeSlot(slot_name="dimension", value="month", source="question", confidence=0.95)
         if "by year" in q or "yearly" in q:
             return RuntimeSlot(slot_name="dimension", value="year", source="question", confidence=0.95)
-        for dimension, aliases in DIMENSION_SYNONYMS.items():
-            if any(re.search(rf"\b{re.escape(alias)}\b", q) for alias in aliases):
+        for dimension, aliases in dimension_synonyms.items():
+            if any(self._contains_alias(q, alias) for alias in self._aliases(dimension, aliases)):
                 return RuntimeSlot(slot_name="dimension", value=dimension, source="question", confidence=0.9)
         by_match = re.search(r"\bby\s+([a-z_ ]+)", q)
         if by_match:
@@ -136,9 +125,93 @@ class SlotResolver:
                 return RuntimeSlot(slot_name="date_filter", value=phrase, source="question", confidence=0.75)
         return RuntimeSlot(slot_name="date_filter", value=None, source="default", confidence=0.0)
 
+    def _filter_slots(
+        self,
+        q: str,
+        dimension_synonyms: dict[str, list[str]],
+    ) -> tuple[RuntimeSlot, RuntimeSlot, RuntimeSlot]:
+        stop_words = {
+            "limit",
+            "order",
+            "group",
+            "by",
+            "from",
+            "with",
+            "where",
+            "show",
+            "list",
+            "display",
+            "records",
+            "rows",
+            "orders",
+            "customers",
+            "products",
+            "stores",
+        }
+        candidates: list[tuple[int, str, str, str]] = []
+        if "excluding " in q:
+            excluded = q.split("excluding ", 1)[1].strip().split()[0]
+            return (
+                RuntimeSlot(slot_name="filter_column", value=None, source="default", confidence=0.0),
+                RuntimeSlot(slot_name="filter_value", value=excluded, source="question", confidence=0.4),
+                RuntimeSlot(slot_name="filter_operator", value="not_equals", source="question", confidence=0.4),
+            )
+        for dimension, aliases in dimension_synonyms.items():
+            if dimension in {"month", "year"}:
+                continue
+            for alias in sorted(self._aliases(dimension, aliases), key=len, reverse=True):
+                pattern = rf"(?:where|with|for|in)?\s*\b{re.escape(alias.lower())}\b\s*(is\s+not|!=|<>|is|=|as|in)?\s+([a-z0-9][a-z0-9 -]{{0,40}})"
+                match = re.search(pattern, q)
+                if not match:
+                    continue
+                raw_operator = (match.group(1) or "").strip()
+                raw_value = match.group(2).strip()
+                words = []
+                for word in raw_value.split():
+                    if word in stop_words:
+                        break
+                    words.append(word)
+                value = " ".join(words).strip()
+                if value:
+                    operator = "not_equals" if raw_operator in {"is not", "!=", "<>"} else "equals"
+                    candidates.append((match.start(), dimension, value, operator))
+        if candidates:
+            _, dimension, value, operator = max(candidates, key=lambda item: item[0])
+            return (
+                RuntimeSlot(slot_name="filter_column", value=dimension, source="question", confidence=0.82),
+                RuntimeSlot(slot_name="filter_value", value=value, source="question", confidence=0.82),
+                RuntimeSlot(slot_name="filter_operator", value=operator, source="question", confidence=0.82),
+            )
+        return (
+            RuntimeSlot(slot_name="filter_column", value=None, source="default", confidence=0.0),
+            RuntimeSlot(slot_name="filter_value", value=None, source="default", confidence=0.0),
+            RuntimeSlot(slot_name="filter_operator", value="equals", source="default", confidence=0.0),
+        )
+
     @staticmethod
     def _candidate_vote(candidates: list[RetrievedCandidate], slot_name: str) -> str | None:
         values = [str(item.slots.get(slot_name)) for item in candidates if item.slots.get(slot_name)]
         if not values:
             return None
         return Counter(values).most_common(1)[0][0]
+
+    @staticmethod
+    def _contains_alias(text: str, alias: str) -> bool:
+        return re.search(rf"\b{re.escape(alias.lower())}\b", text) is not None
+
+    @staticmethod
+    def _aliases(key: str, aliases: list[str]) -> list[str]:
+        return [key.replace("_", " "), key, *aliases]
+
+    @staticmethod
+    def _synonym_config(synonym_config: dict[str, Any] | None) -> dict[str, dict[str, list[str]]]:
+        if synonym_config and (synonym_config.get("metrics") or synonym_config.get("dimensions")):
+            return {
+                "metrics": normalize_section(synonym_config.get("metrics") or {}),
+                "dimensions": normalize_section(synonym_config.get("dimensions") or {}),
+            }
+        raw = load_synonym_config()
+        return {
+            "metrics": normalize_section(raw.get("metrics") or {}),
+            "dimensions": normalize_section(raw.get("dimensions") or {}),
+        }
