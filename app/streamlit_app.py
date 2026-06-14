@@ -28,6 +28,7 @@ TEMPLATES_PATH = ROOT / "data" / "templates.yaml"
 SYNONYMS_PATH = ROOT / "data" / "synonyms.yaml"
 MODEL_PATH = ROOT / "models" / "tfidf_retriever.joblib"
 ARTIFACT_DIR = ROOT / "artifacts" / "option_c_model"
+OPTION_A_ARTIFACT_DIR = ROOT / "artifacts" / "option_a_ir_model"
 FEEDBACK_PATH = ROOT / "feedback" / "feedback.jsonl"
 EVALUATION_DIR = ROOT / "evaluation"
 GOLDEN_RESULTS_PATH = EVALUATION_DIR / "golden_runtime_report.json"
@@ -47,6 +48,15 @@ def _artifact_ready() -> bool:
     )
 
 
+def _option_a_ready() -> bool:
+    return (
+        (OPTION_A_ARTIFACT_DIR / "model.pt").exists()
+        and (OPTION_A_ARTIFACT_DIR / "vocab.json").exists()
+        and (OPTION_A_ARTIFACT_DIR / "label_maps.json").exists()
+        and (OPTION_A_ARTIFACT_DIR / "config.yaml").exists()
+    )
+
+
 def _load_model() -> RetrievalNL2SQLModel:
     return RetrievalNL2SQLModel.load(
         artifact_dir=ARTIFACT_DIR,
@@ -54,6 +64,7 @@ def _load_model() -> RetrievalNL2SQLModel:
         sample_examples_path=EXAMPLES_PATH,
         templates_path=TEMPLATES_PATH,
         synonyms_path=SYNONYMS_PATH,
+        option_a_model_dir=OPTION_A_ARTIFACT_DIR,
     )
 
 
@@ -81,8 +92,10 @@ with st.expander("Model Status", expanded=True):
     training_report = _load_json(ARTIFACT_DIR / "training_report.json")
     evaluation_report = _load_json(evaluation_path)
     dataset_stats = _load_json(ARTIFACT_DIR / "dataset_stats.json")
-    status_cols = st.columns(4)
-    status_cols[0].metric("Artifact", "large" if _artifact_ready() else "sample")
+    option_c_ready = _artifact_ready()
+    option_a_ready = _option_a_ready()
+    status_cols = st.columns(5)
+    status_cols[0].metric("Option C artifact", "large" if option_c_ready else "sample")
     status_cols[1].metric("Training examples", training_report.get("supported_examples", "sample"))
     status_cols[2].metric("Unsupported", dataset_stats.get("unsupported_examples", 0))
     if evaluation_path.exists():
@@ -90,6 +103,8 @@ with st.expander("Model Status", expanded=True):
     else:
         status_cols[3].metric("Top-5 accuracy", "Not measured")
         st.warning("Accuracy not yet measured — run evaluation after training.")
+    status_cols[4].metric("Option A model", "ready" if option_a_ready else "missing")
+    st.caption(f"Hybrid routing: {'available' if option_a_ready else 'disabled until Option A is trained'}")
     st.caption(f"Artifact path: {ARTIFACT_DIR}")
     summary_rows = [
         {"item": "datasets used", "value": ", ".join(training_report.get("datasets_used", [])) or "sample"},
@@ -174,6 +189,11 @@ left, right = st.columns([0.55, 0.45], vertical_alignment="top")
 
 with left:
     question = st.text_input("Ask a question", value="Top 5 customers by sales")
+    use_option_a_fallback = st.checkbox(
+        "Use Option A fallback when Option C confidence is low",
+        value=_option_a_ready(),
+        disabled=not _option_a_ready(),
+    )
     generate = st.button("Generate SQL", type="primary")
 
 with right:
@@ -199,7 +219,7 @@ if generate and question.strip():
     if model.artifact_dir is None:
         st.info("Using sample model trained on hand-written examples. Train from datasets for better accuracy.")
     try:
-        result = model.predict(question, schema)
+        result = model.predict(question, schema, use_option_a_fallback=use_option_a_fallback)
     except Exception as exc:
         st.error(f"Could not generate SQL for this schema: {exc}")
         st.stop()
@@ -224,10 +244,11 @@ if generate and question.strip():
     )
 
     st.subheader("Confidence")
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Confidence", f"{result.confidence:.3f}")
     c2.metric("Tier", result.confidence_tier)
     c3.metric("Intent", result.intent or "unknown")
+    c4.metric("Source model used", {"option_c": "Option C", "option_a": "Option A", "hybrid": "Hybrid"}.get(result.source_model, result.source_model))
 
     st.subheader("Slots")
     slot_rows = [
@@ -324,6 +345,20 @@ if generate and question.strip():
         st.json(result.query_ir or {})
         st.subheader("IR validation JSON")
         st.json(result.ir_validation or {})
+        st.subheader("Router decision")
+        st.json(
+            {
+                "decision": result.debug.get("router_decision"),
+                "source_model": result.source_model,
+                "option_a_tried": "option_a_result" in result.debug,
+            }
+        )
+        if result.debug.get("option_c_result"):
+            st.subheader("Option C result")
+            st.json(result.debug.get("option_c_result"))
+        if result.debug.get("option_a_result"):
+            st.subheader("Option A result")
+            st.json(result.debug.get("option_a_result"))
         st.subheader("PredictionResult JSON")
         st.json(result.model_dump())
 elif not generate:

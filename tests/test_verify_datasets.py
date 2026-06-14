@@ -23,3 +23,17 @@ def test_verify_bird_full_reports_partial_zip(tmp_path: Path) -> None:
 
     assert result.status == "incomplete"
     assert "train.zip" in result.notes
+
+
+def test_verify_bird_full_ready_when_prepared(tmp_path: Path) -> None:
+    raw = tmp_path / "bird-full"
+    raw.mkdir()
+    for name in ["train.json", "validation.json", "test.json"]:
+        (raw / name).write_text("[]", encoding="utf-8")
+    (raw / "train_tables.json").write_text("[]", encoding="utf-8")
+    (raw / "dev_tables.json").write_text("[]", encoding="utf-8")
+
+    result = verify_bird_full(raw)
+
+    assert result.status == "ready"
+    assert result.example_count == 0

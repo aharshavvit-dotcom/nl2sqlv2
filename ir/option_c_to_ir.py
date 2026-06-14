@@ -6,6 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from .query_ir_models import IRDateFilter, IRDimension, IRFilter, IRJoin, IRMetric, IROrderBy, QueryIR
+from .semantic_metric_resolver import SemanticMetricResolver
 
 
 METRIC_INTENTS = {
@@ -38,10 +39,11 @@ class OptionCToIRConverter:
         dialect: str = "sqlite",
     ) -> QueryIR:
         mapping = self._dump(schema_mapping)
+        mapping = self._apply_semantic_metric_resolution(mapping, slots, validation_context)
         plan = self._dump(join_plan) if join_plan else {}
         template = template_id or intent
         warnings = list(mapping.get("warnings") or [])
-        base_table = plan.get("base_table") or mapping.get("metric_table") or mapping.get("entity_table")
+        base_table = plan.get("base_table") or mapping.get("base_table") or mapping.get("metric_table") or mapping.get("entity_table")
         limit = min(max(int(self._slot_value(slots, "limit", 100) or 100), 1), 1000)
 
         metrics = self._metrics(template, slots, mapping, base_table, warnings)
@@ -51,7 +53,7 @@ class OptionCToIRConverter:
         joins = self._joins(plan)
         group_by = self._group_by(template, dimensions, date_filters)
         order_by = self._order_by(template, metrics, dimensions, date_filters, slots)
-        required_tables = self._required_tables(base_table, mapping, joins)
+        required_tables = self._required_tables(base_table, mapping, joins, template)
         select_mode = self._select_mode(template)
 
         return QueryIR(
@@ -299,14 +301,16 @@ class OptionCToIRConverter:
         return []
 
     @staticmethod
-    def _required_tables(base_table: str | None, mapping: dict[str, Any], joins: list[IRJoin]) -> list[str]:
+    def _required_tables(base_table: str | None, mapping: dict[str, Any], joins: list[IRJoin], template_id: str | None) -> list[str]:
+        include_metric = template_id in METRIC_INTENTS or template_id in COUNT_INTENTS
         tables = [
             base_table,
-            mapping.get("metric_table"),
+            mapping.get("metric_table") if include_metric else None,
             mapping.get("dimension_table"),
             mapping.get("entity_table"),
             mapping.get("date_table"),
             mapping.get("filter_table"),
+            *(mapping.get("semantic_required_tables") or []),
             *[join.left_table for join in joins],
             *[join.right_table for join in joins],
         ]
@@ -355,6 +359,43 @@ class OptionCToIRConverter:
         if isinstance(slot, dict):
             return float(slot.get("confidence", default) or 0.0)
         return default
+
+    @staticmethod
+    def _apply_semantic_metric_resolution(
+        mapping: dict[str, Any],
+        slots: dict[str, Any],
+        validation_context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        schema_context = (validation_context or {}).get("schema_context")
+        if not schema_context:
+            return mapping
+
+        updated = dict(mapping)
+        resolution = SemanticMetricResolver().resolve_metric_expression(
+            metric_name=str(updated.get("metric_name") or OptionCToIRConverter._slot_value(slots, "metric", "") or ""),
+            dimension_name=updated.get("dimension_name") or OptionCToIRConverter._slot_value(slots, "dimension", None),
+            schema_context=schema_context,
+            current_metric_table=updated.get("metric_table"),
+            current_metric_column=updated.get("metric_column"),
+        )
+        if resolution.get("base_table"):
+            updated["base_table"] = resolution["base_table"]
+        if resolution.get("metric_expression"):
+            updated["metric_table"] = resolution.get("metric_table")
+            updated["metric_column"] = resolution.get("metric_column")
+            updated["metric_expression"] = resolution.get("metric_expression")
+            updated["metric_aggregation"] = resolution.get("metric_aggregation") or updated.get("metric_aggregation")
+            updated["metric_alias"] = resolution.get("metric_alias") or updated.get("metric_alias")
+        if resolution.get("required_tables"):
+            updated["semantic_required_tables"] = list(resolution["required_tables"])
+        if resolution.get("semantic_grain_risk"):
+            updated["semantic_grain_risk"] = True
+        warnings = list(updated.get("warnings") or [])
+        for warning in resolution.get("warnings") or []:
+            if warning not in warnings:
+                warnings.append(warning)
+        updated["warnings"] = warnings
+        return updated
 
     @staticmethod
     def _dump(value: dict[str, Any] | object) -> dict[str, Any]:

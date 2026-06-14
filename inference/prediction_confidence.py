@@ -31,24 +31,36 @@ class PredictionConfidenceCalculator:
             + 0.10 * ir_conf
             + 0.10 * validation_conf
         )
+        caps_applied: list[str] = []
+
+        def apply_cap(name: str, ceiling: float) -> None:
+            nonlocal confidence
+            confidence = min(confidence, ceiling)
+            if name not in caps_applied:
+                caps_applied.append(name)
+
         if not ir_validation.get("is_valid", False):
-            confidence = min(confidence, 0.59)
+            apply_cap("ir_validation_failed", 0.59)
         if not validation.get("is_valid", validation.get("ok", False)):
-            confidence = min(confidence, 0.59)
+            apply_cap("sql_validation_failed", 0.59)
         metric_table = mapping.get("metric_table") if isinstance(mapping, dict) else getattr(mapping, "metric_table", None)
         dimension_table = mapping.get("dimension_table") if isinstance(mapping, dict) else getattr(mapping, "dimension_table", None)
-        if mapping and (not metric_table or (self._needs_dimension(selected_template) and not dimension_table)):
-            confidence = min(confidence, 0.45)
+        if mapping and not metric_table and self._needs_metric(selected_template):
+            apply_cap("required_metric_missing", 0.45)
+        if mapping and self._needs_dimension(selected_template) and not dimension_table:
+            apply_cap("required_dimension_missing", 0.45)
         if join_plan and join_plan.get("warnings"):
-            confidence = min(confidence, 0.49)
+            apply_cap("join_path_missing", 0.49)
         if self._needs_metric(selected_template) and not self._slot_ok(slots, "metric"):
-            confidence = min(confidence, 0.49)
+            apply_cap("required_metric_missing", 0.49)
         if self._needs_dimension(selected_template) and not self._slot_ok(slots, "dimension"):
-            confidence = min(confidence, 0.49)
+            apply_cap("required_dimension_missing", 0.49)
         if any("semantic grain" in warning or "product-level revenue could not" in warning for warning in warnings):
-            confidence = min(confidence, 0.69)
+            apply_cap("semantic_grain_risk", 0.69)
         if any("date filter requested" in warning or "date column" in warning for warning in warnings):
-            confidence = min(confidence, 0.69)
+            apply_cap("date_filter_missing", 0.69)
+        if any("filter requested" in warning or "filter column" in warning for warning in warnings):
+            apply_cap("filter_mapping_missing", 0.69)
 
         tier = "high" if confidence >= 0.80 else "medium" if confidence >= 0.60 else "low"
         final = round(max(0.0, min(1.0, confidence)), 4)
@@ -60,6 +72,7 @@ class PredictionConfidenceCalculator:
             "join_planning": round(join_conf, 4),
             "ir_validation": ir_conf,
             "sql_validation": validation_conf,
+            "caps_applied": caps_applied,
             "final": final,
         }
         return {

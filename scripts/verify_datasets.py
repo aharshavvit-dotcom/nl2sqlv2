@@ -113,6 +113,21 @@ def verify_bird_mini(raw_dir: Path | None = None) -> DatasetVerification:
 def verify_bird_full(raw_dir: Path = BIRD_FULL_DIR) -> DatasetVerification:
     if not raw_dir.exists():
         return DatasetVerification("BIRD Full", "skipped", 0, None, "folder empty")
+    prepared = [
+        raw_dir / "train.json",
+        raw_dir / "validation.json",
+        raw_dir / "test.json",
+        raw_dir / "train_tables.json",
+        raw_dir / "dev_tables.json",
+    ]
+    if all(path.exists() for path in prepared):
+        count = 0
+        for path in prepared[:3]:
+            try:
+                count += len(json.loads(path.read_text(encoding="utf-8")))
+            except Exception:
+                return DatasetVerification("BIRD Full", "incomplete", len(prepared), None, f"cannot read prepared file: {path.name}")
+        return DatasetVerification("BIRD Full", "ready", len(prepared), count, "prepared train/validation/test layout")
     files = [path for path in raw_dir.rglob("*") if path.is_file() and path.name != ".gitkeep"]
     if not files:
         return DatasetVerification("BIRD Full", "skipped", 0, None, "folder empty")

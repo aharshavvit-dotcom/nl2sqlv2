@@ -29,6 +29,7 @@ class RuntimeSlot(BaseModel):
 
 
 class SchemaMapping(BaseModel):
+    base_table: str | None = None
     metric_name: str | None = None
     metric_table: str | None = None
     metric_column: str | None = None
@@ -36,6 +37,7 @@ class SchemaMapping(BaseModel):
     metric_aggregation: str | None = None
     metric_alias: str | None = None
     semantic_grain_risk: bool = False
+    semantic_required_tables: list[str] = Field(default_factory=list)
     dimension_name: str | None = None
     dimension_table: str | None = None
     dimension_column: str | None = None
@@ -60,6 +62,7 @@ class JoinPlan(BaseModel):
 class PredictionResult(BaseModel):
     question: str
     normalized_question: str
+    source_model: Literal["option_c", "option_a", "hybrid"] = "option_c"
     intent: str | None = None
     template_id: str | None = None
     slots: dict[str, Any] = Field(default_factory=dict)

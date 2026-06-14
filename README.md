@@ -101,7 +101,7 @@ result = RetrievalNL2SQLModel.load().predict(question, schema)
 
 `PredictionResult` includes `query_ir`, `ir_validation`, generated `sql`, SQL `validation`, confidence, slots, schema mapping, join plan, retrieved candidates, warnings, and clarification questions.
 
-This prepares the project for a future Option A neural model without adding one now. Option A can later replace retrieval, slot resolution, and schema mapping with a model that emits the same QueryIR, while keeping the IR validator, SQL renderer, SQL validator, Streamlit output, and execution safety unchanged.
+This runtime also supports an optional Option A neural QueryIR fallback. Option C remains the primary safe baseline; Option A predicts structured QueryIR labels and schema pointers, then reuses the same IR validator, SQL renderer, SQL validator, Streamlit output, and execution safety path.
 
 Useful verification commands:
 
@@ -110,7 +110,7 @@ python scripts\create_sample_db.py
 python -m compileall .
 pytest tests/
 python scripts\run_golden_tests.py --db data\sample_retail.db --artifact-dir artifacts\option_c_model
-python scripts\evaluate_runtime.py --db data\sample_retail.db --artifact-dir artifacts\option_c_model
+python scripts\evaluate.py --db data\sample_retail.db --artifact-dir artifacts\option_c_model
 streamlit run app\streamlit_app.py
 ```
 
@@ -118,7 +118,7 @@ Runtime state:
 
 - Canonical runtime: `RetrievalNL2SQLModel -> PredictionOrchestrator -> QueryIR -> IRToSQLRenderer -> SQLValidator`.
 - Streamlit uses the QueryIR runtime and executes SQL only through `execution.query_executor`.
-- `scripts/evaluate_runtime.py` is the active evaluator. `scripts/evaluate.py` is only a compatibility entrypoint that delegates to it.
+- `scripts/evaluate.py` is the compatibility CLI for the active QueryIR evaluator in `scripts/evaluate_runtime.py`.
 - `nl2sql_v1/` is legacy/reference code and is not used as the active SQL generation runtime.
 - `data/templates.yaml` is legacy/sample template config for IDs and training compatibility; SQL is rendered from QueryIR.
 - Product-level revenue uses `SUM(order_items.quantity * order_items.price)` when item-level columns exist.
@@ -198,12 +198,12 @@ training_data/
 ## CLI Evaluation
 
 ```powershell
-python scripts\evaluate_runtime.py --db data\sample_retail.db --artifact-dir artifacts\option_c_model
+python scripts\evaluate.py --db data\sample_retail.db --artifact-dir artifacts\option_c_model
 ```
 
 The active evaluator runs the structured QueryIR golden suite and writes `evaluation/runtime_evaluation_report.json`.
 It reports SQL validity, execution success, QueryIR match rate, failure categories, and per-case details.
-`scripts\evaluate.py` remains as a legacy compatibility shim that delegates to this evaluator.
+`scripts\evaluate_runtime.py` is the implementation module behind the CLI.
 
 ## Notes
 
@@ -218,7 +218,106 @@ After runtime stabilization:
 
 1. Build a SQL-to-IR dataset converter.
 2. Convert supported and unsupported examples into IR labels.
-3. Start an Option A neural IR model skeleton that emits QueryIR without changing validation, rendering, or execution.
+3. Improve Option A neural IR quality with better schema linking, more data, and error analysis.
+
+## Option A Preparation: SQL-to-IR Corpus Builder
+
+The current runtime already uses QueryIR. The next preparation step is to create gold QueryIR labels from Spider, WikiSQL, and BIRD SQL examples. This does not train a neural model yet. It prepares the data required for a future model that learns `question + schema -> QueryIR`.
+
+Build IR labels from existing dataset adapters:
+
+```powershell
+python training_ir\build_ir_training_data.py --datasets wikisql,spider,bird-mini --max-examples 5000 --output-dir data\processed --artifact-dir artifacts\option_a_ir_data
+```
+
+Validate a generated IR corpus:
+
+```powershell
+python training_ir\validate_ir_corpus.py --input data\processed\ir_training_examples.jsonl
+```
+
+Evaluate conversion output:
+
+```powershell
+python training_ir\evaluate_ir_conversion.py --input data\processed\ir_test_examples.jsonl --output artifacts\option_a_ir_data\ir_conversion_eval.json
+```
+
+Focused conversion tests:
+
+```powershell
+pytest tests\test_sql_to_ir_converter.py tests\test_ir_conversion_golden.py
+```
+
+Expected generated files:
+
+```text
+data/processed/ir_training_examples.jsonl
+data/processed/ir_validation_examples.jsonl
+data/processed/ir_test_examples.jsonl
+data/processed/ir_unsupported_examples.jsonl
+data/processed/ir_dataset_stats.json
+artifacts/option_a_ir_data/ir_corpus_report.json
+artifacts/option_a_ir_data/ir_conversion_eval.json
+```
+
+## Option A V1: Neural QueryIR Model
+
+Option A V1 is a lightweight CPU model for structured QueryIR prediction. It does not generate raw SQL. It predicts an intent/template plus schema-linked slots such as base table, metric column, dimension column, date column, filter column, aggregation, order direction, and limit bucket.
+
+The existing runtime safety chain is reused:
+
+```text
+Option A labels + schema pointers
+-> QueryIR
+-> IRValidator
+-> IRToSQLRenderer
+-> SQLValidator
+-> safe execution
+```
+
+Option C is still the primary path. Hybrid routing runs Option C first and only tries Option A when Option C confidence is low or SQL validation fails. If the Option A model artifact is missing, the app continues with Option C.
+
+Train a smoke or local Option A model:
+
+```powershell
+python training_ir\train_option_a_model.py `
+  --train data\processed\ir_training_examples.jsonl `
+  --validation data\processed\ir_validation_examples.jsonl `
+  --output-dir artifacts\option_a_ir_model `
+  --epochs 5 `
+  --batch-size 16
+```
+
+Evaluate it:
+
+```powershell
+python training_ir\evaluate_option_a_model.py `
+  --model-dir artifacts\option_a_ir_model `
+  --test data\processed\ir_test_examples.jsonl `
+  --output artifacts\option_a_ir_model\evaluation_report.json
+```
+
+Run a single prediction:
+
+```powershell
+python training_ir\predict_with_option_a.py `
+  --model-dir artifacts\option_a_ir_model `
+  --db data\sample_retail.db `
+  --question "Top 5 customers by sales"
+```
+
+Run Streamlit:
+
+```powershell
+streamlit run app\streamlit_app.py
+```
+
+Limitations:
+
+- Option A V1 is a lightweight CPU model, not a GPT-style LLM.
+- It supports structured QueryIR prediction for known intent families.
+- It depends on high-quality SQL-to-IR training labels.
+- The first pointer heads are fixed-size and intentionally simple.
 
 ## Dataset Training Pipeline
 
@@ -229,7 +328,7 @@ Supported dataset names:
 - `wikisql`: WikiSQL, downloaded automatically from Salesforce GitHub.
 - `spider`: Spider, downloaded with `gdown` when possible, with manual fallback instructions.
 - `bird-mini` or `bird-mini-dev`: BIRD Mini-Dev, downloaded from Hugging Face or read from the normalized manual folder.
-- `bird-full`: Full BIRD, only when explicitly requested with `--include-full-bird` and only usable after complete ZIP extraction.
+- `bird-full`: Full BIRD, only when explicitly requested with `--include-full-bird`. Manual downloads can be prepared without extracting the multi-GB database ZIPs when you only need retrieval or QueryIR-label training.
 
 Folder layout:
 
@@ -284,6 +383,25 @@ data/raw/bird/mini_dev_mysql/
 data/raw/bird/mini_dev_postgresql/
 ```
 
+Manual BIRD Full downloads should be prepared after placing the official train/dev folders under `data/raw/bird/full/`:
+
+```powershell
+python scripts\prepare_bird_full.py --raw-dir data\raw\bird\full
+```
+
+This preserves the original downloaded folders and ZIPs, then creates the application-ready split files:
+
+```text
+data/raw/bird/full/train.json
+data/raw/bird/full/validation.json
+data/raw/bird/full/test.json
+data/raw/bird/full/train_tables.json
+data/raw/bird/full/dev_tables.json
+data/raw/bird/full/bird_full_prepared_manifest.json
+```
+
+The default split policy keeps official BIRD train rows as `train` and splits official dev databases as close to 50/50 as possible into database-disjoint `validation` and `test` sets.
+
 The loader prefers the SQLite Mini-Dev split at `data/raw/bird/mini_dev/`. The Hugging Face saved dataset remains supported at `data/raw/bird/mini_dev_hf/`.
 
 Spider may require a manual download if Google Drive blocks automated access. In that case, download Spider from the official Yale Spider page and extract it into:
@@ -337,7 +455,7 @@ Train the large TF-IDF retriever:
 python training\train_retriever_from_datasets.py --datasets wikisql,spider,bird-mini --artifact-dir artifacts\option_c_model
 ```
 
-Include Full BIRD only after `verify_datasets.py` shows it as present/complete:
+Include Full BIRD only after `verify_datasets.py` shows it as ready:
 
 ```powershell
 python training\train_retriever_from_datasets.py --datasets wikisql,spider,bird-mini,bird-full --artifact-dir artifacts\option_c_model

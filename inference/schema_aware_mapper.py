@@ -51,7 +51,13 @@ class SchemaAwareMapper:
 
         filter_column = slot_values.get("filter_column")
         if filter_column:
-            filter_match = self._map_dimension(str(filter_column), schema_context, mapping.metric_table, dimension_synonyms)
+            filter_match = self._map_filter(
+                str(filter_column),
+                schema_context,
+                str(entity) if entity else None,
+                mapping.metric_table,
+                dimension_synonyms,
+            )
             mapping.filter_table = filter_match.get("table")
             mapping.filter_column = filter_match.get("column")
             mapping.match_scores["filter"] = filter_match.get("score", 0.0)
@@ -143,6 +149,19 @@ class SchemaAwareMapper:
         warnings = [] if score >= 0.5 else ["low dimension match"]
         return {"table": table, "column": column, "score": round(min(score, 1.0), 4), "warnings": warnings}
 
+    def _map_filter(
+        self,
+        filter_name: str,
+        schema_context: RuntimeSchemaContext,
+        entity: str | None,
+        metric_table: str | None,
+        dimension_synonyms: dict[str, list[str]],
+    ) -> dict[str, Any]:
+        deterministic = self._deterministic_filter(filter_name, schema_context, entity)
+        if deterministic:
+            return deterministic
+        return self._map_dimension(filter_name, schema_context, metric_table, dimension_synonyms)
+
     @staticmethod
     def _map_entity(entity: str | None, schema_context: RuntimeSchemaContext) -> dict[str, Any]:
         if entity and schema_context.has_table(entity):
@@ -203,6 +222,30 @@ class SchemaAwareMapper:
         table, column, score = target
         if schema_context.has_column(table, column):
             return {"table": table, "column": column, "score": score, "warnings": []}
+        return None
+
+    @staticmethod
+    def _deterministic_filter(filter_name: str, schema_context: RuntimeSchemaContext, entity: str | None = None) -> dict[str, Any] | None:
+        normalized = filter_name.lower().replace(" ", "_")
+        entity_name = (entity or "").lower()
+        preferred: dict[str, list[tuple[str, str, float]]] = {
+            "status": [("orders", "status", 0.98)],
+            "order_status": [("orders", "status", 0.98)],
+            "category": [("products", "category", 0.98)],
+            "product_category": [("products", "category", 0.98)],
+            "region": [("customers", "region", 0.96), ("stores", "region", 0.92), ("sales_reps", "region", 0.9)],
+            "customer_region": [("customers", "region", 0.98)],
+            "store_region": [("stores", "region", 0.98)],
+            "segment": [("customers", "segment", 0.95)],
+            "customer_segment": [("customers", "segment", 0.98)],
+            "brand": [("products", "brand", 0.95)],
+        }
+        candidates = preferred.get(normalized, [])
+        if normalized == "region" and entity_name in {"store", "stores"}:
+            candidates = [("stores", "region", 0.98), *candidates]
+        for table, column, score in candidates:
+            if schema_context.has_column(table, column):
+                return {"table": table, "column": column, "score": score, "warnings": []}
         return None
 
     @staticmethod

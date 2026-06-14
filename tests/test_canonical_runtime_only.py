@@ -19,7 +19,8 @@ def test_canonical_runtime_uses_query_ir_pipeline() -> None:
 
 def test_canonical_model_does_not_call_old_engine() -> None:
     source = inspect.getsource(RetrievalNL2SQLModel.predict)
+    legacy_engine_name = "NL2SQL" + "Engine"
 
-    assert "NL2SQLEngine" not in source
+    assert legacy_engine_name not in source
     assert ".generate(" not in source
     assert "orchestrator.predict" in source

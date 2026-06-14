@@ -1,5 +1,6 @@
 # Legacy/sample template config.
 # Current canonical runtime renders SQL from QueryIR using ir/ir_to_sql_renderer.py.
+# This file is not used as the active runtime SQL renderer.
 # These IDs remain useful for retrieval/template selection and backward-compatible training data.
 templates:
   # Runtime intent IDs.

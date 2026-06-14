@@ -72,7 +72,13 @@ def expected_files_for_dataset(dataset_name: str) -> list[str]:
             "dev_databases/",
         ]
     if normalized == "bird-full":
-        return []
+        return [
+            "train.json",
+            "validation.json",
+            "test.json",
+            "train_tables.json",
+            "dev_tables.json",
+        ]
     raise ValueError(f"Unknown dataset: {dataset_name}")
 
 

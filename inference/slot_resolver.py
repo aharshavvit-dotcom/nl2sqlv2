@@ -160,7 +160,7 @@ class SlotResolver:
             if dimension in {"month", "year"}:
                 continue
             for alias in sorted(self._aliases(dimension, aliases), key=len, reverse=True):
-                pattern = rf"(?:where|with|for|in)?\s*\b{re.escape(alias.lower())}\b\s*(is\s+not|!=|<>|is|=|as|in)?\s+([a-z0-9][a-z0-9 -]{{0,40}})"
+                pattern = rf"(?:where|with|for|in|from)?\s*\b{re.escape(alias.lower())}\b\s*(is\s+not|!=|<>|equals|equal\s+to|is|=|as|in)?\s+([a-z0-9][a-z0-9 -]{{0,40}})"
                 match = re.search(pattern, q)
                 if not match:
                     continue

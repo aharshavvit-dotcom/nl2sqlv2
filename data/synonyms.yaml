@@ -4,6 +4,7 @@
 # - metrics/dimensions/entities/dates are business terms and aliases.
 # - expression/column/preferred_tables/candidate_columns are sample-retail physical hints.
 # - filters maps common business filters to physical columns.
+# Canonical SQL generation is QueryIR-based; this file is used for slot resolution and schema mapping only.
 metrics:
   sales:
     aliases: [sales, revenue, total sales, total revenue, gross sales, order value, amount, money, spend]

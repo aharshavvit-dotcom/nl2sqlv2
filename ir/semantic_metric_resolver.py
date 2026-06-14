@@ -24,6 +24,7 @@ class SemanticMetricResolver:
         if metric not in REVENUE_METRICS or dimension not in PRODUCT_DIMENSIONS:
             return {
                 "resolved": False,
+                "base_table": current_metric_table,
                 "metric_table": current_metric_table,
                 "metric_column": current_metric_column,
                 "metric_expression": None,
@@ -37,6 +38,7 @@ class SemanticMetricResolver:
         if self._has_column(schema_context, "order_items", "quantity") and self._has_column(schema_context, "order_items", "price"):
             return {
                 "resolved": True,
+                "base_table": "order_items",
                 "metric_table": "order_items",
                 "metric_column": None,
                 "metric_expression": "order_items.quantity * order_items.price",
@@ -49,6 +51,7 @@ class SemanticMetricResolver:
 
         return {
             "resolved": False,
+            "base_table": current_metric_table,
             "metric_table": current_metric_table,
             "metric_column": current_metric_column,
             "metric_expression": None,

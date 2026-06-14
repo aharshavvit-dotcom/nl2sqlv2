@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 import re
 from typing import Any
 
@@ -22,9 +23,19 @@ from .template_selector import TemplateSelector
 
 
 class PredictionOrchestrator:
-    def __init__(self, top_k: int = 10, max_limit: int = 1000):
+    def __init__(
+        self,
+        top_k: int = 10,
+        max_limit: int = 1000,
+        option_a_model_dir: str | Path | None = None,
+        use_option_a_fallback: bool = True,
+        option_a_threshold: float = 0.80,
+    ):
         self.top_k = top_k
         self.max_limit = max_limit
+        self.option_a_model_dir = Path(option_a_model_dir) if option_a_model_dir else Path(__file__).resolve().parents[1] / "artifacts" / "option_a_ir_model"
+        self.use_option_a_fallback = use_option_a_fallback
+        self.option_a_threshold = option_a_threshold
         self.generator = CandidateGenerator()
         self.reranker = CandidateReranker()
         self.selector = TemplateSelector()
@@ -47,6 +58,7 @@ class PredictionOrchestrator:
         metric_synonyms: dict[str, Any] | None = None,
         dimension_synonyms: dict[str, Any] | None = None,
         validator: Any | None = None,
+        use_option_a_fallback: bool | None = None,
     ) -> PredictionResult:
         normalized_question = self._normalize_question(question)
         schema_context = RuntimeSchemaContext(schema)
@@ -65,7 +77,7 @@ class PredictionOrchestrator:
         slots = slot_payload["slots"]
         schema_mapping = self.mapper.map_slots_to_schema(slots, schema_context, metric_synonyms, dimension_synonyms)
         self._apply_semantic_metric_resolution(schema_mapping, schema_context)
-        base_table = self._select_base_table(schema_mapping, slots)
+        base_table = self._select_base_table(selected_template.get("template_id"), schema_mapping)
         required_tables = self._required_tables(selected_template.get("template_id"), schema_mapping)
         join_plan = self.join_planner.plan_joins(schema_context, base_table, required_tables)
 
@@ -113,9 +125,10 @@ class PredictionOrchestrator:
         ]
         clarification = self._clarification_questions(confidence["confidence"], selected_template.get("template_id"), slots)
 
-        return PredictionResult(
+        option_c_result = PredictionResult(
             question=question,
             normalized_question=normalized_question,
+            source_model="option_c",
             intent=selected_template.get("intent"),
             template_id=selected_template.get("template_id"),
             slots=slots,
@@ -138,13 +151,24 @@ class PredictionOrchestrator:
                 "confidence_components": confidence["confidence_breakdown"],
             },
         )
+        return self._maybe_option_a_fallback(
+            option_c_result=option_c_result,
+            question=question,
+            schema=schema,
+            enabled=self.use_option_a_fallback if use_option_a_fallback is None else use_option_a_fallback,
+        )
 
     @staticmethod
     def _normalize_question(question: str) -> str:
         return re.sub(r"\s+", " ", question.strip().lower())
 
     @staticmethod
-    def _select_base_table(mapping: SchemaMapping, slots: dict[str, Any]) -> str:
+    def _select_base_table(template_id: str | None, mapping: SchemaMapping) -> str:
+        if mapping.base_table:
+            return mapping.base_table
+        if template_id in {"simple_filter", "show_records"}:
+            required = [table for table in [mapping.filter_table, mapping.entity_table, mapping.date_table] if table]
+            return RuntimeJoinPlanner.choose_base_table(mapping.filter_table, mapping.entity_table, required)
         required = [
             table
             for table in [
@@ -160,7 +184,12 @@ class PredictionOrchestrator:
 
     @staticmethod
     def _required_tables(template_id: str | None, mapping: SchemaMapping) -> list[str]:
-        tables = [mapping.metric_table or mapping.entity_table]
+        if template_id in {"simple_filter", "show_records"}:
+            tables = [mapping.filter_table or mapping.entity_table]
+        else:
+            tables = [mapping.metric_table or mapping.entity_table]
+        tables.append(mapping.base_table)
+        tables.extend(mapping.semantic_required_tables)
         if template_id in {"metric_by_dimension", "top_n_metric_by_dimension", "bottom_n_metric_by_dimension", "count_by_dimension", "trend_by_date"}:
             tables.append(mapping.dimension_table)
         if mapping.date_table:
@@ -182,12 +211,17 @@ class PredictionOrchestrator:
             current_metric_column=mapping.metric_column,
         )
         if resolution.get("metric_expression"):
+            mapping.base_table = resolution.get("base_table") or mapping.base_table
             mapping.metric_table = resolution.get("metric_table")
             mapping.metric_column = resolution.get("metric_column")
             mapping.metric_expression = resolution.get("metric_expression")
             mapping.metric_aggregation = resolution.get("metric_aggregation") or mapping.metric_aggregation
             mapping.metric_alias = resolution.get("metric_alias") or mapping.metric_alias
             mapping.match_scores["semantic_metric"] = 1.0
+        elif resolution.get("base_table"):
+            mapping.base_table = resolution.get("base_table") or mapping.base_table
+        if resolution.get("required_tables"):
+            mapping.semantic_required_tables = list(resolution.get("required_tables") or [])
         if resolution.get("semantic_grain_risk"):
             mapping.semantic_grain_risk = True
             mapping.match_scores["semantic_metric"] = min(mapping.match_scores.get("semantic_metric", 0.4), 0.4)
@@ -235,3 +269,74 @@ class PredictionOrchestrator:
         if not questions and confidence < 0.60:
             questions.append(f"Can you rephrase your question? I found {metric_value} and {dimension_value} but the pattern is unclear.")
         return questions
+
+    def _maybe_option_a_fallback(
+        self,
+        option_c_result: PredictionResult,
+        question: str,
+        schema: Any,
+        enabled: bool,
+    ) -> PredictionResult:
+        option_c_valid = bool(option_c_result.validation.get("is_valid", option_c_result.validation.get("ok", False)))
+        if not enabled:
+            option_c_result.debug["router_decision"] = "option_a_disabled"
+            return option_c_result
+        if option_c_result.confidence >= self.option_a_threshold and option_c_valid:
+            option_c_result.debug["router_decision"] = "option_c_high_confidence"
+            return option_c_result
+        if not (self.option_a_model_dir / "model.pt").exists():
+            option_c_result.debug["router_decision"] = "option_a_missing"
+            return option_c_result
+
+        try:
+            from neural_ir.predictor import OptionAIRPredictor
+
+            option_a_result = OptionAIRPredictor(str(self.option_a_model_dir)).predict(question, schema)
+        except Exception as exc:
+            option_c_result.debug["router_decision"] = "option_a_error"
+            option_c_result.debug["option_a_error"] = str(exc)
+            return option_c_result
+
+        option_a_validation = option_a_result.get("sql_validation") or option_a_result.get("validation") or {}
+        option_a_valid = bool(option_a_validation.get("is_valid", option_a_validation.get("ok", False)))
+        option_a_confidence = float(option_a_result.get("confidence") or 0.0)
+        option_c_result.debug["option_a_result"] = option_a_result
+        if option_a_valid and (option_a_confidence >= option_c_result.confidence or not option_c_valid):
+            query_ir = option_a_result.get("query_ir") or {}
+            ir_validation = option_a_result.get("ir_validation") or {}
+            warnings = []
+            warnings.extend(ir_validation.get("warnings") or [])
+            warnings.extend(ir_validation.get("errors") or [])
+            if not option_a_validation.get("is_valid", option_a_validation.get("ok", False)):
+                warnings.extend(option_a_validation.get("issues") or [])
+            result = PredictionResult(
+                question=question,
+                normalized_question=self._normalize_question(question),
+                source_model="option_a",
+                intent=query_ir.get("intent"),
+                template_id=query_ir.get("template_id"),
+                query_ir=query_ir,
+                ir_validation=ir_validation,
+                sql=option_a_result.get("sql"),
+                validation=option_a_validation,
+                confidence=option_a_confidence,
+                confidence_tier=self._confidence_tier(option_a_confidence),
+                warnings=list(dict.fromkeys(str(warning) for warning in warnings if warning)),
+                debug={
+                    "option_c_result": option_c_result.model_dump(),
+                    "option_a_result": option_a_result,
+                    "router_decision": "option_a_fallback_used",
+                },
+            )
+            return result
+
+        option_c_result.debug["router_decision"] = "option_c_retained_after_option_a"
+        return option_c_result
+
+    @staticmethod
+    def _confidence_tier(confidence: float) -> str:
+        if confidence >= 0.80:
+            return "high"
+        if confidence >= 0.60:
+            return "medium"
+        return "low"

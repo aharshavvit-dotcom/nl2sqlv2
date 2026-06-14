@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import json
 import sys
 from contextlib import contextmanager
@@ -126,7 +127,7 @@ class BirdAdapter:
         sql = row.get("SQL") or row.get("query") or row.get("sql") or ""
         db_id = row.get("db_id") or row.get("database_id") or row.get("db_name") or ""
         difficulty = row.get("difficulty") or row.get("difficulty_level")
-        suffix = row.get("question_id") or row.get("id") or abs(hash((question, sql, db_id))) % 10_000_000
+        suffix = row.get("question_id") or row.get("id") or _stable_suffix(question, sql, db_id)
         return Text2SQLExample(
             example_id=f"{dataset_name}:{split}:{suffix}",
             dataset_name=dataset_name,
@@ -171,8 +172,20 @@ class BirdAdapter:
 
     @staticmethod
     def _table_files(raw_dir: Path) -> list[Path]:
+        preferred = [
+            raw_dir / "train_tables.json",
+            raw_dir / "dev_tables.json",
+            raw_dir / "validation_tables.json",
+            raw_dir / "test_tables.json",
+            raw_dir / "tables.json",
+        ]
+        prepared = [path for path in preferred if path.exists() and not BirdAdapter._skip_path(path)]
+        if prepared:
+            return prepared
         candidates = []
         for path in raw_dir.rglob("*.json"):
+            if BirdAdapter._skip_path(path):
+                continue
             name = path.name.lower()
             if name.endswith("_tables.json") or name == "tables.json":
                 candidates.append(path)
@@ -188,10 +201,21 @@ class BirdAdapter:
             if legacy.exists():
                 return [legacy]
 
+        if split_type in {"full", "bird-full"}:
+            prepared = [
+                raw_dir / "train.json",
+                raw_dir / "validation.json",
+                raw_dir / "test.json",
+            ]
+            if any(path.exists() for path in prepared):
+                return [path for path in prepared if path.exists()]
+
         files: list[Path] = []
         for path in raw_dir.rglob("*.json"):
+            if BirdAdapter._skip_path(path):
+                continue
             name = path.name.lower()
-            if "tables" in name:
+            if "tables" in name or "tied" in name or "manifest" in name:
                 continue
             if split_type in {"mini-dev", "bird-mini"} and "sqlite" not in name and "dev" not in name:
                 continue
@@ -204,6 +228,10 @@ class BirdAdapter:
         split = BirdAdapter._canonical_split(name)
         order = {"train": 0, "validation": 1, "test": 2}
         return order.get(split, 3)
+
+    @staticmethod
+    def _skip_path(path: Path) -> bool:
+        return any(part == "__MACOSX" for part in path.parts) or path.name.startswith("._")
 
     def _schema_from_table_record(self, record: dict[str, Any], raw_dir: Path) -> DatabaseSchema:
         db_id = str(record["db_id"])
@@ -331,3 +359,8 @@ def _external_hf_datasets() -> Iterator[Any]:
         sys.path = old_path
         if local_package is not None:
             sys.modules["datasets"] = local_package
+
+
+def _stable_suffix(question: str, sql: str, db_id: str) -> str:
+    digest = hashlib.sha1(f"{db_id}\n{question}\n{sql}".encode("utf-8")).hexdigest()
+    return digest[:12]
