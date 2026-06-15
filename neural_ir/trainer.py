@@ -66,6 +66,7 @@ class OptionAIRTrainer:
         )
 
     def train(self, train_loader, val_loader, output_dir=None, label_encoder=None) -> dict[str, Any]:
+        import time
         if output_dir is not None and not isinstance(output_dir, (str, Path)):
             output_dir, label_encoder = label_encoder, output_dir
         output_path = Path(output_dir or "artifacts/option_a_ir_model")
@@ -75,20 +76,51 @@ class OptionAIRTrainer:
         patience = 0
         history = []
         epochs = int(self.config.get("epochs", 5))
+        total_start_time = time.time()
+        
+        print(f"Starting Neural QueryIR Model training for {epochs} epochs...")
+        print(f"Training set: {len(train_loader)} batches | Validation set: {len(val_loader) if val_loader else 0} batches")
+        
         for epoch in range(1, epochs + 1):
+            epoch_start = time.time()
+            print(f"\n--- Epoch {epoch:02d}/{epochs:02d} ---")
+            print(f"Started training epoch at {time.strftime('%H:%M:%S')}")
+            
             train_metrics = self.train_epoch(train_loader)
-            val_metrics = self.evaluate_epoch(val_loader) if val_loader is not None else {}
+            
+            if val_loader is not None:
+                print("Running evaluation on validation set...")
+                val_metrics = self.evaluate_epoch(val_loader)
+            else:
+                val_metrics = {}
+                
             row = {"epoch": epoch, **{f"train_{k}": v for k, v in train_metrics.items()}, **{f"validation_{k}": v for k, v in val_metrics.items()}}
             history.append(row)
+            
             val_loss = float(val_metrics.get("loss", train_metrics.get("loss", 0.0)))
+            train_loss = float(train_metrics.get("loss", 0.0))
+            train_acc = float(train_metrics.get("overall_slot_accuracy", 0.0))
+            val_acc = float(val_metrics.get("overall_slot_accuracy", 0.0)) if val_metrics else 0.0
+            
+            epoch_duration = time.time() - epoch_start
+            print(f"Finished Epoch {epoch:02d}/{epochs:02d} in {epoch_duration:.2f} seconds.")
+            print(f"Summary -> Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Train Acc: {train_acc:.2%} | Val Acc: {val_acc:.2%}")
+            
             if val_loss < best_loss:
                 best_loss = val_loss
                 best_state = {key: value.detach().cpu().clone() for key, value in self.model.state_dict().items()}
                 patience = 0
+                print(f"Checkpoint saved: New best validation loss is {best_loss:.4f}")
             else:
                 patience += 1
+                print(f"No validation loss improvement. Patience: {patience}/3")
                 if patience >= 3:
+                    print(f"Early stopping triggered at Epoch {epoch}.")
                     break
+                    
+        total_duration = time.time() - total_start_time
+        print(f"\nAll training epochs completed in {total_duration:.2f} seconds.")
+        
         if best_state is not None:
             self.model.load_state_dict(best_state)
         torch.save(self.model.state_dict(), output_path / "model.pt")
@@ -101,7 +133,8 @@ class OptionAIRTrainer:
         total_loss = 0.0
         total_items = 0
         metric_state = _MetricState()
-        for batch in loader:
+        num_batches = len(loader)
+        for i, batch in enumerate(loader, 1):
             batch = _to_device(batch, self.device)
             self.optimizer.zero_grad()
             outputs = _model_outputs(self.model, batch)
@@ -111,6 +144,8 @@ class OptionAIRTrainer:
             total_loss += float(loss.item()) * int(batch["question_ids"].size(0))
             total_items += int(batch["question_ids"].size(0))
             metric_state.update(outputs, batch["labels"], batch)
+            if i % max(1, num_batches // 5) == 0 or i == num_batches:
+                print(f"  [Train Step] Batch {i}/{num_batches} - Batch Loss: {loss.item():.4f}")
         return {"loss": total_loss / max(total_items, 1), **metric_state.compute()}
 
     def evaluate_epoch(self, loader) -> dict[str, float]:
@@ -118,14 +153,17 @@ class OptionAIRTrainer:
         total_loss = 0.0
         total_items = 0
         metric_state = _MetricState()
+        num_batches = len(loader)
         with torch.no_grad():
-            for batch in loader:
+            for i, batch in enumerate(loader, 1):
                 batch = _to_device(batch, self.device)
                 outputs = _model_outputs(self.model, batch)
                 loss = self._loss(outputs, batch["labels"], batch)
                 total_loss += float(loss.item()) * int(batch["question_ids"].size(0))
                 total_items += int(batch["question_ids"].size(0))
                 metric_state.update(outputs, batch["labels"], batch)
+                if i % max(1, num_batches // 5) == 0 or i == num_batches:
+                    print(f"  [Val Step] Batch {i}/{num_batches} - Batch Loss: {loss.item():.4f}")
         return {"loss": total_loss / max(total_items, 1), **metric_state.compute()}
 
     def _loss(self, outputs: dict[str, torch.Tensor], labels: dict[str, torch.Tensor], batch: dict[str, Any] | None = None) -> torch.Tensor:

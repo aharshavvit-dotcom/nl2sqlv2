@@ -14,7 +14,11 @@ DIMENSION_INTENTS = {"metric_by_dimension", "top_n_metric_by_dimension", "bottom
 SENSITIVE_MARKERS = ("email", "phone", "password", "token", "secret", "ssn", "address")
 
 
-class OptionAIRRepairer:
+class NeuralIRRepairer:
+    """Repairs neural IR predictions for better QueryIR quality.
+
+    Formerly named ``OptionAIRRepairer``.
+    """
     def __init__(self) -> None:
         self.join_planner = RuntimeJoinPlanner()
 
@@ -41,8 +45,8 @@ class OptionAIRRepairer:
         self._remove_sensitive_references(ir, repairs, warnings)
         self._repair_joins(ir, schema_context, repairs, warnings)
         ir.metadata.setdefault("debug", {})
-        ir.metadata["option_a_repairs_applied"] = repairs
-        ir.metadata["option_a_repair_warnings"] = warnings
+        ir.metadata["neural_ir_repairs_applied"] = repairs
+        ir.metadata["neural_ir_repair_warnings"] = warnings
         return {
             "query_ir": ir.model_dump(),
             "repairs_applied": repairs,
@@ -385,3 +389,8 @@ def _coerce(value: str) -> str | int | float:
 def _is_sensitive(column: str | None) -> bool:
     name = str(column or "").lower()
     return any(marker in name for marker in SENSITIVE_MARKERS)
+
+
+# Backward-compatible alias
+OptionAIRRepairer = NeuralIRRepairer
+"""Deprecated alias. Use ``NeuralIRRepairer``."""

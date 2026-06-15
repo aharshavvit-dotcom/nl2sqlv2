@@ -6,7 +6,11 @@ from statistics import mean
 from typing import Any
 
 
-class OptionAConfidenceCalibrator:
+class NeuralIRConfidenceCalibrator:
+    """Calibrates confidence scores for neural IR predictions.
+
+    Formerly named ``OptionAConfidenceCalibrator``.
+    """
     def __init__(self, payload: dict[str, Any] | None = None) -> None:
         self.payload = payload or {
             "version": 1,
@@ -116,3 +120,8 @@ def _missing_required_slot(validation_summary: dict[str, Any], prediction_debug:
 
 def _mean(values: list[float]) -> float:
     return sum(values) / max(len(values), 1)
+
+
+# Backward-compatible alias
+OptionAConfidenceCalibrator = NeuralIRConfidenceCalibrator
+"""Deprecated alias. Use ``NeuralIRConfidenceCalibrator``."""

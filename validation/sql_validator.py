@@ -28,7 +28,7 @@ BLOCKED_KEYWORDS = {
     "COPY",
     "UNLOAD",
 }
-SENSITIVE_MARKERS = ("email", "phone", "password", "token", "secret", "ssn", "address")
+SENSITIVE_MARKERS = ("email", "phone", "password", "token", "secret", "ssn", "address", "dob", "birth_date", "credit_card")
 DANGEROUS_FUNCTIONS = {"load_extension", "readfile", "writefile"}
 
 

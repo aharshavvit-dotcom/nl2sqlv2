@@ -61,6 +61,8 @@ class PredictionConfidenceCalculator:
             apply_cap("date_filter_missing", 0.69)
         if any("filter requested" in warning or "filter column" in warning for warning in warnings):
             apply_cap("filter_mapping_missing", 0.69)
+        if retrieval_conf < 0.30:
+            apply_cap("low_retrieval_similarity", 0.49)
 
         tier = "high" if confidence >= 0.80 else "medium" if confidence >= 0.60 else "low"
         final = round(max(0.0, min(1.0, confidence)), 4)

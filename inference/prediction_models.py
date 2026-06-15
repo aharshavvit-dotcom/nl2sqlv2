@@ -62,7 +62,9 @@ class JoinPlan(BaseModel):
 class PredictionResult(BaseModel):
     question: str
     normalized_question: str
-    source_model: Literal["option_c", "option_a", "hybrid"] = "option_c"
+    source_model: Literal["retrieval_ir", "neural_ir", "adaptive_router",
+                          # Backward-compatible values:
+                          "option_c", "option_a", "hybrid"] = "retrieval_ir"
     intent: str | None = None
     template_id: str | None = None
     slots: dict[str, Any] = Field(default_factory=dict)
@@ -79,10 +81,26 @@ class PredictionResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     clarification_questions: list[str] = Field(default_factory=list)
     router_decision: dict[str, Any] = Field(default_factory=dict)
-    option_a_version: str | None = None
-    option_c_result: dict[str, Any] = Field(default_factory=dict)
-    option_a_result: dict[str, Any] = Field(default_factory=dict)
+    neural_ir_version: str | None = None
+    retrieval_ir_result: dict[str, Any] = Field(default_factory=dict)
+    neural_ir_result: dict[str, Any] = Field(default_factory=dict)
     selected_query_ir: dict[str, Any] | None = None
     validation_summary: dict[str, Any] = Field(default_factory=dict)
     confidence_breakdown: dict[str, Any] = Field(default_factory=dict)
     debug: dict[str, Any] = Field(default_factory=dict)
+
+    # ---- Backward-compatible aliases ----
+    @property
+    def option_a_version(self) -> str | None:
+        """Deprecated alias. Use ``neural_ir_version``."""
+        return self.neural_ir_version
+
+    @property
+    def option_a_result(self) -> dict[str, Any]:
+        """Deprecated alias. Use ``neural_ir_result``."""
+        return self.neural_ir_result
+
+    @property
+    def option_c_result(self) -> dict[str, Any]:
+        """Deprecated alias. Use ``retrieval_ir_result``."""
+        return self.retrieval_ir_result

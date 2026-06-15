@@ -25,7 +25,11 @@ DIMENSION_INTENTS = {
 }
 
 
-class OptionCToIRConverter:
+class RetrievalIRConverter:
+    """Converts retrieval runtime state into QueryIR.
+
+    Formerly named ``OptionCToIRConverter``.
+    """
     def convert(
         self,
         question: str,
@@ -101,7 +105,7 @@ class OptionCToIRConverter:
                     expression="*",
                     alias="record_count",
                     source_slot="metric",
-                    confidence=OptionCToIRConverter._slot_confidence(slots, "metric", 0.9),
+                    confidence=RetrievalIRConverter._slot_confidence(slots, "metric", 0.9),
                 )
             ]
         if template_id not in METRIC_INTENTS:
@@ -110,7 +114,7 @@ class OptionCToIRConverter:
         column = mapping.get("metric_column")
         expression = mapping.get("metric_expression")
         aggregation = str(mapping.get("metric_aggregation") or "SUM").upper()
-        name = str(mapping.get("metric_name") or OptionCToIRConverter._slot_value(slots, "metric", "metric"))
+        name = str(mapping.get("metric_name") or RetrievalIRConverter._slot_value(slots, "metric", "metric"))
         if mapping.get("semantic_grain_risk"):
             warnings.append("semantic grain risk: product-level revenue needs item-level quantity/price columns")
         if not expression and table and column:
@@ -128,7 +132,7 @@ class OptionCToIRConverter:
                 expression=expression,
                 alias=alias,
                 source_slot="metric",
-                confidence=OptionCToIRConverter._slot_confidence(slots, "metric"),
+                confidence=RetrievalIRConverter._slot_confidence(slots, "metric"),
             )
         ]
 
@@ -141,7 +145,7 @@ class OptionCToIRConverter:
     ) -> list[IRDimension]:
         if template_id not in DIMENSION_INTENTS:
             return []
-        name = str(mapping.get("dimension_name") or OptionCToIRConverter._slot_value(slots, "dimension", "dimension"))
+        name = str(mapping.get("dimension_name") or RetrievalIRConverter._slot_value(slots, "dimension", "dimension"))
         table = mapping.get("dimension_table")
         column = mapping.get("dimension_column")
         if not table or not column:
@@ -155,7 +159,7 @@ class OptionCToIRConverter:
                 expression=f"{table}.{column}",
                 alias=name,
                 source_slot="dimension",
-                confidence=OptionCToIRConverter._slot_confidence(slots, "dimension"),
+                confidence=RetrievalIRConverter._slot_confidence(slots, "dimension"),
             )
         ]
 
@@ -170,7 +174,7 @@ class OptionCToIRConverter:
         date_column = mapping.get("date_column")
         date_filters: list[IRDateFilter] = []
         if template_id == "trend_by_date":
-            grain = str(OptionCToIRConverter._slot_value(slots, "date_grain", None) or OptionCToIRConverter._slot_value(slots, "dimension", None) or "month")
+            grain = str(RetrievalIRConverter._slot_value(slots, "date_grain", None) or RetrievalIRConverter._slot_value(slots, "dimension", None) or "month")
             if date_table and date_column:
                 date_filters.append(
                     IRDateFilter(
@@ -182,18 +186,18 @@ class OptionCToIRConverter:
                         end_date=None,
                         date_grain="year" if grain == "year" else "month",
                         raw_text=f"by {grain}",
-                        confidence=OptionCToIRConverter._slot_confidence(slots, "date_grain", 0.9),
+                        confidence=RetrievalIRConverter._slot_confidence(slots, "date_grain", 0.9),
                     )
                 )
             else:
                 warnings.append("date grain requested but no date column was mapped")
 
-        raw_filter = OptionCToIRConverter._slot_value(slots, "date_filter", None)
+        raw_filter = RetrievalIRConverter._slot_value(slots, "date_filter", None)
         if raw_filter:
             if not date_table or not date_column:
                 warnings.append("date filter requested but no date column was mapped")
                 return date_filters
-            start, end = OptionCToIRConverter._date_range(str(raw_filter))
+            start, end = RetrievalIRConverter._date_range(str(raw_filter))
             if start or end:
                 date_filters.append(
                     IRDateFilter(
@@ -205,15 +209,15 @@ class OptionCToIRConverter:
                         end_date=end.isoformat() if end else None,
                         date_grain=None,
                         raw_text=str(raw_filter),
-                        confidence=OptionCToIRConverter._slot_confidence(slots, "date_filter", 0.8),
+                        confidence=RetrievalIRConverter._slot_confidence(slots, "date_filter", 0.8),
                     )
                 )
         return date_filters
 
     @staticmethod
     def _filters(slots: dict[str, Any], mapping: dict[str, Any], warnings: list[str]) -> list[IRFilter]:
-        filter_name = OptionCToIRConverter._slot_value(slots, "filter_column", None)
-        filter_value = OptionCToIRConverter._slot_value(slots, "filter_value", None)
+        filter_name = RetrievalIRConverter._slot_value(slots, "filter_column", None)
+        filter_value = RetrievalIRConverter._slot_value(slots, "filter_value", None)
         if filter_name is None or filter_value is None:
             return []
         table = mapping.get("filter_table")
@@ -221,7 +225,7 @@ class OptionCToIRConverter:
         if not table or not column:
             warnings.append("filter requested but no filter column was mapped")
             return []
-        operator = str(OptionCToIRConverter._slot_value(slots, "filter_operator", "equals") or "equals")
+        operator = str(RetrievalIRConverter._slot_value(slots, "filter_operator", "equals") or "equals")
         if operator not in {"equals", "not_equals", "contains", "in", "not_in", "greater_than", "greater_equal", "less_than", "less_equal"}:
             operator = "equals"
         return [
@@ -234,7 +238,7 @@ class OptionCToIRConverter:
                 value=filter_value,
                 value_type="number" if isinstance(filter_value, (int, float)) else "string",
                 raw_text=str(filter_value),
-                confidence=OptionCToIRConverter._slot_confidence(slots, "filter_value", 0.8),
+                confidence=RetrievalIRConverter._slot_confidence(slots, "filter_value", 0.8),
             )
         ]
 
@@ -294,7 +298,7 @@ class OptionCToIRConverter:
         if template_id in {"top_n_metric_by_dimension", "metric_by_dimension"} and metrics:
             return [IROrderBy(expression=metrics[0].alias, alias=metrics[0].alias, direction="DESC", source="metric")]
         if template_id == "count_by_dimension":
-            direction = str(OptionCToIRConverter._slot_value(slots, "sort_direction", "DESC") or "DESC").upper()
+            direction = str(RetrievalIRConverter._slot_value(slots, "sort_direction", "DESC") or "DESC").upper()
             return [IROrderBy(expression="record_count", alias="record_count", direction="ASC" if direction == "ASC" else "DESC", source="count")]
         if dimensions:
             return [IROrderBy(expression=dimensions[0].alias, alias=dimensions[0].alias, direction="ASC", source="dimension")]
@@ -372,8 +376,8 @@ class OptionCToIRConverter:
 
         updated = dict(mapping)
         resolution = SemanticMetricResolver().resolve_metric_expression(
-            metric_name=str(updated.get("metric_name") or OptionCToIRConverter._slot_value(slots, "metric", "") or ""),
-            dimension_name=updated.get("dimension_name") or OptionCToIRConverter._slot_value(slots, "dimension", None),
+            metric_name=str(updated.get("metric_name") or RetrievalIRConverter._slot_value(slots, "metric", "") or ""),
+            dimension_name=updated.get("dimension_name") or RetrievalIRConverter._slot_value(slots, "dimension", None),
             schema_context=schema_context,
             current_metric_table=updated.get("metric_table"),
             current_metric_column=updated.get("metric_column"),
@@ -408,3 +412,8 @@ class OptionCToIRConverter:
         if hasattr(value, "dict"):
             return value.dict()
         return dict(value)  # type: ignore[arg-type]
+
+
+# Backward-compatible alias
+OptionCToIRConverter = RetrievalIRConverter
+"""Deprecated alias. Use ``RetrievalIRConverter``."""

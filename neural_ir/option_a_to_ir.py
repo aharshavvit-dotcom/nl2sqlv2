@@ -5,7 +5,7 @@ from typing import Any
 from inference.prediction_models import SchemaMapping
 from inference.runtime_join_planner import RuntimeJoinPlanner
 from inference.runtime_schema_context import RuntimeSchemaContext
-from ir.option_c_to_ir import OptionCToIRConverter
+from ir.option_c_to_ir import RetrievalIRConverter
 from ir.query_ir_models import QueryIR
 
 from .schema_linearizer import _schema_dict_from_serialized
@@ -27,10 +27,14 @@ DIMENSION_INTENTS = {
 }
 
 
-class OptionAToIRConverter:
+class NeuralIRToIRConverter:
+    """Converts neural IR decoded predictions into QueryIR.
+
+    Formerly named ``OptionAToIRConverter``.
+    """
     def __init__(self) -> None:
         self.join_planner = RuntimeJoinPlanner()
-        self.option_c_converter = OptionCToIRConverter()
+        self.retrieval_ir_converter = RetrievalIRConverter()
 
     def convert(
         self,
@@ -77,7 +81,7 @@ class OptionAToIRConverter:
             mapping.base_table = base_table
         join_plan = self.join_planner.plan_joins(schema_context, base_table, required_tables)
 
-        query_ir = self.option_c_converter.convert(
+        query_ir = self.retrieval_ir_converter.convert(
             question=question,
             normalized_question=" ".join(str(question).lower().split()),
             intent=intent,
@@ -88,7 +92,7 @@ class OptionAToIRConverter:
             validation_context={"schema_context": schema_context.serialize_for_debug()},
             dialect=schema_context.dialect,
         )
-        query_ir.metadata["source_model"] = "option_a"
+        query_ir.metadata["source_model"] = "neural_ir"
         return query_ir
 
     def _apply_metric_expression(
@@ -264,3 +268,8 @@ def _coerce_value(value: str) -> str | int | float:
         return float(value)
     except ValueError:
         return value
+
+
+# Backward-compatible alias
+OptionAToIRConverter = NeuralIRToIRConverter
+"""Deprecated alias. Use ``NeuralIRToIRConverter``."""

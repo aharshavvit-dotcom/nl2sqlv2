@@ -1,0 +1,36 @@
+{
+  "total_examples": 5000,
+  "successful_examples": 3075,
+  "unsupported_examples": 1925,
+  "success_rate": 0.615,
+  "conversion_success_rate": 0.615,
+  "by_dataset": {
+    "wikisql": 3075
+  },
+  "by_intent": {
+    "simple_filter": 3071,
+    "show_records": 4
+  },
+  "split_counts": {
+    "train": 2460,
+    "validation": 307,
+    "test": 308
+  },
+  "by_split": {
+    "train": 2460,
+    "validation": 307,
+    "test": 308
+  },
+  "unsupported_reasons": {
+    "roundtrip_validation_failed": 1277,
+    "sql_validation_failed": 134,
+    "unsupported_expression": 441,
+    "ir_validation_failed": 73
+  },
+  "by_unsupported_reason": {
+    "roundtrip_validation_failed": 1277,
+    "sql_validation_failed": 134,
+    "unsupported_expression": 441,
+    "ir_validation_failed": 73
+  }
+}

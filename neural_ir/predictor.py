@@ -11,16 +11,20 @@ from ir.ir_validator import IRValidator
 from validation.sql_validator import SQLValidator
 
 from .candidate_builder import SchemaCandidateBuilder, build_candidate_masks, schema_link_score_vector
-from .confidence_calibrator import OptionAConfidenceCalibrator
-from .ir_repair import OptionAIRRepairer
+from .confidence_calibrator import NeuralIRConfidenceCalibrator
+from .ir_repair import NeuralIRRepairer
 from .model_registry import load_model_bundle
-from .option_a_to_ir import OptionAToIRConverter
+from .option_a_to_ir import NeuralIRToIRConverter
 from .schema_linearizer import SchemaLinearizer, extract_schema_items
 from .schema_linker import SchemaLinker
 from .tokenizer import tokenize
 
 
-class OptionAIRPredictor:
+class NeuralIRPredictor:
+    """Predicts QueryIR using the neural model.
+
+    Formerly named ``OptionAIRPredictor``.
+    """
     def __init__(self, model_dir: str):
         self.model_dir = Path(model_dir)
         bundle = load_model_bundle(self.model_dir)
@@ -32,9 +36,9 @@ class OptionAIRPredictor:
         self.linearizer = SchemaLinearizer()
         self.candidate_builder = SchemaCandidateBuilder()
         self.schema_linker = SchemaLinker()
-        self.converter = OptionAToIRConverter()
-        self.repairer = OptionAIRRepairer()
-        self.calibrator = OptionAConfidenceCalibrator.load(str(self.model_dir / "option_a_calibration.json"))
+        self.converter = NeuralIRToIRConverter()
+        self.repairer = NeuralIRRepairer()
+        self.calibrator = NeuralIRConfidenceCalibrator.load(str(self.model_dir / "option_a_calibration.json"))
         self.ir_validator = IRValidator()
         self.sql_renderer = IRToSQLRenderer()
         self.sql_validator = SQLValidator()
@@ -135,8 +139,8 @@ class OptionAIRPredictor:
             warnings.append(str(exc))
             confidence = min(confidence, 0.10)
         return {
-            "source_model": "option_a",
-            "option_a_version": "v2" if self.config.get("model_version") == "option_a_v2" else str(self.config.get("model_version") or "v1"),
+            "source_model": "neural_ir",
+            "neural_ir_version": "v2" if self.config.get("model_version") == "option_a_v2" else str(self.config.get("model_version") or "v1"),
             "query_ir": query_ir_payload,
             "repaired_query_ir": repaired_query_ir_payload,
             "repairs_applied": repair_payload.get("repairs_applied", []),
@@ -245,3 +249,8 @@ def _attention_debug(outputs: dict[str, Any]) -> dict[str, Any]:
         weights = outputs["attention_weights"].detach().cpu()
         payload["shape"] = list(weights.shape)
     return payload
+
+
+# Backward-compatible alias
+OptionAIRPredictor = NeuralIRPredictor
+"""Deprecated alias. Use ``NeuralIRPredictor``."""

@@ -3,7 +3,7 @@ from __future__ import annotations
 from .ir_to_sql_renderer import IRToSQLRenderer
 from .ir_roundtrip_validator import IRRoundtripValidator
 from .ir_validator import IRValidator
-from .option_c_to_ir import OptionCToIRConverter
+from .option_c_to_ir import RetrievalIRConverter, OptionCToIRConverter
 from .semantic_metric_resolver import SemanticMetricResolver
 from .sql_to_ir_converter import SQLToIRConverter
 from .sql_to_ir_errors import SQLToIRError, UnsupportedSQLPattern
@@ -33,7 +33,8 @@ __all__ = [
     "IRValidationIssue",
     "IRValidationResult",
     "IRValidator",
-    "OptionCToIRConverter",
+    "RetrievalIRConverter",
+    "OptionCToIRConverter",  # Deprecated alias
     "QueryIR",
     "SemanticMetricResolver",
     "SQLToIRConverter",

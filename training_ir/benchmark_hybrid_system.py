@@ -44,12 +44,24 @@ def _load_jsonl(path: Path) -> list[dict]:
     return rows
 
 
+def _default_model_dir() -> Path:
+    p = ROOT / "artifacts" / "neural_ir_model"
+    if p.exists():
+        return p
+    p = ROOT / "artifacts" / "option_a_ir_model_v2"
+    if p.exists():
+        return p
+    return ROOT / "artifacts" / "option_a_ir_model"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark Option C, Option A V2, and the hybrid router.")
-    parser.add_argument("--eval-cases", type=Path, required=True)
-    parser.add_argument("--db", type=Path, default=None)
-    parser.add_argument("--option-a-model-dir", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    default_model = _default_model_dir()
+    
+    parser.add_argument("--eval-cases", type=Path, default=ROOT / "evaluation" / "adaptive_router_benchmark_cases.jsonl")
+    parser.add_argument("--db", type=Path, default=ROOT / "data" / "sample_retail.db")
+    parser.add_argument("--option-a-model-dir", type=Path, default=default_model)
+    parser.add_argument("--output", type=Path, default=ROOT / "artifacts" / "adaptive_router_benchmark_report.json")
     return parser.parse_args()
 
 

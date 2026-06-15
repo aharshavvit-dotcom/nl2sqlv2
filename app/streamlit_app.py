@@ -13,10 +13,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from execution.query_executor import execute_select
-from app.safe_preview import build_safe_preview_sql
+from db.connection_config import DatabaseConnectionConfig, safe_config_summary
+from db.schema_reader import read_database_schema, schema_dict_to_graph, schema_summary
+from execution.query_executor import execute_select, execute_query
 from nl2sql_v1.feedback import append_feedback
-from nl2sql_v1.schema import read_sqlite_schema
 from retriever.retrieval_nl2sql_model import RetrievalNL2SQLModel
 from scripts.verify_datasets import verify_all
 from training.train_retriever_from_datasets import train_from_datasets
@@ -27,9 +27,15 @@ EXAMPLES_PATH = ROOT / "training_data" / "examples.jsonl"
 TEMPLATES_PATH = ROOT / "data" / "templates.yaml"
 SYNONYMS_PATH = ROOT / "data" / "synonyms.yaml"
 MODEL_PATH = ROOT / "models" / "tfidf_retriever.joblib"
-ARTIFACT_DIR = ROOT / "artifacts" / "option_c_model"
-OPTION_A_ARTIFACT_DIR = ROOT / "artifacts" / "option_a_ir_model"
-OPTION_A_V2_ARTIFACT_DIR = ROOT / "artifacts" / "option_a_ir_model_v2"
+
+# Resolve artifact dirs with fallback to old names
+def _resolve_artifact_dir(new_name: str, old_name: str) -> Path:
+    new_path = ROOT / "artifacts" / new_name
+    return new_path if new_path.exists() else ROOT / "artifacts" / old_name
+
+ARTIFACT_DIR = _resolve_artifact_dir("retrieval_ir_model", "option_c_model")
+NEURAL_IR_ARTIFACT_DIR = _resolve_artifact_dir("neural_ir_model", "option_a_ir_model")
+NEURAL_IR_V2_ARTIFACT_DIR = _resolve_artifact_dir("neural_ir_model", "option_a_ir_model_v2")
 FEEDBACK_PATH = ROOT / "feedback" / "feedback.jsonl"
 EVALUATION_DIR = ROOT / "evaluation"
 GOLDEN_RESULTS_PATH = EVALUATION_DIR / "golden_runtime_report.json"
@@ -49,33 +55,22 @@ def _artifact_ready() -> bool:
     )
 
 
-def _option_a_artifact_dir() -> Path:
-    if _option_a_ready(OPTION_A_V2_ARTIFACT_DIR):
-        return OPTION_A_V2_ARTIFACT_DIR
-    if _option_a_ready(OPTION_A_ARTIFACT_DIR):
-        return OPTION_A_ARTIFACT_DIR
-    return OPTION_A_V2_ARTIFACT_DIR
+def _neural_ir_artifact_dir() -> Path:
+    if _neural_ir_ready(NEURAL_IR_V2_ARTIFACT_DIR):
+        return NEURAL_IR_V2_ARTIFACT_DIR
+    if _neural_ir_ready(NEURAL_IR_ARTIFACT_DIR):
+        return NEURAL_IR_ARTIFACT_DIR
+    return NEURAL_IR_V2_ARTIFACT_DIR
 
 
-def _option_a_ready(path: Path | None = None) -> bool:
-    artifact_dir = path or _option_a_artifact_dir()
+def _neural_ir_ready(path: Path | None = None) -> bool:
+    artifact_dir = path or _neural_ir_artifact_dir()
     return (
         (artifact_dir / "model.pt").exists()
         and (artifact_dir / "vocab.json").exists()
         and (artifact_dir / "label_maps.json").exists()
         and (artifact_dir / "config.yaml").exists()
     )
-
-
-def _option_a_version() -> str:
-    if _option_a_ready(OPTION_A_V2_ARTIFACT_DIR):
-        return "v2"
-    if not _option_a_ready(OPTION_A_ARTIFACT_DIR):
-        return "none"
-    config_text = (OPTION_A_ARTIFACT_DIR / "config.yaml").read_text(encoding="utf-8")
-    if "v1_5" in config_text or "v1.5" in config_text:
-        return "v1.5"
-    return "v1"
 
 
 def _load_model() -> RetrievalNL2SQLModel:
@@ -85,7 +80,7 @@ def _load_model() -> RetrievalNL2SQLModel:
         sample_examples_path=EXAMPLES_PATH,
         templates_path=TEMPLATES_PATH,
         synonyms_path=SYNONYMS_PATH,
-        option_a_model_dir=_option_a_artifact_dir() if _option_a_ready() else None,
+        neural_ir_model_dir=_neural_ir_artifact_dir() if _neural_ir_ready() else None,
     )
 
 
@@ -105,49 +100,123 @@ def _dataset_missing_messages(selected: list[str]) -> list[str]:
     return messages
 
 
-st.set_page_config(page_title="Local QueryIR NL-to-SQL", layout="wide")
-st.title("Local QueryIR NL-to-SQL")
+# ───────────────────────── Page Config ─────────────────────────
+st.set_page_config(page_title="QueryIR NL-to-SQL", layout="wide")
+st.title("QueryIR NL-to-SQL")
 
-with st.expander("Model Status", expanded=True):
+# ───────────────────────── Database Connection ─────────────────────────
+with st.expander("Database Connection", expanded=True):
+    db_type = st.radio("Database Type", ["SQLite", "PostgreSQL"], horizontal=True)
+
+    if db_type == "SQLite":
+        db_path_text = st.text_input("SQLite database path", value=str(DEFAULT_DB))
+        db_config = DatabaseConnectionConfig(db_type="sqlite", sqlite_path=db_path_text)
+        connect_clicked = st.button("Connect", key="connect_sqlite")
+    else:
+        col_h, col_p = st.columns(2)
+        pg_host = col_h.text_input("Host", value="localhost")
+        pg_port = col_p.number_input("Port", value=5432, min_value=1, max_value=65535)
+        col_d, col_u = st.columns(2)
+        pg_database = col_d.text_input("Database")
+        pg_username = col_u.text_input("Username")
+        pg_password = st.text_input("Password", type="password")
+        col_ssl, col_schema = st.columns(2)
+        pg_sslmode = col_ssl.selectbox("SSL Mode", ["prefer", "disable", "require"])
+        pg_schema = col_schema.text_input("Schema", value="public")
+        db_config = DatabaseConnectionConfig(
+            db_type="postgres",
+            host=pg_host,
+            port=int(pg_port),
+            database=pg_database,
+            username=pg_username,
+            password=pg_password,
+            sslmode=pg_sslmode,
+            schema_name=pg_schema,
+        )
+        connect_clicked = st.button("Connect", key="connect_pg")
+
+    if connect_clicked:
+        if db_config.db_type == "sqlite":
+            path = Path(db_config.sqlite_path or "").expanduser()
+            if not path.exists():
+                st.error(f"Database not found: {path}")
+                st.stop()
+        # Test connection
+        from db.sqlite_connector import SQLiteConnector
+        if db_config.db_type == "sqlite":
+            connector = SQLiteConnector(db_config)
+        else:
+            from db.postgres_connector import PostgresConnector
+            connector = PostgresConnector(db_config)
+
+        success, message = connector.test_connection()
+        if success:
+            st.session_state["db_config"] = db_config
+            st.session_state["db_connected"] = True
+            st.success(message)
+        else:
+            st.error(message)
+            st.stop()
+    elif "db_config" not in st.session_state:
+        # Auto-connect to default SQLite if it exists
+        if DEFAULT_DB.exists():
+            st.session_state["db_config"] = DatabaseConnectionConfig(db_type="sqlite", sqlite_path=str(DEFAULT_DB))
+            st.session_state["db_connected"] = True
+        else:
+            st.info("Connect a database to begin.")
+            st.stop()
+
+    # Show safe connection summary
+    if "db_config" in st.session_state:
+        summary = safe_config_summary(st.session_state["db_config"])
+        st.caption(f"Connected: {summary.get('db_type')} — {summary.get('sqlite_path') or summary.get('database', '')}")
+
+# ───────────────────────── Schema ─────────────────────────
+active_config: DatabaseConnectionConfig = st.session_state.get("db_config")
+if active_config is None:
+    st.stop()
+
+try:
+    schema_dict = read_database_schema(active_config)
+    schema = schema_dict_to_graph(schema_dict)
+except Exception as exc:
+    st.error(f"Failed to read schema: {exc}")
+    st.stop()
+
+with st.expander("Schema Summary", expanded=True):
+    summary = schema_summary(schema_dict)
+    cols = st.columns(5)
+    cols[0].metric("Dialect", summary["dialect"])
+    cols[1].metric("Database", summary.get("database") or "—")
+    cols[2].metric("Tables", summary["table_count"])
+    cols[3].metric("Columns", summary["column_count"])
+    cols[4].metric("Relationships", summary["relationship_count"])
+
+    if st.checkbox("Show table details"):
+        for tbl_name, tbl_info in summary["tables"].items():
+            pk_text = ", ".join(tbl_info["primary_keys"]) if tbl_info["primary_keys"] else "—"
+            st.markdown(f"**{tbl_name}**: {tbl_info['column_count']} columns, PK: {pk_text}, FK: {tbl_info['foreign_key_count']}")
+
+# ───────────────────────── Model Status ─────────────────────────
+with st.expander("Model Status", expanded=False):
     evaluation_path = ARTIFACT_DIR / "evaluation_report.json"
     training_report = _load_json(ARTIFACT_DIR / "training_report.json")
     evaluation_report = _load_json(evaluation_path)
     dataset_stats = _load_json(ARTIFACT_DIR / "dataset_stats.json")
-    option_c_ready = _artifact_ready()
-    option_a_ready = _option_a_ready()
-    option_a_version = _option_a_version()
-    status_cols = st.columns(6)
-    status_cols[0].metric("Option C artifact", "large" if option_c_ready else "sample")
+    retrieval_ir_ready = _artifact_ready()
+    neural_ir_ready = _neural_ir_ready()
+    status_cols = st.columns(4)
+    status_cols[0].metric("Retrieval QueryIR Model", "trained" if retrieval_ir_ready else "sample")
     status_cols[1].metric("Training examples", training_report.get("supported_examples", "sample"))
-    status_cols[2].metric("Unsupported", dataset_stats.get("unsupported_examples", 0))
     if evaluation_path.exists():
-        status_cols[3].metric("Top-5 accuracy", f"{evaluation_report.get('top_5_template_accuracy', 0):.3f}")
+        status_cols[2].metric("Top-5 accuracy", f"{evaluation_report.get('top_5_template_accuracy', 0):.3f}")
     else:
-        status_cols[3].metric("Top-5 accuracy", "Not measured")
-        st.warning("Accuracy not yet measured — run evaluation after training.")
-    status_cols[4].metric("Option A version", option_a_version)
-    status_cols[5].metric("Hybrid router", "calibrated" if (_option_a_artifact_dir() / "hybrid_calibration.json").exists() else ("available" if option_a_ready else "disabled"))
-    st.caption(f"Hybrid routing: {'enabled' if option_a_ready else 'disabled until Option A is trained'}")
-    st.caption(f"Option A artifact path: {_option_a_artifact_dir()}")
-    st.caption(f"Artifact path: {ARTIFACT_DIR}")
-    summary_rows = [
-        {"item": "datasets used", "value": ", ".join(training_report.get("datasets_used", [])) or "sample"},
-        {"item": "train examples", "value": training_report.get("train_examples", "sample")},
-        {"item": "validation examples", "value": training_report.get("validation_examples", "sample")},
-        {"item": "test examples", "value": training_report.get("test_examples", "sample")},
-        {"item": "unsupported examples", "value": dataset_stats.get("unsupported_examples", 0)},
-        {"item": "top-1 accuracy", "value": f"{evaluation_report['top_1_template_accuracy']:.3f}" if "top_1_template_accuracy" in evaluation_report else "not measured"},
-        {"item": "top-5 accuracy", "value": f"{evaluation_report['top_5_template_accuracy']:.3f}" if "top_5_template_accuracy" in evaluation_report else "not measured"},
-        {"item": "training date", "value": training_report.get("training_date", "not trained")},
-    ]
-    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
-    by_template = training_report.get("by_template") or {}
-    st.dataframe(
-        pd.DataFrame([{"template": key, "examples": value} for key, value in sorted(by_template.items())]),
-        use_container_width=True,
-        hide_index=True,
-    )
+        status_cols[2].metric("Top-5 accuracy", "Not measured")
+    router_status = "calibrated" if (_neural_ir_artifact_dir() / "hybrid_calibration.json").exists() else ("available" if neural_ir_ready else "disabled")
+    status_cols[3].metric("Adaptive QueryIR Router", router_status)
+    st.caption(f"Neural QueryIR Model: {'ready' if neural_ir_ready else 'not trained'}")
 
+# ───────────────────────── Dataset Training ─────────────────────────
 with st.expander("Dataset Training", expanded=False):
     c1, c2, c3 = st.columns(3)
     use_wikisql = c1.checkbox("WikiSQL", value=True)
@@ -181,6 +250,7 @@ with st.expander("Dataset Training", expanded=False):
                 st.success("Training complete.")
                 st.json(report)
 
+# ───────────────────────── Testing ─────────────────────────
 with st.expander("Testing", expanded=False):
     if st.button("Run Golden Tests"):
         with st.spinner("Running golden tests..."):
@@ -202,36 +272,23 @@ with st.expander("Testing", expanded=False):
     golden = _golden_results()
     if golden:
         st.metric("Golden accuracy", f"{golden.get('accuracy', 0):.1%}")
-        st.dataframe(pd.DataFrame(golden.get("case_results", [])), use_container_width=True, hide_index=True)
     else:
         st.caption("No golden test run yet.")
 
-db_path_text = st.text_input("SQLite database path", value=str(DEFAULT_DB))
-db_path = Path(db_path_text).expanduser()
-
+# ───────────────────────── Query ─────────────────────────
 left, right = st.columns([0.55, 0.45], vertical_alignment="top")
 
 with left:
     question = st.text_input("Ask a question", value="Top 5 customers by sales")
-    use_option_a_fallback = st.checkbox(
-        "Use Option A fallback when Option C confidence is low",
-        value=_option_a_ready(),
-        disabled=not _option_a_ready(),
+    use_neural_fallback = st.checkbox(
+        "Use Neural fallback when retrieval confidence is low",
+        value=_neural_ir_ready(),
+        disabled=not _neural_ir_ready(),
     )
     generate = st.button("Generate SQL", type="primary")
 
 with right:
     st.caption("Local only: TF-IDF retrieval, QueryIR rendering, RapidFuzz matching, SQLGlot validation.")
-
-if not db_path.exists():
-    st.warning(f"Database not found: {db_path}")
-    st.stop()
-
-schema = read_sqlite_schema(db_path)
-with st.expander("Schema", expanded=True):
-    for table in schema.tables.values():
-        cols = ", ".join(f"{col.name} ({col.type})" for col in table.columns.values())
-        st.markdown(f"**{table.name}**: {cols}")
 
 if generate and question.strip():
     try:
@@ -243,7 +300,7 @@ if generate and question.strip():
     if model.artifact_dir is None:
         st.info("Using sample model trained on hand-written examples. Train from datasets for better accuracy.")
     try:
-        result = model.predict(question, schema, use_option_a_fallback=use_option_a_fallback)
+        result = model.predict(question, schema, use_neural_ir_fallback=use_neural_fallback)
     except Exception as exc:
         st.error(f"Could not generate SQL for this schema: {exc}")
         st.stop()
@@ -268,20 +325,26 @@ if generate and question.strip():
     )
 
     router_decision = result.router_decision or result.debug.get("router_decision") or {}
-    option_a_result = result.option_a_result or result.debug.get("option_a_result") or {}
+    neural_ir_raw = result.neural_ir_result or result.debug.get("neural_ir_result") or {}
 
     st.subheader("Confidence")
-    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    source_label = {
+        "retrieval_ir": "Retrieval QueryIR", "neural_ir": "Neural QueryIR",
+        "adaptive_router": "Adaptive Router",
+        "option_c": "Retrieval QueryIR", "option_a": "Neural QueryIR", "hybrid": "Adaptive Router",
+    }
     c1.metric("Confidence", f"{result.confidence:.3f}")
     c2.metric("Tier", result.confidence_tier)
     c3.metric("Intent", result.intent or "unknown")
-    c4.metric("Source model used", {"option_c": "Option C", "option_a": "Option A", "hybrid": "Hybrid"}.get(result.source_model, result.source_model))
-    c5.metric("Option C confidence", f"{float(router_decision.get('option_c_confidence', result.confidence) or 0):.3f}")
-    c6.metric("Option A calibrated", f"{float(router_decision.get('option_a_confidence', option_a_result.get('calibrated_confidence', 0)) or 0):.3f}")
-    c7.metric("Option A version", result.option_a_version or option_a_result.get("option_a_version") or _option_a_version())
+    c4.metric("Source model", source_label.get(result.source_model, result.source_model))
+    c5.metric("Retrieval QueryIR Confidence",
+              f"{float(router_decision.get('retrieval_ir_confidence', router_decision.get('option_c_confidence', result.confidence)) or 0):.3f}")
+    c6.metric("Neural QueryIR Confidence",
+              f"{float(router_decision.get('neural_ir_confidence', router_decision.get('option_a_confidence', neural_ir_raw.get('calibrated_confidence', 0))) or 0):.3f}")
     if router_decision:
         st.caption(f"Router decision: {router_decision.get('selected')} ({router_decision.get('reason')})")
-    repairs_applied = option_a_result.get("repairs_applied") or []
+    repairs_applied = neural_ir_raw.get("repairs_applied") or []
     if repairs_applied:
         st.info("Repairs applied: " + ", ".join(str(item) for item in repairs_applied))
 
@@ -349,10 +412,10 @@ if generate and question.strip():
             st.info(clarification)
 
     sql_is_valid = result.validation.get("is_valid", result.validation.get("ok", False))
-    run_query = st.button("Run query", disabled=not sql_is_valid)
+    run_query = st.button("Run validated query", disabled=not sql_is_valid)
     if run_query and sql_is_valid and result.sql:
         try:
-            df = execute_select(db_path, result.sql, validation_result=result.validation)
+            df = execute_query(active_config, result.sql, validation_result=result.validation)
             st.subheader("Result DataFrame")
             st.dataframe(df, use_container_width=True)
         except Exception as exc:  # pragma: no cover - UI guard
@@ -369,7 +432,7 @@ if generate and question.strip():
                 "sql": result.sql,
                 "rating": rating,
                 "notes": notes,
-                "db_path": str(db_path),
+                "db_type": active_config.db_type,
                 "retrieved_examples": [item.get("example_id") for item in result.retrieved_candidates],
             },
         )
@@ -381,52 +444,34 @@ if generate and question.strip():
         st.subheader("IR validation JSON")
         st.json(result.ir_validation or {})
         st.subheader("Router decision")
-        st.json(router_decision or {"source_model": result.source_model, "option_a_tried": "option_a_result" in result.debug})
+        st.json(router_decision or {"source_model": result.source_model})
         st.subheader("Confidence comparison")
         st.json(
             {
-                "option_c_confidence": router_decision.get("option_c_confidence"),
-                "option_a_confidence": router_decision.get("option_a_confidence"),
+                "retrieval_ir_confidence": router_decision.get("retrieval_ir_confidence", router_decision.get("option_c_confidence")),
+                "neural_ir_confidence": router_decision.get("neural_ir_confidence", router_decision.get("option_a_confidence")),
                 "selected": router_decision.get("selected"),
             }
         )
-        st.subheader("Validation comparison")
-        st.json(
-            {
-                "option_c_valid": router_decision.get("option_c_valid"),
-                "option_a_valid": router_decision.get("option_a_valid"),
-            }
-        )
-        if result.debug.get("option_c_result"):
-            st.subheader("Option C result")
-            st.json(result.debug.get("option_c_result"))
-        if result.debug.get("option_a_result"):
-            st.subheader("Option A result")
-            st.json(result.debug.get("option_a_result"))
-            option_a_debug = result.debug.get("option_a_result", {}).get("debug", {})
+        if result.debug.get("retrieval_ir_result") or result.debug.get("option_c_result"):
+            st.subheader("Retrieval QueryIR Result")
+            st.json(result.debug.get("retrieval_ir_result") or result.debug.get("option_c_result"))
+        if result.debug.get("neural_ir_result") or result.debug.get("option_a_result"):
+            st.subheader("Neural QueryIR Result")
+            neural_debug = result.debug.get("neural_ir_result") or result.debug.get("option_a_result", {})
+            st.json(neural_debug)
+            debug_inner = neural_debug.get("debug", {}) if isinstance(neural_debug, dict) else {}
             st.subheader("Schema-link scores")
-            st.json(option_a_debug.get("schema_linking", {}))
+            st.json(debug_inner.get("schema_linking", {}))
             st.subheader("Candidate pointer scores")
-            st.json(option_a_debug.get("candidate_scores", {}))
+            st.json(debug_inner.get("candidate_scores", {}))
             st.subheader("Raw decoded labels")
-            st.json(option_a_debug.get("decoded_prediction", {}))
+            st.json(debug_inner.get("decoded_prediction", {}))
             st.subheader("Repaired QueryIR")
-            st.json(result.debug.get("option_a_result", {}).get("repaired_query_ir", {}))
+            st.json(neural_debug.get("repaired_query_ir", {}) if isinstance(neural_debug, dict) else {})
             st.subheader("Confidence calibration")
-            st.json(option_a_debug.get("calibration", {}))
+            st.json(debug_inner.get("calibration", {}))
         st.subheader("PredictionResult JSON")
         st.json(result.model_dump())
 elif not generate:
-    st.info("Connect a SQLite database, ask a question, then generate SQL.")
-
-if st.checkbox("Show sample table preview"):
-    table_name = st.selectbox("Table", sorted(schema.tables))
-    if table_name not in schema.tables:
-        st.error("Selected table is not present in the connected schema.")
-    else:
-        preview_sql = build_safe_preview_sql(table_name, schema)
-        if preview_sql is None:
-            st.info("No safe preview columns available for this table.")
-        else:
-            df = execute_select(db_path, preview_sql)
-            st.dataframe(pd.DataFrame(df), use_container_width=True)
+    st.info("Connect a database, ask a question, then generate SQL.")

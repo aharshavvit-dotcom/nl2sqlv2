@@ -23,25 +23,52 @@ from .synonym_loader import load_metric_dimension_maps, normalize_section
 from .template_selector import TemplateSelector
 
 
+# --- Internal name mapping helpers ---
+_SOURCE_MODEL_MAP = {
+    "option_c": "retrieval_ir",
+    "option_a": "neural_ir",
+    "hybrid": "adaptive_router",
+}
+
+def _normalize_source(name: str) -> str:
+    return _SOURCE_MODEL_MAP.get(name, name)
+
+
 class PredictionOrchestrator:
     def __init__(
         self,
         top_k: int = 10,
         max_limit: int = 1000,
+        neural_ir_model_dir: str | Path | None = None,
+        use_neural_ir_fallback: bool = True,
+        neural_ir_threshold: float = 0.80,
+        # Backward-compatible aliases
         option_a_model_dir: str | Path | None = None,
-        use_option_a_fallback: bool = True,
-        option_a_threshold: float = 0.80,
+        use_option_a_fallback: bool | None = None,
+        option_a_threshold: float | None = None,
     ):
         self.top_k = top_k
         self.max_limit = max_limit
         root = Path(__file__).resolve().parents[1]
-        self._explicit_option_a_model_dir = option_a_model_dir is not None
-        self.option_a_v2_model_dir = root / "artifacts" / "option_a_ir_model_v2"
-        self.option_a_v1_model_dir = root / "artifacts" / "option_a_ir_model"
-        self.option_a_model_dir = Path(option_a_model_dir) if option_a_model_dir else self._default_option_a_model_dir()
-        self.hybrid_calibration = load_hybrid_calibration(self.option_a_model_dir / "hybrid_calibration.json")
-        self.use_option_a_fallback = use_option_a_fallback
-        self.option_a_threshold = float(self.hybrid_calibration.get("option_c_high_confidence_threshold", option_a_threshold))
+
+        # Accept old param names for backward compat
+        _model_dir = neural_ir_model_dir or option_a_model_dir
+        _use_fallback = use_neural_ir_fallback if use_option_a_fallback is None else use_option_a_fallback
+        _threshold = neural_ir_threshold if option_a_threshold is None else option_a_threshold
+
+        self._explicit_neural_ir_model_dir = _model_dir is not None
+        self.neural_ir_v2_model_dir = root / "artifacts" / "neural_ir_model"
+        self.neural_ir_v1_model_dir = root / "artifacts" / "neural_ir_model"
+        # Fallback to old folder names if new ones don't exist
+        if not self.neural_ir_v2_model_dir.exists():
+            self.neural_ir_v2_model_dir = root / "artifacts" / "option_a_ir_model_v2"
+        if not self.neural_ir_v1_model_dir.exists():
+            self.neural_ir_v1_model_dir = root / "artifacts" / "option_a_ir_model"
+        self.neural_ir_model_dir = Path(_model_dir) if _model_dir else self._default_neural_ir_model_dir()
+        self.hybrid_calibration = load_hybrid_calibration(self.neural_ir_model_dir / "hybrid_calibration.json")
+        self.use_neural_ir_fallback = _use_fallback
+        self.neural_ir_threshold = float(self.hybrid_calibration.get("retrieval_ir_high_confidence_threshold",
+                                        self.hybrid_calibration.get("option_c_high_confidence_threshold", _threshold)))
         self.generator = CandidateGenerator()
         self.reranker = CandidateReranker()
         self.selector = TemplateSelector()
@@ -55,6 +82,22 @@ class PredictionOrchestrator:
         self.sql_validator = SQLValidator()
         self.confidence = PredictionConfidenceCalculator()
 
+    # Backward-compatible properties
+    @property
+    def option_a_model_dir(self) -> Path:
+        """Deprecated alias. Use ``neural_ir_model_dir``."""
+        return self.neural_ir_model_dir
+
+    @property
+    def use_option_a_fallback(self) -> bool:
+        """Deprecated alias. Use ``use_neural_ir_fallback``."""
+        return self.use_neural_ir_fallback
+
+    @property
+    def option_a_threshold(self) -> float:
+        """Deprecated alias. Use ``neural_ir_threshold``."""
+        return self.neural_ir_threshold
+
     def predict(
         self,
         question: str,
@@ -64,6 +107,7 @@ class PredictionOrchestrator:
         metric_synonyms: dict[str, Any] | None = None,
         dimension_synonyms: dict[str, Any] | None = None,
         validator: Any | None = None,
+        use_neural_ir_fallback: bool | None = None,
         use_option_a_fallback: bool | None = None,
     ) -> PredictionResult:
         normalized_question = self._normalize_question(question)
@@ -131,10 +175,10 @@ class PredictionOrchestrator:
         ]
         clarification = self._clarification_questions(confidence["confidence"], selected_template.get("template_id"), slots)
 
-        option_c_result = PredictionResult(
+        retrieval_ir_result = PredictionResult(
             question=question,
             normalized_question=normalized_question,
-            source_model="option_c",
+            source_model="retrieval_ir",
             intent=selected_template.get("intent"),
             template_id=selected_template.get("template_id"),
             slots=slots,
@@ -161,15 +205,18 @@ class PredictionOrchestrator:
                 "confidence_components": confidence["confidence_breakdown"],
             },
         )
-        return self._maybe_option_a_fallback(
-            option_c_result=option_c_result,
+
+        # Resolve fallback flag: accept both old and new param name
+        _fallback = use_neural_ir_fallback if use_neural_ir_fallback is not None else use_option_a_fallback
+        return self._maybe_neural_ir_fallback(
+            retrieval_ir_result=retrieval_ir_result,
             question=question,
             schema=schema,
-            enabled=self.use_option_a_fallback if use_option_a_fallback is None else use_option_a_fallback,
+            enabled=self.use_neural_ir_fallback if _fallback is None else _fallback,
         )
 
-    def _default_option_a_model_dir(self) -> Path:
-        return self.option_a_v2_model_dir if (self.option_a_v2_model_dir / "model.pt").exists() else self.option_a_v1_model_dir
+    def _default_neural_ir_model_dir(self) -> Path:
+        return self.neural_ir_v2_model_dir if (self.neural_ir_v2_model_dir / "model.pt").exists() else self.neural_ir_v1_model_dir
 
     @staticmethod
     def _normalize_question(question: str) -> str:
@@ -283,127 +330,132 @@ class PredictionOrchestrator:
             questions.append(f"Can you rephrase your question? I found {metric_value} and {dimension_value} but the pattern is unclear.")
         return questions
 
-    def _maybe_option_a_fallback(
+    def _maybe_neural_ir_fallback(
         self,
-        option_c_result: PredictionResult,
+        retrieval_ir_result: PredictionResult,
         question: str,
         schema: Any,
         enabled: bool,
     ) -> PredictionResult:
-        option_c_valid = bool(option_c_result.validation.get("is_valid", option_c_result.validation.get("ok", False)))
+        retrieval_ir_valid = bool(retrieval_ir_result.validation.get("is_valid", retrieval_ir_result.validation.get("ok", False)))
         if not enabled:
-            self._attach_router_decision(option_c_result, 0.0, False, "option_c", "option_a_disabled")
-            return option_c_result
-        if option_c_result.confidence >= self.option_a_threshold and option_c_valid:
-            self._attach_router_decision(option_c_result, 0.0, False, "option_c", "option_c_high_confidence")
-            return option_c_result
-        option_a_model_dir = self._available_option_a_model_dir()
-        if option_a_model_dir is None:
-            self._attach_router_decision(option_c_result, 0.0, False, "option_c", "option_a_missing")
-            return option_c_result
+            self._attach_router_decision(retrieval_ir_result, 0.0, False, "retrieval_ir", "neural_ir_disabled")
+            return retrieval_ir_result
+        if retrieval_ir_result.confidence >= self.neural_ir_threshold and retrieval_ir_valid:
+            self._attach_router_decision(retrieval_ir_result, 0.0, False, "retrieval_ir", "retrieval_ir_high_confidence")
+            return retrieval_ir_result
+        neural_ir_model_dir = self._available_neural_ir_model_dir()
+        if neural_ir_model_dir is None:
+            self._attach_router_decision(retrieval_ir_result, 0.0, False, "retrieval_ir", "neural_ir_missing")
+            return retrieval_ir_result
 
         try:
-            from neural_ir.predictor import OptionAIRPredictor
+            from neural_ir.predictor import NeuralIRPredictor
 
-            option_a_result = OptionAIRPredictor(str(option_a_model_dir)).predict(question, schema)
+            neural_ir_raw = NeuralIRPredictor(str(neural_ir_model_dir)).predict(question, schema)
         except Exception as exc:
-            self._attach_router_decision(option_c_result, 0.0, False, "option_c", "option_a_error")
-            option_c_result.debug["option_a_error"] = str(exc)
-            return option_c_result
+            self._attach_router_decision(retrieval_ir_result, 0.0, False, "retrieval_ir", "neural_ir_error")
+            retrieval_ir_result.debug["neural_ir_error"] = str(exc)
+            return retrieval_ir_result
 
-        option_a_validation = option_a_result.get("sql_validation") or option_a_result.get("validation") or {}
-        option_a_valid = bool(option_a_validation.get("is_valid", option_a_validation.get("ok", False)))
-        option_a_confidence = float(option_a_result.get("confidence") or 0.0)
-        option_c_result.debug["option_a_result"] = option_a_result
+        neural_ir_validation = neural_ir_raw.get("sql_validation") or neural_ir_raw.get("validation") or {}
+        neural_ir_valid = bool(neural_ir_validation.get("is_valid", neural_ir_validation.get("ok", False)))
+        neural_ir_confidence = float(neural_ir_raw.get("confidence") or 0.0)
+        retrieval_ir_result.debug["neural_ir_result"] = neural_ir_raw
         decision = choose_route(
             {
-                "confidence": option_c_result.confidence,
-                "validation": option_c_result.validation,
+                "confidence": retrieval_ir_result.confidence,
+                "validation": retrieval_ir_result.validation,
             },
             {
-                "confidence": option_a_confidence,
-                "sql_validation": option_a_validation,
-                "repairs_applied": option_a_result.get("repairs_applied", []),
-                "debug": option_a_result.get("debug", {}),
+                "confidence": neural_ir_confidence,
+                "sql_validation": neural_ir_validation,
+                "repairs_applied": neural_ir_raw.get("repairs_applied", []),
+                "debug": neural_ir_raw.get("debug", {}),
             },
             self.hybrid_calibration,
         )
-        if option_a_valid and decision["selected"] == "option_a":
-            query_ir = option_a_result.get("query_ir") or {}
-            ir_validation = option_a_result.get("ir_validation") or {}
+
+        # Normalize decision field names
+        selected = _normalize_source(decision.get("selected", "retrieval_ir"))
+        decision["selected"] = selected
+
+        if neural_ir_valid and selected == "neural_ir":
+            query_ir = neural_ir_raw.get("query_ir") or {}
+            ir_validation = neural_ir_raw.get("ir_validation") or {}
             warnings = []
             warnings.extend(ir_validation.get("warnings") or [])
             warnings.extend(ir_validation.get("errors") or [])
-            warnings.extend(option_a_result.get("warnings") or [])
-            if not option_a_validation.get("is_valid", option_a_validation.get("ok", False)):
-                warnings.extend(option_a_validation.get("issues") or [])
+            warnings.extend(neural_ir_raw.get("warnings") or [])
+            if not neural_ir_validation.get("is_valid", neural_ir_validation.get("ok", False)):
+                warnings.extend(neural_ir_validation.get("issues") or [])
             result = PredictionResult(
                 question=question,
                 normalized_question=self._normalize_question(question),
-                source_model="option_a",
+                source_model="neural_ir",
                 intent=query_ir.get("intent"),
                 template_id=query_ir.get("template_id"),
                 query_ir=query_ir,
                 ir_validation=ir_validation,
-                sql=option_a_result.get("sql"),
-                validation=option_a_validation,
-                confidence=option_a_confidence,
-                confidence_tier=self._confidence_tier(option_a_confidence),
+                sql=neural_ir_raw.get("sql"),
+                validation=neural_ir_validation,
+                confidence=neural_ir_confidence,
+                confidence_tier=self._confidence_tier(neural_ir_confidence),
                 warnings=list(dict.fromkeys(str(warning) for warning in warnings if warning)),
                 router_decision=decision,
-                option_a_version=option_a_result.get("option_a_version"),
-                option_c_result=option_c_result.model_dump(),
-                option_a_result=option_a_result,
+                neural_ir_version=neural_ir_raw.get("neural_ir_version") or neural_ir_raw.get("option_a_version"),
+                retrieval_ir_result=retrieval_ir_result.model_dump(),
+                neural_ir_result=neural_ir_raw,
                 selected_query_ir=query_ir,
                 validation_summary={
                     "ir_validation": ir_validation,
-                    "sql_validation": option_a_validation,
+                    "sql_validation": neural_ir_validation,
                 },
-                confidence_breakdown=(option_a_result.get("debug") or {}).get("calibration", {}),
+                confidence_breakdown=(neural_ir_raw.get("debug") or {}).get("calibration", {}),
                 debug={
-                    "option_c_result": option_c_result.model_dump(),
-                    "option_a_result": option_a_result,
+                    "retrieval_ir_result": retrieval_ir_result.model_dump(),
+                    "neural_ir_result": neural_ir_raw,
                     "router_decision": decision,
                 },
             )
             return result
 
-        option_c_result.router_decision = decision
-        option_c_result.option_a_version = option_a_result.get("option_a_version")
-        option_c_result.option_c_result = option_c_result.model_dump(exclude={"option_c_result"})
-        option_c_result.option_a_result = option_a_result
-        option_c_result.selected_query_ir = option_c_result.query_ir
-        option_c_result.validation_summary = {
-            "ir_validation": option_c_result.ir_validation,
-            "sql_validation": option_c_result.validation,
+        retrieval_ir_result.router_decision = decision
+        retrieval_ir_result.neural_ir_version = neural_ir_raw.get("neural_ir_version") or neural_ir_raw.get("option_a_version")
+        retrieval_ir_result.retrieval_ir_result = retrieval_ir_result.model_dump(exclude={"retrieval_ir_result"})
+        retrieval_ir_result.neural_ir_result = neural_ir_raw
+        retrieval_ir_result.selected_query_ir = retrieval_ir_result.query_ir
+        retrieval_ir_result.validation_summary = {
+            "ir_validation": retrieval_ir_result.ir_validation,
+            "sql_validation": retrieval_ir_result.validation,
         }
-        option_c_result.debug["router_decision"] = decision
-        return option_c_result
+        retrieval_ir_result.debug["router_decision"] = decision
+        return retrieval_ir_result
 
-    def _available_option_a_model_dir(self) -> Path | None:
-        if (self.option_a_model_dir / "model.pt").exists():
-            return self.option_a_model_dir
-        if self._explicit_option_a_model_dir:
+    def _available_neural_ir_model_dir(self) -> Path | None:
+        if (self.neural_ir_model_dir / "model.pt").exists():
+            return self.neural_ir_model_dir
+        if self._explicit_neural_ir_model_dir:
             return None
-        if (self.option_a_v2_model_dir / "model.pt").exists():
-            return self.option_a_v2_model_dir
-        if (self.option_a_v1_model_dir / "model.pt").exists():
-            return self.option_a_v1_model_dir
+        if (self.neural_ir_v2_model_dir / "model.pt").exists():
+            return self.neural_ir_v2_model_dir
+        if (self.neural_ir_v1_model_dir / "model.pt").exists():
+            return self.neural_ir_v1_model_dir
         return None
 
     def _attach_router_decision(
         self,
         result: PredictionResult,
-        option_a_confidence: float,
-        option_a_valid: bool,
+        neural_ir_confidence: float,
+        neural_ir_valid: bool,
         selected: str,
         reason: str,
     ) -> None:
         decision = {
-            "option_c_confidence": float(result.confidence),
-            "option_a_confidence": float(option_a_confidence),
-            "option_c_valid": bool(result.validation.get("is_valid", result.validation.get("ok", False))),
-            "option_a_valid": bool(option_a_valid),
+            "retrieval_ir_confidence": float(result.confidence),
+            "neural_ir_confidence": float(neural_ir_confidence),
+            "retrieval_ir_valid": bool(result.validation.get("is_valid", result.validation.get("ok", False))),
+            "neural_ir_valid": bool(neural_ir_valid),
             "selected": selected,
             "reason": reason,
         }

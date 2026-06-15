@@ -60,7 +60,7 @@ from .sql_to_ir_rules import (
 )
 
 
-SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9 _/()\-'.]+$")
 DATE_VALUE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 APPROVED_REVENUE_EXPR = "order_items.quantity * order_items.price"
 

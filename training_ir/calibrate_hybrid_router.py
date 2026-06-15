@@ -16,7 +16,16 @@ from nl2sql_v1.schema import read_sqlite_schema
 from retriever.retrieval_nl2sql_model import RetrievalNL2SQLModel
 
 
-DEFAULT_MODEL_DIR = ROOT / "artifacts" / "option_a_ir_model"
+def _default_model_dir() -> Path:
+    p = ROOT / "artifacts" / "neural_ir_model"
+    if p.exists():
+        return p
+    p = ROOT / "artifacts" / "option_a_ir_model_v2"
+    if p.exists():
+        return p
+    return ROOT / "artifacts" / "option_a_ir_model"
+
+DEFAULT_MODEL_DIR = _default_model_dir()
 
 
 def calibrate_hybrid_router(eval_cases: Path, db_path: Path, option_a_model_dir: Path, output_path: Path) -> dict[str, Any]:
@@ -65,8 +74,8 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Calibrate the Option C / Option A hybrid router.")
-    parser.add_argument("--eval-cases", type=Path, default=ROOT / "evaluation" / "option_a_eval_cases.jsonl")
-    parser.add_argument("--db", type=Path, required=True)
+    parser.add_argument("--eval-cases", type=Path, default=ROOT / "evaluation" / "neural_ir_eval_cases.jsonl")
+    parser.add_argument("--db", type=Path, default=ROOT / "data" / "sample_retail.db")
     parser.add_argument("--option-a-model-dir", type=Path, default=DEFAULT_MODEL_DIR)
     parser.add_argument("--output", type=Path, default=DEFAULT_MODEL_DIR / "hybrid_calibration.json")
     return parser.parse_args()

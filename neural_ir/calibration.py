@@ -6,30 +6,38 @@ from typing import Any
 
 
 DEFAULT_CALIBRATION = {
-    "option_c_high_confidence_threshold": 0.8,
-    "option_a_min_confidence_threshold": 0.6,
-    "option_a_confidence_margin": 0.05,
+    "retrieval_ir_high_confidence_threshold": 0.8,
+    "neural_ir_min_confidence_threshold": 0.6,
+    "neural_ir_confidence_margin": 0.05,
     "fallback_threshold": 0.8,
     "validation_bonus": 0.05,
     "sql_validity_bonus": 0.10,
+    # Backward-compatible aliases (read-only)
+    "option_c_high_confidence_threshold": 0.8,
+    "option_a_min_confidence_threshold": 0.6,
+    "option_a_confidence_margin": 0.05,
 }
 
 
-class HybridRouterCalibrator:
-    def calibrate(self, option_c_results: list[dict], option_a_results: list[dict]) -> dict[str, Any]:
+class AdaptiveRouterCalibrator:
+    """Calibrator for the Adaptive QueryIR Router.
+
+    Formerly named ``HybridRouterCalibrator``.
+    """
+    def calibrate(self, retrieval_ir_results: list[dict], neural_ir_results: list[dict]) -> dict[str, Any]:
         cases = []
         correct = 0
-        total = max(len(option_c_results), len(option_a_results))
+        total = max(len(retrieval_ir_results), len(neural_ir_results))
         for idx in range(total):
-            option_c = option_c_results[idx] if idx < len(option_c_results) else {}
-            option_a = option_a_results[idx] if idx < len(option_a_results) else {}
-            decision = choose_route(option_c, option_a, DEFAULT_CALIBRATION)
-            expected = option_c.get("expected_source") or option_a.get("expected_source")
+            retrieval_ir = retrieval_ir_results[idx] if idx < len(retrieval_ir_results) else {}
+            neural_ir = neural_ir_results[idx] if idx < len(neural_ir_results) else {}
+            decision = choose_route(retrieval_ir, neural_ir, DEFAULT_CALIBRATION)
+            expected = retrieval_ir.get("expected_source") or neural_ir.get("expected_source")
             if expected is None:
-                expected = _expected_from_validation(option_c, option_a)
+                expected = _expected_from_validation(retrieval_ir, neural_ir)
             if decision["selected"] == expected:
                 correct += 1
-            cases.append({"id": option_c.get("id") or option_a.get("id") or idx, **decision})
+            cases.append({"id": retrieval_ir.get("id") or neural_ir.get("id") or idx, **decision})
         return {
             **DEFAULT_CALIBRATION,
             "router_accuracy": correct / max(total, 1),
@@ -37,33 +45,42 @@ class HybridRouterCalibrator:
         }
 
 
-def choose_route(option_c: dict[str, Any], option_a: dict[str, Any], calibration: dict[str, Any] | None = None) -> dict[str, Any]:
+# Backward-compatible alias
+HybridRouterCalibrator = AdaptiveRouterCalibrator
+"""Deprecated alias. Use ``AdaptiveRouterCalibrator``."""
+
+
+def choose_route(retrieval_ir: dict[str, Any], neural_ir: dict[str, Any], calibration: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Choose between retrieval IR and neural IR model results."""
     cfg = {**DEFAULT_CALIBRATION, **(calibration or {})}
-    c_conf = float(option_c.get("confidence") or 0.0)
-    a_conf = float(option_a.get("confidence") or 0.0)
-    c_valid = _valid(option_c)
-    a_valid = _valid(option_a)
-    repairs_applied = option_a.get("repairs_applied") or (option_a.get("debug") or {}).get("repairs", {}).get("repairs_applied", [])
-    better_than_c = a_conf >= max(c_conf + float(cfg.get("option_a_confidence_margin", 0.05)), float(cfg["option_a_min_confidence_threshold"]))
-    if c_valid and c_conf >= float(cfg["option_c_high_confidence_threshold"]):
-        selected, reason = "option_c", "option_c_high_confidence"
+    c_conf = float(retrieval_ir.get("confidence") or 0.0)
+    a_conf = float(neural_ir.get("confidence") or 0.0)
+    c_valid = _valid(retrieval_ir)
+    a_valid = _valid(neural_ir)
+    repairs_applied = neural_ir.get("repairs_applied") or (neural_ir.get("debug") or {}).get("repairs", {}).get("repairs_applied", [])
+    margin = float(cfg.get("neural_ir_confidence_margin", cfg.get("option_a_confidence_margin", 0.05)))
+    min_threshold = float(cfg.get("neural_ir_min_confidence_threshold", cfg.get("option_a_min_confidence_threshold", 0.6)))
+    high_threshold = float(cfg.get("retrieval_ir_high_confidence_threshold", cfg.get("option_c_high_confidence_threshold", 0.8)))
+    better_than_retrieval = a_conf >= max(c_conf + margin, min_threshold)
+    if c_valid and c_conf >= high_threshold:
+        selected, reason = "retrieval_ir", "retrieval_ir_high_confidence"
     elif not c_valid and a_valid:
-        selected, reason = "option_a", "option_c_invalid_sql"
-    elif a_valid and repairs_applied and better_than_c:
-        selected, reason = "option_a", "option_a_repaired_valid"
-    elif a_valid and better_than_c:
-        selected, reason = "option_a", "option_a_higher_confidence"
+        selected, reason = "neural_ir", "retrieval_ir_invalid_sql"
+    elif a_valid and repairs_applied and better_than_retrieval:
+        selected, reason = "neural_ir", "neural_ir_repaired_valid"
+    elif a_valid and better_than_retrieval:
+        selected, reason = "neural_ir", "neural_ir_higher_confidence"
     elif not a_valid:
-        selected, reason = "option_c", "option_a_invalid"
-    elif c_conf < float(cfg["option_c_high_confidence_threshold"]):
-        selected, reason = "option_c", "option_c_low_confidence"
+        selected, reason = "retrieval_ir", "neural_ir_invalid"
+    elif c_conf < high_threshold:
+        selected, reason = "retrieval_ir", "retrieval_ir_low_confidence"
     else:
-        selected, reason = "option_c", "fallback_to_option_c"
+        selected, reason = "retrieval_ir", "fallback_to_retrieval_ir"
     return {
-        "option_c_confidence": c_conf,
-        "option_a_confidence": a_conf,
-        "option_c_valid": c_valid,
-        "option_a_valid": a_valid,
+        "retrieval_ir_confidence": c_conf,
+        "neural_ir_confidence": a_conf,
+        "retrieval_ir_valid": c_valid,
+        "neural_ir_valid": a_valid,
         "selected": selected,
         "reason": reason,
     }
@@ -82,11 +99,11 @@ def _valid(result: dict[str, Any]) -> bool:
     return bool(validation.get("is_valid", validation.get("ok", False)))
 
 
-def _expected_from_validation(option_c: dict[str, Any], option_a: dict[str, Any]) -> str:
-    c_valid = _valid(option_c)
-    a_valid = _valid(option_a)
+def _expected_from_validation(retrieval_ir: dict[str, Any], neural_ir: dict[str, Any]) -> str:
+    c_valid = _valid(retrieval_ir)
+    a_valid = _valid(neural_ir)
     if c_valid and not a_valid:
-        return "option_c"
+        return "retrieval_ir"
     if a_valid and not c_valid:
-        return "option_a"
-    return "option_a" if float(option_a.get("confidence") or 0.0) > float(option_c.get("confidence") or 0.0) else "option_c"
+        return "neural_ir"
+    return "neural_ir" if float(neural_ir.get("confidence") or 0.0) > float(retrieval_ir.get("confidence") or 0.0) else "retrieval_ir"
