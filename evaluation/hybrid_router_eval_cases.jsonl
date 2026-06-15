@@ -1,0 +1,3 @@
+{"id":"top_5_customers_by_sales","question":"Top 5 customers by sales","expected_source":"option_c"}
+{"id":"orders_status_completed","question":"Orders where status is completed","expected_source":"option_c"}
+{"id":"sales_by_month","question":"Show sales by month","expected_source":"option_c"}

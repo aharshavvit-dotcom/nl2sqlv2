@@ -7,8 +7,10 @@ from typing import Any
 import torch
 from torch.utils.data import Dataset
 
+from .candidate_builder import SchemaCandidateBuilder, build_candidate_masks, schema_link_score_vector
 from .ir_label_encoder import IRLabelEncoder
 from .schema_linearizer import SchemaLinearizer, extract_schema_items, schema_from_example
+from .schema_linker import SchemaLinker
 from .tokenizer import tokenize
 from .vocab import Vocabulary
 
@@ -21,6 +23,7 @@ class IRTrainingDataset(Dataset):
         label_encoder: IRLabelEncoder,
         max_question_len: int = 64,
         max_schema_len: int = 256,
+        max_candidate_tokens: int = 16,
         max_tables: int = 64,
         max_columns: int = 256,
     ):
@@ -29,9 +32,12 @@ class IRTrainingDataset(Dataset):
         self.label_encoder = label_encoder
         self.max_question_len = max_question_len
         self.max_schema_len = max_schema_len
+        self.max_candidate_tokens = max_candidate_tokens
         self.max_tables = max_tables
         self.max_columns = max_columns
         self.linearizer = SchemaLinearizer()
+        self.candidate_builder = SchemaCandidateBuilder()
+        self.schema_linker = SchemaLinker()
         self.examples = load_jsonl(self.path)
 
     def __len__(self) -> int:
@@ -42,20 +48,41 @@ class IRTrainingDataset(Dataset):
         schema = schema_from_example(row)
         schema_items = extract_schema_items(schema)
         schema_text = row.get("serialized_schema") or self.linearizer.linearize(schema)
-        question_tokens = tokenize(row.get("question", ""))
+        question = row.get("question", "")
+        question_tokens = tokenize(question)
         schema_tokens = tokenize(schema_text)
         question_ids = self.vocab.encode(question_tokens, self.max_question_len)
         schema_ids = self.vocab.encode(schema_tokens, self.max_schema_len)
+        candidates = self.candidate_builder.build_candidates(schema, question)
+        link_result = self.schema_linker.link(question, candidates)
+        candidate_masks = build_candidate_masks(candidates, self.max_tables, self.max_columns)
+        link_scores = schema_link_score_vector(link_result, self.max_columns)
+        table_candidate_token_ids = self._candidate_token_ids(candidates.get("tables", []), self.max_tables)
+        column_candidate_token_ids = self._candidate_token_ids(candidates.get("columns", []), self.max_columns)
         labels = self.label_encoder.encode(row["query_ir"], schema_items)
         labels = self._cap_pointer_labels(labels)
+        self._force_gold_masks(candidate_masks, labels)
         return {
             "question_ids": question_ids,
             "schema_ids": schema_ids,
             "question_mask": [1 if item != self.vocab.pad_id else 0 for item in question_ids],
             "schema_mask": [1 if item != self.vocab.pad_id else 0 for item in schema_ids],
+            "table_candidate_mask": candidate_masks["table_candidate_mask"],
+            "column_candidate_mask": candidate_masks["column_candidate_mask"],
+            "metric_column_mask": candidate_masks["metric_column_mask"],
+            "dimension_column_mask": candidate_masks["dimension_column_mask"],
+            "date_column_mask": candidate_masks["date_column_mask"],
+            "filter_column_mask": candidate_masks["filter_column_mask"],
+            "schema_link_scores": link_scores,
+            "table_candidate_token_ids": table_candidate_token_ids,
+            "column_candidate_token_ids": column_candidate_token_ids,
+            "candidate_token_ids": column_candidate_token_ids,
             "labels": labels,
             "raw_example": row,
             "schema_items": schema_items,
+            "schema_candidates": candidates,
+            "schema_linking": link_result,
+            "candidate_warnings": candidate_masks.get("candidate_warnings", []),
         }
 
     def _cap_pointer_labels(self, labels: dict[str, int]) -> dict[str, int]:
@@ -67,6 +94,36 @@ class IRTrainingDataset(Dataset):
                 capped[key] = -1
         return capped
 
+    @staticmethod
+    def _force_gold_masks(candidate_masks: dict[str, list[float]], labels: dict[str, int]) -> None:
+        pointers = {
+            "table_candidate_mask": "base_table_index",
+            "column_candidate_mask": None,
+            "metric_column_mask": "metric_column_index",
+            "dimension_column_mask": "dimension_column_index",
+            "date_column_mask": "date_column_index",
+            "filter_column_mask": "filter_column_index",
+        }
+        for mask_key, label_key in pointers.items():
+            if not label_key:
+                continue
+            index = int(labels.get(label_key, -1))
+            mask = candidate_masks.get(mask_key) or []
+            if 0 <= index < len(mask):
+                mask[index] = 1.0
+
+    def _candidate_token_ids(self, candidates: list[dict[str, Any]], max_candidates: int) -> list[list[int]]:
+        rows = [[self.vocab.pad_id] * self.max_candidate_tokens for _ in range(max_candidates)]
+        for candidate in candidates:
+            index = int(candidate.get("index", -1))
+            if not (0 <= index < max_candidates):
+                continue
+            tokens = list(candidate.get("tokens") or [])
+            if not tokens:
+                tokens = tokenize(str(candidate.get("display") or ""))
+            rows[index] = self.vocab.encode(tokens, self.max_candidate_tokens)
+        return rows
+
 
 def collate_ir_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
     label_keys = sorted(batch[0]["labels"])
@@ -75,12 +132,25 @@ def collate_ir_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "schema_ids": torch.tensor([item["schema_ids"] for item in batch], dtype=torch.long),
         "question_mask": torch.tensor([item["question_mask"] for item in batch], dtype=torch.float32),
         "schema_mask": torch.tensor([item["schema_mask"] for item in batch], dtype=torch.float32),
+        "table_candidate_mask": torch.tensor([item["table_candidate_mask"] for item in batch], dtype=torch.float32),
+        "column_candidate_mask": torch.tensor([item["column_candidate_mask"] for item in batch], dtype=torch.float32),
+        "metric_column_mask": torch.tensor([item["metric_column_mask"] for item in batch], dtype=torch.float32),
+        "dimension_column_mask": torch.tensor([item["dimension_column_mask"] for item in batch], dtype=torch.float32),
+        "date_column_mask": torch.tensor([item["date_column_mask"] for item in batch], dtype=torch.float32),
+        "filter_column_mask": torch.tensor([item["filter_column_mask"] for item in batch], dtype=torch.float32),
+        "schema_link_scores": torch.tensor([item["schema_link_scores"] for item in batch], dtype=torch.float32),
+        "table_candidate_token_ids": torch.tensor([item["table_candidate_token_ids"] for item in batch], dtype=torch.long),
+        "column_candidate_token_ids": torch.tensor([item["column_candidate_token_ids"] for item in batch], dtype=torch.long),
+        "candidate_token_ids": torch.tensor([item["candidate_token_ids"] for item in batch], dtype=torch.long),
         "labels": {
             key: torch.tensor([item["labels"][key] for item in batch], dtype=torch.long)
             for key in label_keys
         },
         "raw_examples": [item["raw_example"] for item in batch],
         "schema_items": [item["schema_items"] for item in batch],
+        "schema_candidates": [item["schema_candidates"] for item in batch],
+        "schema_linking": [item["schema_linking"] for item in batch],
+        "candidate_warnings": [item["candidate_warnings"] for item in batch],
     }
 
 

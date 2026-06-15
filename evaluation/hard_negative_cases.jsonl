@@ -1,0 +1,5 @@
+{"id":"wrong_metric_amount_vs_quantity_price","question":"Top 5 products by revenue","negative_type":"product_revenue_wrong_grain","reason":"orders.amount is wrong for product revenue when order_items.quantity and order_items.price exist"}
+{"id":"wrong_dimension_region_vs_customer","question":"Top 5 customers by sales","negative_type":"wrong_dimension_column","reason":"region is not the requested customer dimension"}
+{"id":"wrong_table_customers_for_orders","question":"Count orders by status","negative_type":"wrong_table","reason":"customers cannot be the base table for order status counts"}
+{"id":"wrong_date_amount_for_month","question":"Show sales by month","negative_type":"wrong_date_column","reason":"amount is not a date column"}
+{"id":"wrong_filter_category_for_status","question":"Orders where status is completed","negative_type":"wrong_filter_column","reason":"category cannot satisfy an order status filter"}

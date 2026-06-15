@@ -7,6 +7,8 @@ from typing import Any
 import torch
 from torch import nn
 
+from .loss_utils import accuracy_from_logits, margin_ranking_slot_loss, masked_cross_entropy
+
 
 HEAD_TO_LABEL = {
     "intent_logits": "intent_label",
@@ -24,6 +26,31 @@ HEAD_TO_LABEL = {
     "limit_bucket_logits": "limit_bucket_label",
 }
 
+HEAD_TO_MASK = {
+    "base_table_logits": "table_candidate_mask",
+    "metric_column_logits": "metric_column_mask",
+    "dimension_column_logits": "dimension_column_mask",
+    "date_column_logits": "date_column_mask",
+    "filter_column_logits": "filter_column_mask",
+}
+
+MODEL_INPUT_KEYS = [
+    "question_ids",
+    "schema_ids",
+    "question_mask",
+    "schema_mask",
+    "candidate_token_ids",
+    "table_candidate_token_ids",
+    "column_candidate_token_ids",
+    "table_candidate_mask",
+    "column_candidate_mask",
+    "metric_column_mask",
+    "dimension_column_mask",
+    "date_column_mask",
+    "filter_column_mask",
+    "schema_link_scores",
+]
+
 
 class OptionAIRTrainer:
     def __init__(self, model, config):
@@ -32,10 +59,16 @@ class OptionAIRTrainer:
         self.device = torch.device("cpu")
         self.model.to(self.device)
         self.loss_fn = nn.CrossEntropyLoss(ignore_index=-1)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=float(config.get("learning_rate", 0.001)))
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(),
+            lr=float(config.get("learning_rate", 0.001)),
+            weight_decay=float(config.get("weight_decay", 0.0)),
+        )
 
-    def train(self, train_loader, val_loader, label_encoder, output_dir) -> dict[str, Any]:
-        output_path = Path(output_dir)
+    def train(self, train_loader, val_loader, output_dir=None, label_encoder=None) -> dict[str, Any]:
+        if output_dir is not None and not isinstance(output_dir, (str, Path)):
+            output_dir, label_encoder = label_encoder, output_dir
+        output_path = Path(output_dir or "artifacts/option_a_ir_model")
         output_path.mkdir(parents=True, exist_ok=True)
         best_loss = float("inf")
         best_state = None
@@ -71,13 +104,13 @@ class OptionAIRTrainer:
         for batch in loader:
             batch = _to_device(batch, self.device)
             self.optimizer.zero_grad()
-            outputs = self.model(batch["question_ids"], batch["schema_ids"], batch["question_mask"], batch["schema_mask"])
-            loss = self._loss(outputs, batch["labels"])
+            outputs = _model_outputs(self.model, batch)
+            loss = self._loss(outputs, batch["labels"], batch)
             loss.backward()
             self.optimizer.step()
             total_loss += float(loss.item()) * int(batch["question_ids"].size(0))
             total_items += int(batch["question_ids"].size(0))
-            metric_state.update(outputs, batch["labels"])
+            metric_state.update(outputs, batch["labels"], batch)
         return {"loss": total_loss / max(total_items, 1), **metric_state.compute()}
 
     def evaluate_epoch(self, loader) -> dict[str, float]:
@@ -88,20 +121,51 @@ class OptionAIRTrainer:
         with torch.no_grad():
             for batch in loader:
                 batch = _to_device(batch, self.device)
-                outputs = self.model(batch["question_ids"], batch["schema_ids"], batch["question_mask"], batch["schema_mask"])
-                loss = self._loss(outputs, batch["labels"])
+                outputs = _model_outputs(self.model, batch)
+                loss = self._loss(outputs, batch["labels"], batch)
                 total_loss += float(loss.item()) * int(batch["question_ids"].size(0))
                 total_items += int(batch["question_ids"].size(0))
-                metric_state.update(outputs, batch["labels"])
+                metric_state.update(outputs, batch["labels"], batch)
         return {"loss": total_loss / max(total_items, 1), **metric_state.compute()}
 
-    def _loss(self, outputs: dict[str, torch.Tensor], labels: dict[str, torch.Tensor]) -> torch.Tensor:
+    def _loss(self, outputs: dict[str, torch.Tensor], labels: dict[str, torch.Tensor], batch: dict[str, Any] | None = None) -> torch.Tensor:
         losses = []
         for head, label in HEAD_TO_LABEL.items():
             target = labels[label]
             if not target.ne(-1).any():
                 continue
-            losses.append(self.loss_fn(outputs[head], target))
+            mask = (batch or {}).get(HEAD_TO_MASK.get(head, "")) if batch else None
+            losses.append(masked_cross_entropy(outputs[head], target, mask=mask, ignore_index=-1))
+        if not losses:
+            base_loss = outputs["intent_logits"].sum() * 0.0
+        else:
+            base_loss = torch.stack(losses).sum()
+        if not self.config.get("use_hard_negative_loss"):
+            return base_loss
+        hard_negative_loss = self._hard_negative_loss(outputs, labels)
+        return base_loss + float(self.config.get("hard_negative_loss_weight", 0.3)) * hard_negative_loss
+
+    def _hard_negative_loss(self, outputs: dict[str, torch.Tensor], labels: dict[str, torch.Tensor]) -> torch.Tensor:
+        losses = []
+        for label_key, head in [
+            ("negative_base_table_index", "base_table_logits"),
+            ("negative_metric_column_index", "metric_column_logits"),
+            ("negative_dimension_column_index", "dimension_column_logits"),
+            ("negative_date_column_index", "date_column_logits"),
+            ("negative_filter_column_index", "filter_column_logits"),
+        ]:
+            gold_label = HEAD_TO_LABEL[head]
+            if label_key not in labels or gold_label not in labels:
+                continue
+            gold_index = labels[gold_label]
+            negative_index = labels[label_key]
+            valid = gold_index.ge(0) & negative_index.ge(0)
+            if not valid.any():
+                continue
+            logits = outputs[head]
+            gold_scores = logits.gather(1, gold_index.clamp_min(0).unsqueeze(1)).squeeze(1)[valid]
+            negative_scores = logits.gather(1, negative_index.clamp_min(0).unsqueeze(1)).squeeze(1)[valid]
+            losses.append(margin_ranking_slot_loss(gold_scores, negative_scores, margin=float(self.config.get("hard_negative_margin", 0.2))))
         if not losses:
             return outputs["intent_logits"].sum() * 0.0
         return torch.stack(losses).sum()
@@ -112,15 +176,14 @@ class _MetricState:
         self.correct: dict[str, int] = {}
         self.total: dict[str, int] = {}
 
-    def update(self, outputs: dict[str, torch.Tensor], labels: dict[str, torch.Tensor]) -> None:
+    def update(self, outputs: dict[str, torch.Tensor], labels: dict[str, torch.Tensor], batch: dict[str, Any] | None = None) -> None:
         for head, label_key in HEAD_TO_LABEL.items():
             target = labels[label_key]
-            mask = target.ne(-1)
-            total = int(mask.sum().item())
+            candidate_mask = (batch or {}).get(HEAD_TO_MASK.get(head, "")) if batch else None
+            correct, total = accuracy_from_logits(outputs[head], target, mask=candidate_mask, ignore_index=-1)
             if total == 0:
                 continue
-            pred = outputs[head].argmax(dim=-1)
-            self.correct[label_key] = self.correct.get(label_key, 0) + int(pred.eq(target).logical_and(mask).sum().item())
+            self.correct[label_key] = self.correct.get(label_key, 0) + correct
             self.total[label_key] = self.total.get(label_key, 0) + total
 
     def compute(self) -> dict[str, float]:
@@ -131,6 +194,10 @@ class _MetricState:
         return {
             "intent_accuracy": acc("intent_label"),
             "metric_aggregation_accuracy": acc("metric_aggregation_label"),
+            "metric_column_accuracy": acc("metric_column_index"),
+            "dimension_column_accuracy": acc("dimension_column_index"),
+            "date_column_accuracy": acc("date_column_index"),
+            "filter_column_accuracy": acc("filter_column_index"),
             "dimension_pointer_accuracy": acc("dimension_column_index"),
             "metric_pointer_accuracy": acc("metric_column_index"),
             "date_pointer_accuracy": acc("date_column_index"),
@@ -144,3 +211,8 @@ def _to_device(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
         key: ({inner_key: inner_value.to(device) for inner_key, inner_value in value.items()} if key == "labels" else value.to(device) if torch.is_tensor(value) else value)
         for key, value in batch.items()
     }
+
+
+def _model_outputs(model, batch: dict[str, Any]) -> dict[str, torch.Tensor]:
+    kwargs = {key: batch[key] for key in MODEL_INPUT_KEYS if key in batch}
+    return model(**kwargs)

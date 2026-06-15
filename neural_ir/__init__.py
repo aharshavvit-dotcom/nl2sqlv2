@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from .candidate_builder import SchemaCandidateBuilder
+from .attention_model import SchemaAwareOptionAIRModel
+from .confidence_calibrator import OptionAConfidenceCalibrator
+from .schema_linker import SchemaLinker
 from .ir_label_encoder import IRLabelEncoder
 from .model import OptionAIRModel
 from .predictor import OptionAIRPredictor
@@ -10,6 +14,10 @@ __all__ = [
     "IRLabelEncoder",
     "OptionAIRModel",
     "OptionAIRPredictor",
+    "OptionAConfidenceCalibrator",
+    "SchemaCandidateBuilder",
+    "SchemaAwareOptionAIRModel",
+    "SchemaLinker",
     "SchemaLinearizer",
     "Vocabulary",
     "extract_schema_items",

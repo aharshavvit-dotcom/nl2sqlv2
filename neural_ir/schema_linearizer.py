@@ -7,9 +7,11 @@ from typing import Any
 from nl2sql_v1.schema import SchemaGraph
 
 
-DATE_MARKERS = ("date", "time", "created", "updated", "month", "year", "timestamp")
-NUMERIC_MARKERS = ("int", "real", "float", "double", "numeric", "decimal", "number")
+DATE_NAME_MARKERS = ("date", "time", "created", "updated", "month", "year", "timestamp")
+NUMERIC_NAME_MARKERS = ("amount", "revenue", "sales", "price", "quantity", "total", "cost", "fare", "count")
+NUMERIC_TYPE_MARKERS = ("int", "real", "float", "double", "numeric", "decimal", "number")
 TEXT_MARKERS = ("char", "text", "string", "varchar")
+TEXT_NAME_MARKERS = ("name", "status", "region", "category", "city", "country", "type", "description", "product", "customer")
 
 
 class SchemaLinearizer:
@@ -20,6 +22,9 @@ class SchemaLinearizer:
             cols = [col["column"] for col in items["columns"] if col["table"] == table]
             parts.append(f"{table}({', '.join(cols)})")
         return "tables: " + "; ".join(parts)
+
+    def extract_schema_items(self, schema: Any) -> dict[str, Any]:
+        return extract_schema_items(schema)
 
 
 def extract_schema_items(schema: Any) -> dict[str, Any]:
@@ -158,8 +163,10 @@ def _finalize(tables: list[str], columns: list[dict[str, str]]) -> dict[str, Any
     for item in columns:
         if not item.get("table") or not item.get("column"):
             continue
+        index = len(normalized_columns)
         normalized_columns.append(
             {
+                "index": index,
                 "table": str(item["table"]),
                 "column": str(item["column"]),
                 "type": str(item.get("type") or _column_type(str(item["column"]), "")),
@@ -171,6 +178,7 @@ def _finalize(tables: list[str], columns: list[dict[str, str]]) -> dict[str, Any
         "date_columns": [item for item in normalized_columns if item["type"] == "date"],
         "numeric_columns": [item for item in normalized_columns if item["type"] == "numeric"],
         "text_columns": [item for item in normalized_columns if item["type"] == "text"],
+        "id_columns": [item for item in normalized_columns if item["type"] == "id"],
     }
 
 
@@ -183,12 +191,25 @@ def _column_name(raw: Any) -> str:
 def _column_type(column_name: str, column_type: str) -> str:
     name = column_name.lower()
     typ = column_type.lower()
-    if any(marker in name for marker in DATE_MARKERS) or "date" in typ or "time" in typ:
+    name_parts = set(part for part in re.split(r"[^a-z0-9]+", name) if part)
+    if typ == "id" or name == "id" or name.endswith("_id"):
+        return "id"
+    if (
+        name in {"order_date", "created_at", "updated_at", "transaction_date"}
+        or name.endswith("_date")
+        or name.endswith("_time")
+        or name.endswith("_at")
+        or bool(name_parts & set(DATE_NAME_MARKERS))
+        or "date" in typ
+        or "time" in typ
+    ):
         return "date"
-    if any(marker in typ for marker in NUMERIC_MARKERS):
+    if any(marker in typ for marker in NUMERIC_TYPE_MARKERS):
+        return "numeric"
+    if name_parts & set(TEXT_NAME_MARKERS):
+        return "text"
+    if name in NUMERIC_NAME_MARKERS or bool(name_parts & set(NUMERIC_NAME_MARKERS)):
         return "numeric"
     if any(marker in typ for marker in TEXT_MARKERS):
         return "text"
-    if name == "id" or name.endswith("_id") or name.lower().endswith("id"):
-        return "numeric"
     return "text"

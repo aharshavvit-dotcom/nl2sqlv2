@@ -17,14 +17,18 @@ from .ir_validator import IRValidator
 from .query_ir_models import IRDateFilter, IRDimension, IRFilter, IRJoin, IRMetric, IROrderBy, QueryIR
 from .sql_to_ir_errors import (
     IRConstructionFailure,
+    IR_VALIDATION_FAILED,
     MISSING_BASE_TABLE,
     NESTED_QUERY,
     NON_SELECT,
     PARSE_ERROR,
+    ROUNDTRIP_VALIDATION_FAILED,
     SET_OPERATION,
+    SQL_VALIDATION_FAILED,
     UNKNOWN_SCHEMA_REFERENCE,
     UNSUPPORTED_CASE,
     UNSUPPORTED_EXPRESSION,
+    UNSUPPORTED_JOIN,
     UNSUPPORTED_HAVING,
     WINDOW_FUNCTION,
     SQLParseFailure,
@@ -44,6 +48,9 @@ from .sql_to_ir_rules import (
     extract_select_expressions,
     extract_tables,
     extract_where_filters,
+    flatten_and,
+    has_case_expression,
+    has_complex_having,
     has_nested_query,
     has_set_operation,
     has_window_function,
@@ -86,7 +93,7 @@ class SQLToIRConverter:
             validation_schema = self._schema_to_validation(schema)
             ir_validation = self.ir_validator.validate(query_ir, schema=validation_schema)
             if not ir_validation.is_valid:
-                raise SchemaResolutionFailure(UNKNOWN_SCHEMA_REFERENCE, "; ".join(ir_validation.errors), sql)
+                raise IRConstructionFailure(IR_VALIDATION_FAILED, "; ".join(ir_validation.errors), sql)
             rendered_sql = self.sql_renderer.render(query_ir)
             sql_validation = self.sql_validator.validate(
                 rendered_sql,
@@ -95,10 +102,10 @@ class SQLToIRConverter:
                 dialect=self.dialect,
             )
             if not sql_validation.get("is_valid"):
-                raise IRConstructionFailure(UNSUPPORTED_EXPRESSION, "; ".join(sql_validation.get("issues", [])), sql)
+                raise IRConstructionFailure(SQL_VALIDATION_FAILED, "; ".join(sql_validation.get("issues", [])), sql)
             roundtrip = self.roundtrip_validator.validate_roundtrip(sql, query_ir, rendered_sql, schema=validation_schema)
             if not roundtrip.get("is_valid"):
-                raise IRConstructionFailure(UNSUPPORTED_EXPRESSION, "; ".join(roundtrip.get("issues", [])), sql)
+                raise IRConstructionFailure(ROUNDTRIP_VALIDATION_FAILED, "; ".join(roundtrip.get("issues", [])), sql)
             return {
                 "success": True,
                 "query_ir": query_ir.model_dump(),
@@ -133,6 +140,7 @@ class SQLToIRConverter:
         group_by_sql = extract_group_by(ast)
         order_by_sql = extract_order_by(ast)
         where_filters = extract_where_filters(ast)
+        self._reject_unsupported_where(ast, where_filters, metadata.get("source_sql"))
         limit = extract_limit(ast)
         if limit is None:
             limit = 100
@@ -212,9 +220,9 @@ class SQLToIRConverter:
             raise UnsupportedSQLPattern(NESTED_QUERY, "Nested queries are not supported for SQL-to-IR conversion.", sql)
         if has_window_function(ast):
             raise UnsupportedSQLPattern(WINDOW_FUNCTION, "Window functions are not supported for SQL-to-IR conversion.", sql)
-        if ast.find(exp.Having) is not None:
+        if has_complex_having(ast):
             raise UnsupportedSQLPattern(UNSUPPORTED_HAVING, "HAVING clauses are not supported in this phase.", sql)
-        if ast.find(exp.Case) is not None:
+        if has_case_expression(ast):
             raise UnsupportedSQLPattern(UNSUPPORTED_CASE, "CASE expressions are not supported in this phase.", sql)
         if ast.find(exp.Or) is not None:
             raise UnsupportedSQLPattern(UNSUPPORTED_EXPRESSION, "OR filters are not supported in this phase.", sql)
@@ -227,6 +235,23 @@ class SQLToIRConverter:
             if any(True for _ in inner.find_all(*rules_aggregation_types())):
                 continue
             raise UnsupportedSQLPattern(UNSUPPORTED_EXPRESSION, f"Unsupported SELECT expression: {inner.sql()}", sql)
+
+    @staticmethod
+    def _reject_unsupported_where(ast: exp.Expression, where_filters: list[dict[str, Any]], sql: str | None) -> None:
+        where = ast.find(exp.Where)
+        if where is None or where.this is None:
+            return
+        conditions = flatten_and(where.this)
+        if len(where_filters) != len(conditions):
+            unsupported = [
+                condition.sql(dialect="sqlite")
+                for condition in conditions
+                if not any(item.get("expression") == condition.sql(dialect="sqlite") for item in where_filters)
+            ]
+            message = "Unsupported WHERE condition"
+            if unsupported:
+                message += ": " + "; ".join(unsupported)
+            raise UnsupportedSQLPattern(UNSUPPORTED_EXPRESSION, message, sql)
 
     def _metrics(
         self,
@@ -303,9 +328,33 @@ class SQLToIRConverter:
         schema_tables: dict[str, set[str]],
         source_from: str | None,
     ) -> list[IRDimension]:
+        dimensions: list[IRDimension] = []
+        if intent in {"simple_filter", "show_records"}:
+            for item in select_expressions:
+                if item.get("is_aggregation") or item.get("is_star") or item.get("date_grain"):
+                    continue
+                ref = item.get("column")
+                if not ref:
+                    continue
+                table, column = self._resolve_column(ref, list(table_aliases.values()), table_aliases, schema_tables, source_from)
+                expression = f"{table}.{column}"
+                alias = self._safe_alias(item.get("alias") or self._infer_dimension_name(column))
+                dimensions.append(
+                    IRDimension(
+                        name=alias,
+                        table=table,
+                        column=column,
+                        expression=expression,
+                        alias=alias,
+                        source_slot="select",
+                        confidence=1.0,
+                    )
+                )
+            return dimensions
+
         if intent not in {"metric_by_dimension", "top_n_metric_by_dimension", "bottom_n_metric_by_dimension", "count_by_dimension"}:
             return []
-        dimensions: list[IRDimension] = []
+
         group_lookup = {self._normalize_sql(item): item for item in group_by_sql}
         alias_by_expression = {self._normalize_sql(item["sql"]): item.get("alias") for item in select_expressions}
         for group_item in group_lookup.values():
@@ -433,6 +482,11 @@ class SQLToIRConverter:
         joins: list[IRJoin] = []
         tables = list(dict.fromkeys(table_aliases.values()))
         for item in raw_joins:
+            if not item.get("left") or not item.get("right"):
+                raise UnsupportedSQLPattern(
+                    UNSUPPORTED_JOIN,
+                    f"Only equality joins are supported in SQL-to-IR conversion: {item.get('condition')}",
+                )
             left_table, left_column = self._resolve_column(item.get("left"), tables, table_aliases, schema_tables, None)
             right_table, right_column = self._resolve_column(item.get("right"), tables, table_aliases, schema_tables, None)
             condition = f"{left_table}.{left_column} = {right_table}.{right_column}"
@@ -706,4 +760,3 @@ class SQLToIRConverter:
 
 def rules_aggregation_types() -> tuple[type[exp.Expression], ...]:
     return (exp.Count, exp.Sum, exp.Avg, exp.Min, exp.Max)
-

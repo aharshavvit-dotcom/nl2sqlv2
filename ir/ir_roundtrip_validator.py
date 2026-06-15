@@ -14,6 +14,7 @@ from .sql_to_ir_rules import (
     detect_intent_from_ast,
     extract_aggregations,
     extract_group_by,
+    extract_joins,
     extract_limit,
     extract_order_by,
     extract_tables,
@@ -50,6 +51,7 @@ class IRRoundtripValidator:
             "metrics_compatible": self._metrics_compatible(query_ir, source_features),
             "dimensions_compatible": self._dimensions_compatible(query_ir, source_features),
             "filters_compatible": self._filters_compatible(query_ir, source_features),
+            "joins_compatible": self._joins_compatible(query_ir, source_features, rendered_features),
             "group_order_limit_compatible": self._group_order_limit_compatible(query_ir, source_features),
         }
         for name, passed in checks.items():
@@ -80,6 +82,7 @@ class IRRoundtripValidator:
             "group_by": group_by,
             "order_by": order_by,
             "where_filters": where_filters,
+            "joins": extract_joins(ast),
             "limit": extract_limit(ast),
             "intent": detect_intent_from_ast(
                 ast,
@@ -144,6 +147,23 @@ class IRRoundtripValidator:
         return len(source_non_date) == ir_filter_count and (not source_date or bool(date_range_filters))
 
     @staticmethod
+    def _joins_compatible(query_ir: QueryIR, source_features: dict[str, Any], rendered_features: dict[str, Any]) -> bool:
+        source_joins = {
+            normalize_sql_fragment(item.get("condition") or "")
+            for item in source_features.get("joins") or []
+            if item.get("condition")
+        }
+        rendered_joins = {
+            normalize_sql_fragment(item.get("condition") or "")
+            for item in rendered_features.get("joins") or []
+            if item.get("condition")
+        }
+        ir_joins = {normalize_sql_fragment(join.condition) for join in query_ir.joins}
+        if not source_joins:
+            return not ir_joins and not rendered_joins
+        return source_joins == ir_joins == rendered_joins
+
+    @staticmethod
     def _group_order_limit_compatible(query_ir: QueryIR, source_features: dict[str, Any]) -> bool:
         source_limit = source_features.get("limit")
         limit_ok = source_limit is None or source_limit == query_ir.limit
@@ -170,4 +190,3 @@ def is_date_filter(item: dict[str, Any]) -> bool:
     column = str(left.get("column") or "").lower()
     value = item.get("value")
     return "date" in column or (isinstance(value, str) and len(value) >= 10 and value[4:5] == "-" and value[7:8] == "-")
-

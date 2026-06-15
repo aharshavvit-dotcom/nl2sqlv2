@@ -27,6 +27,14 @@ class Vocabulary:
     def unk_id(self) -> int:
         return self.token_to_id[UNK_TOKEN]
 
+    @property
+    def cls_id(self) -> int:
+        return self.token_to_id[CLS_TOKEN]
+
+    @property
+    def sep_id(self) -> int:
+        return self.token_to_id[SEP_TOKEN]
+
     def __len__(self) -> int:
         return len(self.id_to_token)
 

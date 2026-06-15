@@ -3,10 +3,10 @@ from __future__ import annotations
 
 class SQLToIRError(Exception):
     def __init__(self, reason: str, message: str, sql: str | None = None):
-        super().__init__(message)
         self.reason = reason
         self.message = message
         self.sql = sql
+        super().__init__(f"{reason}: {message}")
 
     def to_dict(self) -> dict[str, str | None]:
         return {
@@ -40,9 +40,12 @@ WINDOW_FUNCTION = "window_function"
 UNSUPPORTED_HAVING = "unsupported_having"
 UNSUPPORTED_CASE = "unsupported_case"
 UNSUPPORTED_EXPRESSION = "unsupported_expression"
+UNSUPPORTED_JOIN = "unsupported_join"
 MISSING_BASE_TABLE = "missing_base_table"
 MISSING_METRIC = "missing_metric"
 MISSING_DIMENSION = "missing_dimension"
 MISSING_JOIN = "missing_join"
 UNKNOWN_SCHEMA_REFERENCE = "unknown_schema_reference"
-
+IR_VALIDATION_FAILED = "ir_validation_failed"
+SQL_VALIDATION_FAILED = "sql_validation_failed"
+ROUNDTRIP_VALIDATION_FAILED = "roundtrip_validation_failed"

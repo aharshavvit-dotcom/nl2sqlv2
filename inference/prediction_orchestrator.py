@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from neural_ir.calibration import choose_route, load_hybrid_calibration
 from ir.ir_to_sql_renderer import IRToSQLRenderer
 from ir.ir_validator import IRValidator
 from ir.option_c_to_ir import OptionCToIRConverter
@@ -33,9 +34,14 @@ class PredictionOrchestrator:
     ):
         self.top_k = top_k
         self.max_limit = max_limit
-        self.option_a_model_dir = Path(option_a_model_dir) if option_a_model_dir else Path(__file__).resolve().parents[1] / "artifacts" / "option_a_ir_model"
+        root = Path(__file__).resolve().parents[1]
+        self._explicit_option_a_model_dir = option_a_model_dir is not None
+        self.option_a_v2_model_dir = root / "artifacts" / "option_a_ir_model_v2"
+        self.option_a_v1_model_dir = root / "artifacts" / "option_a_ir_model"
+        self.option_a_model_dir = Path(option_a_model_dir) if option_a_model_dir else self._default_option_a_model_dir()
+        self.hybrid_calibration = load_hybrid_calibration(self.option_a_model_dir / "hybrid_calibration.json")
         self.use_option_a_fallback = use_option_a_fallback
-        self.option_a_threshold = option_a_threshold
+        self.option_a_threshold = float(self.hybrid_calibration.get("option_c_high_confidence_threshold", option_a_threshold))
         self.generator = CandidateGenerator()
         self.reranker = CandidateReranker()
         self.selector = TemplateSelector()
@@ -144,6 +150,10 @@ class PredictionOrchestrator:
             selected_candidate=candidates[0].model_dump() if candidates else None,
             warnings=list(dict.fromkeys(str(warning) for warning in warnings if warning)),
             clarification_questions=clarification,
+            router_decision={},
+            selected_query_ir=query_ir.model_dump(),
+            validation_summary={"ir_validation": ir_validation.model_dump(), "sql_validation": sql_validation},
+            confidence_breakdown=confidence["confidence_breakdown"],
             debug={
                 "schema_context": schema_context.serialize_for_debug(),
                 "template_selection": selected_template,
@@ -157,6 +167,9 @@ class PredictionOrchestrator:
             schema=schema,
             enabled=self.use_option_a_fallback if use_option_a_fallback is None else use_option_a_fallback,
         )
+
+    def _default_option_a_model_dir(self) -> Path:
+        return self.option_a_v2_model_dir if (self.option_a_v2_model_dir / "model.pt").exists() else self.option_a_v1_model_dir
 
     @staticmethod
     def _normalize_question(question: str) -> str:
@@ -279,21 +292,22 @@ class PredictionOrchestrator:
     ) -> PredictionResult:
         option_c_valid = bool(option_c_result.validation.get("is_valid", option_c_result.validation.get("ok", False)))
         if not enabled:
-            option_c_result.debug["router_decision"] = "option_a_disabled"
+            self._attach_router_decision(option_c_result, 0.0, False, "option_c", "option_a_disabled")
             return option_c_result
         if option_c_result.confidence >= self.option_a_threshold and option_c_valid:
-            option_c_result.debug["router_decision"] = "option_c_high_confidence"
+            self._attach_router_decision(option_c_result, 0.0, False, "option_c", "option_c_high_confidence")
             return option_c_result
-        if not (self.option_a_model_dir / "model.pt").exists():
-            option_c_result.debug["router_decision"] = "option_a_missing"
+        option_a_model_dir = self._available_option_a_model_dir()
+        if option_a_model_dir is None:
+            self._attach_router_decision(option_c_result, 0.0, False, "option_c", "option_a_missing")
             return option_c_result
 
         try:
             from neural_ir.predictor import OptionAIRPredictor
 
-            option_a_result = OptionAIRPredictor(str(self.option_a_model_dir)).predict(question, schema)
+            option_a_result = OptionAIRPredictor(str(option_a_model_dir)).predict(question, schema)
         except Exception as exc:
-            option_c_result.debug["router_decision"] = "option_a_error"
+            self._attach_router_decision(option_c_result, 0.0, False, "option_c", "option_a_error")
             option_c_result.debug["option_a_error"] = str(exc)
             return option_c_result
 
@@ -301,12 +315,26 @@ class PredictionOrchestrator:
         option_a_valid = bool(option_a_validation.get("is_valid", option_a_validation.get("ok", False)))
         option_a_confidence = float(option_a_result.get("confidence") or 0.0)
         option_c_result.debug["option_a_result"] = option_a_result
-        if option_a_valid and (option_a_confidence >= option_c_result.confidence or not option_c_valid):
+        decision = choose_route(
+            {
+                "confidence": option_c_result.confidence,
+                "validation": option_c_result.validation,
+            },
+            {
+                "confidence": option_a_confidence,
+                "sql_validation": option_a_validation,
+                "repairs_applied": option_a_result.get("repairs_applied", []),
+                "debug": option_a_result.get("debug", {}),
+            },
+            self.hybrid_calibration,
+        )
+        if option_a_valid and decision["selected"] == "option_a":
             query_ir = option_a_result.get("query_ir") or {}
             ir_validation = option_a_result.get("ir_validation") or {}
             warnings = []
             warnings.extend(ir_validation.get("warnings") or [])
             warnings.extend(ir_validation.get("errors") or [])
+            warnings.extend(option_a_result.get("warnings") or [])
             if not option_a_validation.get("is_valid", option_a_validation.get("ok", False)):
                 warnings.extend(option_a_validation.get("issues") or [])
             result = PredictionResult(
@@ -322,16 +350,65 @@ class PredictionOrchestrator:
                 confidence=option_a_confidence,
                 confidence_tier=self._confidence_tier(option_a_confidence),
                 warnings=list(dict.fromkeys(str(warning) for warning in warnings if warning)),
+                router_decision=decision,
+                option_a_version=option_a_result.get("option_a_version"),
+                option_c_result=option_c_result.model_dump(),
+                option_a_result=option_a_result,
+                selected_query_ir=query_ir,
+                validation_summary={
+                    "ir_validation": ir_validation,
+                    "sql_validation": option_a_validation,
+                },
+                confidence_breakdown=(option_a_result.get("debug") or {}).get("calibration", {}),
                 debug={
                     "option_c_result": option_c_result.model_dump(),
                     "option_a_result": option_a_result,
-                    "router_decision": "option_a_fallback_used",
+                    "router_decision": decision,
                 },
             )
             return result
 
-        option_c_result.debug["router_decision"] = "option_c_retained_after_option_a"
+        option_c_result.router_decision = decision
+        option_c_result.option_a_version = option_a_result.get("option_a_version")
+        option_c_result.option_c_result = option_c_result.model_dump(exclude={"option_c_result"})
+        option_c_result.option_a_result = option_a_result
+        option_c_result.selected_query_ir = option_c_result.query_ir
+        option_c_result.validation_summary = {
+            "ir_validation": option_c_result.ir_validation,
+            "sql_validation": option_c_result.validation,
+        }
+        option_c_result.debug["router_decision"] = decision
         return option_c_result
+
+    def _available_option_a_model_dir(self) -> Path | None:
+        if (self.option_a_model_dir / "model.pt").exists():
+            return self.option_a_model_dir
+        if self._explicit_option_a_model_dir:
+            return None
+        if (self.option_a_v2_model_dir / "model.pt").exists():
+            return self.option_a_v2_model_dir
+        if (self.option_a_v1_model_dir / "model.pt").exists():
+            return self.option_a_v1_model_dir
+        return None
+
+    def _attach_router_decision(
+        self,
+        result: PredictionResult,
+        option_a_confidence: float,
+        option_a_valid: bool,
+        selected: str,
+        reason: str,
+    ) -> None:
+        decision = {
+            "option_c_confidence": float(result.confidence),
+            "option_a_confidence": float(option_a_confidence),
+            "option_c_valid": bool(result.validation.get("is_valid", result.validation.get("ok", False))),
+            "option_a_valid": bool(option_a_valid),
+            "selected": selected,
+            "reason": reason,
+        }
+        result.router_decision = decision
+        result.debug["router_decision"] = decision
 
     @staticmethod
     def _confidence_tier(confidence: float) -> str:

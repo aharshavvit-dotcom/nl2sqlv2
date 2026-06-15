@@ -13,7 +13,8 @@ def test_hybrid_router_keeps_high_confidence_option_c(tmp_path) -> None:
     )
 
     assert result.source_model == "option_c"
-    assert result.debug["router_decision"] == "option_c_high_confidence"
+    assert result.router_decision["reason"] == "option_c_high_confidence"
+    assert result.router_decision["selected"] == "option_c"
 
 
 def test_hybrid_router_uses_valid_option_a_when_option_c_low(tmp_path, monkeypatch) -> None:
@@ -42,7 +43,7 @@ def test_hybrid_router_uses_valid_option_a_when_option_c_low(tmp_path, monkeypat
     )
 
     assert result.source_model == "option_a"
-    assert result.debug["router_decision"] == "option_a_fallback_used"
+    assert result.router_decision["selected"] == "option_a"
 
 
 def test_hybrid_router_missing_option_a_keeps_option_c(tmp_path) -> None:
@@ -54,7 +55,7 @@ def test_hybrid_router_missing_option_a_keeps_option_c(tmp_path) -> None:
     )
 
     assert result.source_model == "option_c"
-    assert result.debug["router_decision"] == "option_a_missing"
+    assert result.router_decision["reason"] == "option_a_missing"
 
 
 def _option_c_result(confidence: float, valid: bool) -> PredictionResult:

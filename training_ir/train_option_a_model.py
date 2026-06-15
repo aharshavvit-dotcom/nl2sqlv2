@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import sys
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -34,6 +37,7 @@ def train_option_a_model(
     epochs: int = 5,
     batch_size: int = 16,
     learning_rate: float = 0.001,
+    seed: int = 13,
 ) -> dict[str, Any]:
     train_rows = _supported_rows(load_jsonl(train_path), max_examples=max_examples)
     validation_rows = _supported_rows(load_jsonl(validation_path), max_examples=max_examples)
@@ -53,7 +57,11 @@ def train_option_a_model(
         "epochs": epochs,
         "batch_size": batch_size,
         "learning_rate": learning_rate,
+        "seed": seed,
     }
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
     vocab = Vocabulary(min_freq=1)
     vocab.build(_token_sequences(train_rows))
     label_encoder = IRLabelEncoder()
@@ -77,9 +85,9 @@ def train_option_a_model(
         max_tables=int(config["max_tables"]),
         max_columns=int(config["max_columns"]),
     )
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_ir_batch)
+    generator = torch.Generator().manual_seed(seed)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_ir_batch, generator=generator)
     validation_loader = DataLoader(validation_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_ir_batch)
-    torch.manual_seed(13)
     model = OptionAIRModel(config=config, vocab_size=len(vocab), label_sizes=label_encoder.label_sizes)
     trainer = OptionAIRTrainer(model, config)
     metrics = trainer.train(train_loader, validation_loader, label_encoder, output_dir)
@@ -137,6 +145,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--learning-rate", type=float, default=0.001)
     parser.add_argument("--max-examples", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=13)
     return parser.parse_args()
 
 
@@ -150,6 +159,7 @@ def main() -> int:
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
+        seed=args.seed,
     )
     print(json.dumps(report, indent=2))
     return 0

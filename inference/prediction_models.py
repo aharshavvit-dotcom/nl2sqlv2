@@ -78,4 +78,11 @@ class PredictionResult(BaseModel):
     selected_candidate: dict[str, Any] | None = None
     warnings: list[str] = Field(default_factory=list)
     clarification_questions: list[str] = Field(default_factory=list)
+    router_decision: dict[str, Any] = Field(default_factory=dict)
+    option_a_version: str | None = None
+    option_c_result: dict[str, Any] = Field(default_factory=dict)
+    option_a_result: dict[str, Any] = Field(default_factory=dict)
+    selected_query_ir: dict[str, Any] | None = None
+    validation_summary: dict[str, Any] = Field(default_factory=dict)
+    confidence_breakdown: dict[str, Any] = Field(default_factory=dict)
     debug: dict[str, Any] = Field(default_factory=dict)

@@ -23,6 +23,7 @@ def evaluate_ir_conversion(input_path: Path, output_path: Path = DEFAULT_OUTPUT)
     failures = []
     successful = 0
     ir_valid = 0
+    sql_valid = 0
     roundtrip_valid = 0
 
     for row in rows:
@@ -36,8 +37,12 @@ def evaluate_ir_conversion(input_path: Path, output_path: Path = DEFAULT_OUTPUT)
         successful += 1
         by_dataset[dataset]["successful"] += 1
         by_intent[row.get("intent") or "unknown"] += 1
-        if row.get("query_ir"):
+        ir_validation = row.get("ir_validation") or {}
+        if ir_validation.get("is_valid", bool(row.get("query_ir"))):
             ir_valid += 1
+        sql_validation = row.get("sql_validation") or {}
+        if sql_validation.get("is_valid", False):
+            sql_valid += 1
         roundtrip = row.get("roundtrip_validation") or {}
         if roundtrip.get("is_valid", False):
             roundtrip_valid += 1
@@ -51,6 +56,7 @@ def evaluate_ir_conversion(input_path: Path, output_path: Path = DEFAULT_OUTPUT)
         "failed_examples": len(rows) - successful,
         "conversion_success_rate": successful / len(rows) if rows else 0.0,
         "ir_validation_rate": ir_valid / successful if successful else 0.0,
+        "sql_validation_rate": sql_valid / successful if successful else 0.0,
         "roundtrip_validation_rate": roundtrip_valid / successful if successful else 0.0,
         "by_dataset": dict(by_dataset),
         "by_intent": dict(by_intent),
@@ -100,4 +106,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

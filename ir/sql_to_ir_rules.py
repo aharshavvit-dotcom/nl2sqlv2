@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import sqlglot
 from sqlglot import exp
 
 
@@ -12,6 +13,12 @@ DATE_GRAIN_RE = re.compile(
     r"strftime\(\s*['\"](?P<format>%Y(?:-%m)?)['\"]\s*,\s*(?P<table>[A-Za-z_][\w]*)\.(?P<column>[A-Za-z_][\w]*)\s*\)",
     re.IGNORECASE,
 )
+
+
+def parse_sql(sql: str, dialect: str | None = None) -> exp.Expression:
+    if dialect:
+        return sqlglot.parse_one(sql, read=dialect)
+    return sqlglot.parse_one(sql)
 
 
 def is_select_query(ast: exp.Expression) -> bool:
@@ -31,6 +38,14 @@ def has_set_operation(ast: exp.Expression) -> bool:
 
 def has_window_function(ast: exp.Expression) -> bool:
     return any(True for _ in ast.find_all(exp.Window))
+
+
+def has_complex_having(ast: exp.Expression) -> bool:
+    return ast.find(exp.Having) is not None
+
+
+def has_case_expression(ast: exp.Expression) -> bool:
+    return ast.find(exp.Case) is not None
 
 
 def extract_tables(ast: exp.Expression) -> list[str]:
@@ -226,6 +241,10 @@ def date_grain_from_expression(expr: exp.Expression) -> dict[str, str] | None:
     return date_grain_from_sql(expression_sql(expr))
 
 
+def detect_date_grain_expression(expr: exp.Expression) -> dict[str, str] | None:
+    return date_grain_from_expression(expr)
+
+
 def date_grain_from_sql(sql: str) -> dict[str, str] | None:
     match = DATE_GRAIN_RE.search(sql)
     if not match:
@@ -322,4 +341,3 @@ def reverse_operator(operator: str) -> str:
         "less_than": "greater_than",
         "less_equal": "greater_equal",
     }.get(operator, operator)
-

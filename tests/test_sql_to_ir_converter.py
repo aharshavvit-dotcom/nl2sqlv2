@@ -30,6 +30,11 @@ def sample_schema(tmp_path: Path):
             "JOIN customers ON orders.customer_id = customers.customer_id GROUP BY customers.customer_name ORDER BY revenue DESC LIMIT 5",
             "top_n_metric_by_dimension",
         ),
+        (
+            "SELECT customers.customer_name AS customer, SUM(orders.amount) AS revenue FROM orders "
+            "JOIN customers ON orders.customer_id = customers.customer_id GROUP BY customers.customer_name ORDER BY revenue ASC LIMIT 5",
+            "bottom_n_metric_by_dimension",
+        ),
         ("SELECT COUNT(*) AS record_count FROM orders LIMIT 100", "count_records"),
         (
             "SELECT orders.status AS status, COUNT(*) AS record_count FROM orders "
@@ -104,3 +109,13 @@ def test_sql_to_ir_converter_unsupported_nested_and_union(sample_schema) -> None
     assert union["success"] is False
     assert union["unsupported_reason"] == "set_operation"
 
+
+def test_sql_to_ir_converter_unsupported_non_equality_join(sample_schema) -> None:
+    result = SQLToIRConverter().convert(
+        "bad join",
+        "SELECT orders.order_id FROM orders JOIN customers ON orders.amount > customers.customer_id LIMIT 100",
+        sample_schema,
+    )
+
+    assert result["success"] is False
+    assert result["unsupported_reason"] == "unsupported_join"

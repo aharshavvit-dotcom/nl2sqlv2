@@ -6,6 +6,7 @@ from typing import Any
 import torch
 import yaml
 
+from .attention_model import DEFAULT_V2_CONFIG, SchemaAwareOptionAIRModel
 from .ir_label_encoder import IRLabelEncoder
 from .model import DEFAULT_CONFIG, OptionAIRModel
 from .vocab import Vocabulary
@@ -17,7 +18,8 @@ def save_model_bundle(model, vocab: Vocabulary, label_encoder: IRLabelEncoder, c
     torch.save(model.state_dict(), output_path / "model.pt")
     vocab.save(str(output_path / "vocab.json"))
     label_encoder.save(str(output_path / "label_maps.json"))
-    (output_path / "config.yaml").write_text(yaml.safe_dump({**DEFAULT_CONFIG, **(config or {})}, sort_keys=True), encoding="utf-8")
+    defaults = DEFAULT_V2_CONFIG if (config or {}).get("model_version") == "option_a_v2" else DEFAULT_CONFIG
+    (output_path / "config.yaml").write_text(yaml.safe_dump({**defaults, **(config or {})}, sort_keys=True), encoding="utf-8")
 
 
 def load_model_bundle(model_dir) -> dict[str, Any]:
@@ -28,8 +30,12 @@ def load_model_bundle(model_dir) -> dict[str, Any]:
     config = {**DEFAULT_CONFIG}
     if config_path.exists():
         config.update(yaml.safe_load(config_path.read_text(encoding="utf-8")) or {})
-    model = OptionAIRModel(config=config, vocab_size=len(vocab), label_sizes=label_encoder.label_sizes)
+    if config.get("model_version") == "option_a_v2":
+        config = {**DEFAULT_V2_CONFIG, **config}
+        model = SchemaAwareOptionAIRModel(config=config, vocab_size=len(vocab), label_sizes=label_encoder.label_sizes)
+    else:
+        model = OptionAIRModel(config=config, vocab_size=len(vocab), label_sizes=label_encoder.label_sizes)
     state = torch.load(model_path / "model.pt", map_location="cpu")
-    model.load_state_dict(state)
+    model.load_state_dict(state, strict=False)
     model.eval()
     return {"model": model, "vocab": vocab, "label_encoder": label_encoder, "config": config}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import sys
 from collections import Counter
 from pathlib import Path
@@ -39,6 +40,7 @@ class IRTrainingDataBuilder:
         artifact_dir: Path = DEFAULT_ARTIFACT_DIR,
         include_unsupported: bool = True,
         split_ratio: tuple[float, float, float] = DEFAULT_SPLIT_RATIO,
+        seed: int = 13,
     ) -> dict[str, Any]:
         output_dir.mkdir(parents=True, exist_ok=True)
         artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -63,7 +65,7 @@ class IRTrainingDataBuilder:
             else:
                 unsupported_rows.append(self._unsupported_row(example, result))
 
-        split_rows = self._split_supported_rows(supported_rows, split_ratio)
+        split_rows = self._split_supported_rows(supported_rows, split_ratio, seed)
         self._write_jsonl(output_dir / "ir_training_examples.jsonl", split_rows["train"])
         self._write_jsonl(output_dir / "ir_validation_examples.jsonl", split_rows["validation"])
         self._write_jsonl(output_dir / "ir_test_examples.jsonl", split_rows["test"])
@@ -93,9 +95,12 @@ class IRTrainingDataBuilder:
         all_examples: list[Text2SQLExample] = []
         schemas: dict[str, DatabaseSchema] = {}
         for dataset_name in requested:
-            examples, dataset_schemas = self.loader.load(dataset_name, max_examples=max_examples)
-            if max_examples is not None:
-                examples = examples[:max_examples]
+            remaining = None if max_examples is None else max(max_examples - len(all_examples), 0)
+            if remaining == 0:
+                break
+            examples, dataset_schemas = self.loader.load(dataset_name, max_examples=remaining)
+            if remaining is not None:
+                examples = examples[:remaining]
             all_examples.extend(examples)
             schemas.update(dataset_schemas)
         return all_examples, schemas
@@ -115,6 +120,8 @@ class IRTrainingDataBuilder:
             "rendered_sql": result["roundtrip_sql"],
             "intent": query_ir.get("intent"),
             "template_id": query_ir.get("template_id"),
+            "ir_validation": result.get("ir_validation"),
+            "sql_validation": result.get("sql_validation"),
             "roundtrip_validation": result.get("roundtrip_validation"),
             "metadata": {
                 "difficulty": example.difficulty,
@@ -146,14 +153,17 @@ class IRTrainingDataBuilder:
     def _split_supported_rows(
         rows: list[dict[str, Any]],
         split_ratio: tuple[float, float, float],
+        seed: int,
     ) -> dict[str, list[dict[str, Any]]]:
-        total = len(rows)
+        shuffled = list(rows)
+        random.Random(seed).shuffle(shuffled)
+        total = len(shuffled)
         train_count = int(total * split_ratio[0])
         validation_count = int(total * split_ratio[1])
         splits = {
-            "train": [dict(row, split="train") for row in rows[:train_count]],
-            "validation": [dict(row, split="validation") for row in rows[train_count : train_count + validation_count]],
-            "test": [dict(row, split="test") for row in rows[train_count + validation_count :]],
+            "train": [dict(row, split="train") for row in shuffled[:train_count]],
+            "validation": [dict(row, split="validation") for row in shuffled[train_count : train_count + validation_count]],
+            "test": [dict(row, split="test") for row in shuffled[train_count + validation_count :]],
         }
         for split, split_rows in splits.items():
             for row in split_rows:
@@ -167,15 +177,21 @@ class IRTrainingDataBuilder:
         split_rows: dict[str, list[dict[str, Any]]],
     ) -> dict[str, Any]:
         all_rows = [*supported_rows, *unsupported_rows]
+        success_rate = len(supported_rows) / len(all_rows) if all_rows else 0.0
+        split_counts = {split: len(rows) for split, rows in split_rows.items()}
+        unsupported_reasons = dict(Counter(row.get("unsupported_reason") for row in unsupported_rows))
         return {
             "total_examples": len(all_rows),
             "successful_examples": len(supported_rows),
             "unsupported_examples": len(unsupported_rows),
-            "conversion_success_rate": len(supported_rows) / len(all_rows) if all_rows else 0.0,
+            "success_rate": success_rate,
+            "conversion_success_rate": success_rate,
             "by_dataset": dict(Counter(row["dataset_name"] for row in supported_rows)),
             "by_intent": dict(Counter(row["intent"] for row in supported_rows)),
-            "by_split": {split: len(rows) for split, rows in split_rows.items()},
-            "by_unsupported_reason": dict(Counter(row.get("unsupported_reason") for row in unsupported_rows)),
+            "split_counts": split_counts,
+            "by_split": split_counts,
+            "unsupported_reasons": unsupported_reasons,
+            "by_unsupported_reason": unsupported_reasons,
         }
 
     @staticmethod
@@ -224,6 +240,7 @@ def build_ir_training_data(
     include_unsupported: bool = True,
     split_ratio: tuple[float, float, float] = DEFAULT_SPLIT_RATIO,
     loader: DatasetLoader | None = None,
+    seed: int = 13,
 ) -> dict[str, Any]:
     return IRTrainingDataBuilder(loader=loader).build(
         dataset_names=datasets,
@@ -232,6 +249,7 @@ def build_ir_training_data(
         artifact_dir=artifact_dir,
         include_unsupported=include_unsupported,
         split_ratio=split_ratio,
+        seed=seed,
     )
 
 
@@ -243,6 +261,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--artifact-dir", type=Path, default=DEFAULT_ARTIFACT_DIR)
     parser.add_argument("--include-unsupported", action="store_true", default=True)
     parser.add_argument("--split-ratio", default="0.8,0.1,0.1")
+    parser.add_argument("--seed", type=int, default=13)
     return parser.parse_args()
 
 
@@ -255,6 +274,7 @@ def main() -> int:
         artifact_dir=args.artifact_dir,
         include_unsupported=args.include_unsupported,
         split_ratio=parse_split_ratio(args.split_ratio),
+        seed=args.seed,
     )
     print(json.dumps(report, indent=2))
     return 0

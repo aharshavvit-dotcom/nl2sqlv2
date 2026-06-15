@@ -284,6 +284,18 @@ python training_ir\train_option_a_model.py `
   --train data\processed\ir_training_examples.jsonl `
   --validation data\processed\ir_validation_examples.jsonl `
   --output-dir artifacts\option_a_ir_model `
+  --max-examples 500 `
+  --epochs 2 `
+  --batch-size 8
+```
+
+Train a longer local model:
+
+```powershell
+python training_ir\train_option_a_model.py `
+  --train data\processed\ir_training_examples.jsonl `
+  --validation data\processed\ir_validation_examples.jsonl `
+  --output-dir artifacts\option_a_ir_model `
   --epochs 5 `
   --batch-size 16
 ```
@@ -318,6 +330,116 @@ Limitations:
 - It supports structured QueryIR prediction for known intent families.
 - It depends on high-quality SQL-to-IR training labels.
 - The first pointer heads are fixed-size and intentionally simple.
+- It is not expected to be highly accurate immediately; this stage proves local training, loading, QueryIR prediction, validation, rendering, and hybrid fallback.
+
+## Option A V1.5: Quality Improvement and Hybrid Calibration
+
+Option A V1 was the smoke trainable model. Option A V1.5 improves the local path with schema candidates, lexical schema linking, candidate masks, masked pointer loss, curriculum training, error analysis, curated eval cases, and calibrated hybrid routing.
+
+Train with a lightweight curriculum:
+
+```powershell
+python training_ir\train_option_a_curriculum.py `
+  --train data\processed\ir_training_examples.jsonl `
+  --validation data\processed\ir_validation_examples.jsonl `
+  --output-dir artifacts\option_a_ir_model `
+  --epochs-per-phase 2 `
+  --batch-size 8
+```
+
+Evaluate with the generated split plus curated sample-retail cases:
+
+```powershell
+python training_ir\evaluate_option_a_model.py `
+  --model-dir artifacts\option_a_ir_model `
+  --test data\processed\ir_test_examples.jsonl `
+  --eval-cases evaluation\option_a_eval_cases.jsonl `
+  --db data\sample_retail.db `
+  --output artifacts\option_a_ir_model\evaluation_report.json
+```
+
+Analyze errors by intent, dataset, slot, and validation failure:
+
+```powershell
+python training_ir\analyze_option_a_errors.py `
+  --model-dir artifacts\option_a_ir_model `
+  --test data\processed\ir_test_examples.jsonl `
+  --output artifacts\option_a_ir_model\error_analysis_report.json
+```
+
+Calibrate the Option C / Option A router:
+
+```powershell
+python training_ir\calibrate_hybrid_router.py `
+  --eval-cases evaluation\option_a_eval_cases.jsonl `
+  --db data\sample_retail.db `
+  --option-a-model-dir artifacts\option_a_ir_model `
+  --output artifacts\option_a_ir_model\hybrid_calibration.json
+```
+
+Use BIRD Mini first. BIRD Full is optional and should be added only after the pipeline is stable.
+
+## Option A V2: Schema-Aware Neural QueryIR Model
+
+Option A V2 improves the neural QueryIR model with schema-aware attention, reusable pointer networks, hard-negative examples, IR repair, and calibrated confidence. It still does not generate raw SQL. The model predicts QueryIR labels and schema pointers, then the same safe runtime handles:
+
+```text
+QueryIR -> IRValidator -> IRToSQLRenderer -> SQLValidator -> safe execution
+```
+
+Option C remains the default runtime. Option A V2 is used only as an optional fallback/hybrid candidate when its artifact exists and fallback is enabled.
+
+Build hard negatives:
+
+```bash
+python training_ir/build_hard_negative_data.py \
+  --input data/processed/ir_training_examples.jsonl \
+  --output data/processed/ir_hard_negative_examples.jsonl \
+  --max-negatives-per-example 5
+```
+
+Train a CPU-friendly V2 smoke model:
+
+```bash
+python training_ir/train_option_a_v2_model.py \
+  --train data/processed/ir_training_examples.jsonl \
+  --validation data/processed/ir_validation_examples.jsonl \
+  --hard-negatives data/processed/ir_hard_negative_examples.jsonl \
+  --output-dir artifacts/option_a_ir_model_v2 \
+  --max-examples 500 \
+  --epochs 2 \
+  --batch-size 8
+```
+
+Evaluate V2:
+
+```bash
+python training_ir/evaluate_option_a_v2_model.py \
+  --model-dir artifacts/option_a_ir_model_v2 \
+  --test data/processed/ir_test_examples.jsonl \
+  --eval-cases evaluation/option_a_v2_eval_cases.jsonl \
+  --db data/sample_retail.db \
+  --output artifacts/option_a_ir_model_v2/evaluation_report.json
+```
+
+Benchmark Option C, Option A, and hybrid routing:
+
+```bash
+python training_ir/benchmark_hybrid_system.py \
+  --eval-cases evaluation/hybrid_benchmark_cases.jsonl \
+  --db data/sample_retail.db \
+  --option-a-model-dir artifacts/option_a_ir_model_v2 \
+  --output artifacts/hybrid_benchmark_report.json
+```
+
+Analyze IR dataset quality:
+
+```bash
+python training_ir/analyze_ir_dataset_quality.py \
+  --input data/processed/ir_training_examples.jsonl \
+  --unsupported data/processed/ir_unsupported_examples.jsonl \
+  --output artifacts/option_a_ir_data/dataset_quality_report.json
+```
 
 ## Dataset Training Pipeline
 

@@ -5,13 +5,18 @@ from typing import Any
 
 import torch
 
+from ir.query_ir_models import QueryIR
 from ir.ir_to_sql_renderer import IRToSQLRenderer
 from ir.ir_validator import IRValidator
 from validation.sql_validator import SQLValidator
 
+from .candidate_builder import SchemaCandidateBuilder, build_candidate_masks, schema_link_score_vector
+from .confidence_calibrator import OptionAConfidenceCalibrator
+from .ir_repair import OptionAIRRepairer
 from .model_registry import load_model_bundle
 from .option_a_to_ir import OptionAToIRConverter
 from .schema_linearizer import SchemaLinearizer, extract_schema_items
+from .schema_linker import SchemaLinker
 from .tokenizer import tokenize
 
 
@@ -25,7 +30,11 @@ class OptionAIRPredictor:
         self.config = bundle["config"]
         self.model.eval()
         self.linearizer = SchemaLinearizer()
+        self.candidate_builder = SchemaCandidateBuilder()
+        self.schema_linker = SchemaLinker()
         self.converter = OptionAToIRConverter()
+        self.repairer = OptionAIRRepairer()
+        self.calibrator = OptionAConfidenceCalibrator.load(str(self.model_dir / "option_a_calibration.json"))
         self.ir_validator = IRValidator()
         self.sql_renderer = IRToSQLRenderer()
         self.sql_validator = SQLValidator()
@@ -33,6 +42,14 @@ class OptionAIRPredictor:
     def predict(self, question: str, schema: dict) -> dict[str, Any]:
         schema_items = extract_schema_items(schema)
         schema_text = self.linearizer.linearize(schema)
+        candidates = self.candidate_builder.build_candidates(schema, question)
+        link_result = self.schema_linker.link(question, candidates)
+        candidate_masks = build_candidate_masks(
+            candidates,
+            int(self.config.get("max_tables", 64)),
+            int(self.config.get("max_columns", 256)),
+        )
+        link_scores = schema_link_score_vector(link_result, int(self.config.get("max_columns", 256)))
         question_ids = torch.tensor(
             [self.vocab.encode(tokenize(question), int(self.config.get("max_question_len", 64)))],
             dtype=torch.long,
@@ -43,35 +60,108 @@ class OptionAIRPredictor:
         )
         question_mask = question_ids.ne(self.vocab.pad_id).float()
         schema_mask = schema_ids.ne(self.vocab.pad_id).float()
+        tensor_masks = {
+            key: torch.tensor([value], dtype=torch.float32)
+            for key, value in candidate_masks.items()
+            if key.endswith("_mask")
+        }
+        candidate_tokens = _candidate_token_tensors(
+            candidates,
+            self.vocab,
+            int(self.config.get("max_tables", 64)),
+            int(self.config.get("max_columns", 256)),
+            int(self.config.get("max_candidate_tokens", 16)),
+        )
+        schema_link_scores = torch.tensor([link_scores], dtype=torch.float32)
         with torch.no_grad():
-            outputs = self.model(question_ids, schema_ids, question_mask, schema_mask)
+            outputs = self.model(
+                question_ids=question_ids,
+                schema_ids=schema_ids,
+                question_mask=question_mask,
+                schema_mask=schema_mask,
+                schema_link_scores=schema_link_scores,
+                **tensor_masks,
+                **candidate_tokens,
+            )
         prediction_indices = _prediction_indices(outputs)
         decoded = self.label_encoder.decode(prediction_indices, schema_items)
         raw_summary = _logit_summary(outputs)
-        confidence = _confidence(outputs)
+        raw_confidence = _confidence(outputs)
+        confidence = raw_confidence
+        warnings: list[str] = []
+        repair_payload = {"query_ir": None, "repairs_applied": [], "repair_warnings": [], "repair_success": False}
         try:
             query_ir = self.converter.convert(question, schema, decoded)
-            ir_validation = self.ir_validator.validate(query_ir, schema=schema)
-            sql = self.sql_renderer.render(query_ir) if ir_validation.is_valid else None
-            sql_validation = self.sql_validator.validate(sql, schema=schema, dialect=query_ir.dialect)
+            before_ir_validation = self.ir_validator.validate(query_ir, schema=schema)
+            repair_payload = self.repairer.repair(query_ir, schema=schema, question=question, validation_result=before_ir_validation)
+            repaired_query_ir = _query_ir_from_payload(repair_payload.get("query_ir")) if repair_payload.get("query_ir") else query_ir
+            ir_validation = self.ir_validator.validate(repaired_query_ir, schema=schema)
+            sql = self.sql_renderer.render(repaired_query_ir) if ir_validation.is_valid else None
+            sql_validation = self.sql_validator.validate(sql, schema=schema, dialect=repaired_query_ir.dialect)
             query_ir_payload = query_ir.model_dump()
+            repaired_query_ir_payload = repaired_query_ir.model_dump()
             ir_payload = ir_validation.model_dump()
+            warnings.extend(str(item) for item in query_ir.warnings)
+            warnings.extend(str(item) for item in repaired_query_ir.warnings)
+            warnings.extend(str(item) for item in ir_validation.warnings)
+            warnings.extend(str(item) for item in ir_validation.errors)
+            warnings.extend(str(item) for item in repair_payload.get("repair_warnings", []))
+            if not sql_validation.get("is_valid", sql_validation.get("ok", False)):
+                warnings.extend(str(item) for item in sql_validation.get("issues", []))
+                confidence = min(confidence, 0.40)
+            if not ir_validation.is_valid:
+                confidence = min(confidence, 0.20)
+            confidence = self.calibrator.calibrate(
+                raw_confidence=raw_confidence,
+                validation_summary={
+                    "ir_validation": ir_payload,
+                    "sql_validation": sql_validation,
+                    "repairs": repair_payload,
+                },
+                prediction_debug={
+                    "decoded_prediction": decoded,
+                    "schema_linking": link_result,
+                    "candidate_scores": _candidate_score_debug(outputs),
+                    "repairs": repair_payload,
+                    "raw_logits_summary": raw_summary,
+                },
+            )
         except Exception as exc:
             sql = None
             sql_validation = {"is_valid": False, "ok": False, "issues": [str(exc)], "message": "Option A conversion failed"}
             query_ir_payload = None
+            repaired_query_ir_payload = None
             ir_payload = {"is_valid": False, "errors": [str(exc)], "warnings": [], "issues": []}
+            warnings.append(str(exc))
+            confidence = min(confidence, 0.10)
         return {
+            "source_model": "option_a",
+            "option_a_version": "v2" if self.config.get("model_version") == "option_a_v2" else str(self.config.get("model_version") or "v1"),
             "query_ir": query_ir_payload,
+            "repaired_query_ir": repaired_query_ir_payload,
+            "repairs_applied": repair_payload.get("repairs_applied", []),
             "ir_validation": ir_payload,
             "sql": sql,
             "sql_validation": sql_validation,
             "validation": sql_validation,
+            "raw_confidence": raw_confidence,
+            "calibrated_confidence": confidence,
             "confidence": confidence,
+            "warnings": list(dict.fromkeys(warnings)),
             "debug": {
                 "decoded_prediction": decoded,
                 "raw_logits_summary": raw_summary,
                 "prediction_indices": prediction_indices,
+                "schema_candidates": candidates,
+                "schema_linking": link_result,
+                "candidate_scores": _candidate_score_debug(outputs),
+                "attention": _attention_debug(outputs),
+                "repairs": repair_payload,
+                "calibration": {
+                    "raw_confidence": raw_confidence,
+                    "calibrated_confidence": confidence,
+                },
+                "candidate_warnings": candidate_masks.get("candidate_warnings", []),
             },
         }
 
@@ -97,7 +187,9 @@ def _prediction_indices(outputs: dict[str, torch.Tensor]) -> dict[str, int]:
 
 def _confidence(outputs: dict[str, torch.Tensor]) -> float:
     probs = []
-    for logits in outputs.values():
+    for head, logits in outputs.items():
+        if not head.endswith("_logits") or not torch.is_tensor(logits):
+            continue
         probs.append(float(torch.softmax(logits, dim=-1).max(dim=-1).values.item()))
     return sum(probs) / max(len(probs), 1)
 
@@ -109,4 +201,47 @@ def _logit_summary(outputs: dict[str, torch.Tensor]) -> dict[str, Any]:
             "max_probability": float(torch.softmax(logits, dim=-1).max(dim=-1).values.item()),
         }
         for head, logits in outputs.items()
+        if head.endswith("_logits") and torch.is_tensor(logits)
     }
+
+
+def _candidate_token_tensors(candidates: dict[str, Any], vocab, max_tables: int, max_columns: int, max_candidate_tokens: int) -> dict[str, torch.Tensor]:
+    table_ids = _candidate_token_ids(candidates.get("tables", []), vocab, max_tables, max_candidate_tokens)
+    column_ids = _candidate_token_ids(candidates.get("columns", []), vocab, max_columns, max_candidate_tokens)
+    return {
+        "table_candidate_token_ids": torch.tensor([table_ids], dtype=torch.long),
+        "column_candidate_token_ids": torch.tensor([column_ids], dtype=torch.long),
+        "candidate_token_ids": torch.tensor([column_ids], dtype=torch.long),
+    }
+
+
+def _candidate_token_ids(candidates: list[dict[str, Any]], vocab, max_candidates: int, max_candidate_tokens: int) -> list[list[int]]:
+    rows = [[vocab.pad_id] * max_candidate_tokens for _ in range(max_candidates)]
+    for candidate in candidates:
+        index = int(candidate.get("index", -1))
+        if 0 <= index < max_candidates:
+            rows[index] = vocab.encode(list(candidate.get("tokens") or tokenize(str(candidate.get("display") or ""))), max_candidate_tokens)
+    return rows
+
+
+def _query_ir_from_payload(payload: Any) -> QueryIR:
+    if isinstance(payload, QueryIR):
+        return payload
+    if hasattr(QueryIR, "model_validate"):
+        return QueryIR.model_validate(payload)
+    return QueryIR.parse_obj(payload)
+
+
+def _candidate_score_debug(outputs: dict[str, Any]) -> dict[str, Any]:
+    raw = outputs.get("candidate_scores") or {}
+    return {key: value.detach().cpu().squeeze(0).tolist() if torch.is_tensor(value) else value for key, value in raw.items()}
+
+
+def _attention_debug(outputs: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    if torch.is_tensor(outputs.get("top_schema_candidates")):
+        payload["top_schema_candidates"] = outputs["top_schema_candidates"].detach().cpu().squeeze(0).tolist()
+    if torch.is_tensor(outputs.get("attention_weights")):
+        weights = outputs["attention_weights"].detach().cpu()
+        payload["shape"] = list(weights.shape)
+    return payload

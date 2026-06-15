@@ -19,6 +19,7 @@ DEFAULT_SAMPLE_EXAMPLES = ROOT / "training_data" / "examples.jsonl"
 DEFAULT_TEMPLATES = ROOT / "data" / "templates.yaml"
 DEFAULT_SYNONYMS = ROOT / "data" / "synonyms.yaml"
 DEFAULT_OPTION_A_ARTIFACT_DIR = ROOT / "artifacts" / "option_a_ir_model"
+DEFAULT_OPTION_A_V2_ARTIFACT_DIR = ROOT / "artifacts" / "option_a_ir_model_v2"
 
 
 @dataclass
@@ -42,15 +43,15 @@ class RetrievalNL2SQLModel:
         sample_examples_path: str | Path = DEFAULT_SAMPLE_EXAMPLES,
         templates_path: str | Path = DEFAULT_TEMPLATES,
         synonyms_path: str | Path = DEFAULT_SYNONYMS,
-        option_a_model_dir: str | Path = DEFAULT_OPTION_A_ARTIFACT_DIR,
+        option_a_model_dir: str | Path | None = None,
         use_option_a_fallback: bool = False,
     ) -> "RetrievalNL2SQLModel":
         artifact_path = Path(artifact_dir)
         templates = Path(templates_path)
         synonyms = Path(synonyms_path)
-        option_a_path = Path(option_a_model_dir)
+        option_a_path = Path(option_a_model_dir) if option_a_model_dir is not None else cls._default_option_a_dir()
         orchestrator = PredictionOrchestrator(
-            option_a_model_dir=option_a_path,
+            option_a_model_dir=option_a_path if option_a_model_dir is not None else None,
             use_option_a_fallback=use_option_a_fallback,
         )
         metric_synonyms, dimension_synonyms = cls._load_synonyms(synonyms)
@@ -88,6 +89,10 @@ class RetrievalNL2SQLModel:
             and (path / "tfidf_vectorizer.pkl").exists()
             and (path / "tfidf_matrix.pkl").exists()
         )
+
+    @staticmethod
+    def _default_option_a_dir() -> Path:
+        return DEFAULT_OPTION_A_V2_ARTIFACT_DIR if (DEFAULT_OPTION_A_V2_ARTIFACT_DIR / "model.pt").exists() else DEFAULT_OPTION_A_ARTIFACT_DIR
 
     def predict(self, question: str, schema: SchemaGraph, use_option_a_fallback: bool | None = None) -> PredictionResult:
         return self.orchestrator.predict(

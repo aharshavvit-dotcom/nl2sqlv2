@@ -11,6 +11,11 @@ from ir.sql_to_ir_rules import (
     extract_order_by,
     extract_tables,
     extract_where_filters,
+    has_case_expression,
+    has_complex_having,
+    has_nested_query,
+    has_set_operation,
+    has_window_function,
 )
 
 
@@ -47,3 +52,16 @@ def test_sql_to_ir_rules_detect_date_grain_expression() -> None:
         "date_expression": "orders.order_date",
     }
 
+
+def test_sql_to_ir_rules_detect_unsupported_patterns() -> None:
+    nested = sqlglot.parse_one("SELECT order_id FROM orders WHERE amount > (SELECT AVG(amount) FROM orders)", read="sqlite")
+    union = sqlglot.parse_one("SELECT order_id FROM orders UNION SELECT order_id FROM orders", read="sqlite")
+    window = sqlglot.parse_one("SELECT ROW_NUMBER() OVER (ORDER BY order_id) AS rn FROM orders", read="sqlite")
+    having = sqlglot.parse_one("SELECT status, COUNT(*) FROM orders GROUP BY status HAVING COUNT(*) > 1", read="sqlite")
+    case = sqlglot.parse_one("SELECT CASE WHEN amount > 0 THEN 1 ELSE 0 END AS flag FROM orders", read="sqlite")
+
+    assert has_nested_query(nested)
+    assert has_set_operation(union)
+    assert has_window_function(window)
+    assert has_complex_having(having)
+    assert has_case_expression(case)

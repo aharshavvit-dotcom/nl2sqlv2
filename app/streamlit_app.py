@@ -29,6 +29,7 @@ SYNONYMS_PATH = ROOT / "data" / "synonyms.yaml"
 MODEL_PATH = ROOT / "models" / "tfidf_retriever.joblib"
 ARTIFACT_DIR = ROOT / "artifacts" / "option_c_model"
 OPTION_A_ARTIFACT_DIR = ROOT / "artifacts" / "option_a_ir_model"
+OPTION_A_V2_ARTIFACT_DIR = ROOT / "artifacts" / "option_a_ir_model_v2"
 FEEDBACK_PATH = ROOT / "feedback" / "feedback.jsonl"
 EVALUATION_DIR = ROOT / "evaluation"
 GOLDEN_RESULTS_PATH = EVALUATION_DIR / "golden_runtime_report.json"
@@ -48,13 +49,33 @@ def _artifact_ready() -> bool:
     )
 
 
-def _option_a_ready() -> bool:
+def _option_a_artifact_dir() -> Path:
+    if _option_a_ready(OPTION_A_V2_ARTIFACT_DIR):
+        return OPTION_A_V2_ARTIFACT_DIR
+    if _option_a_ready(OPTION_A_ARTIFACT_DIR):
+        return OPTION_A_ARTIFACT_DIR
+    return OPTION_A_V2_ARTIFACT_DIR
+
+
+def _option_a_ready(path: Path | None = None) -> bool:
+    artifact_dir = path or _option_a_artifact_dir()
     return (
-        (OPTION_A_ARTIFACT_DIR / "model.pt").exists()
-        and (OPTION_A_ARTIFACT_DIR / "vocab.json").exists()
-        and (OPTION_A_ARTIFACT_DIR / "label_maps.json").exists()
-        and (OPTION_A_ARTIFACT_DIR / "config.yaml").exists()
+        (artifact_dir / "model.pt").exists()
+        and (artifact_dir / "vocab.json").exists()
+        and (artifact_dir / "label_maps.json").exists()
+        and (artifact_dir / "config.yaml").exists()
     )
+
+
+def _option_a_version() -> str:
+    if _option_a_ready(OPTION_A_V2_ARTIFACT_DIR):
+        return "v2"
+    if not _option_a_ready(OPTION_A_ARTIFACT_DIR):
+        return "none"
+    config_text = (OPTION_A_ARTIFACT_DIR / "config.yaml").read_text(encoding="utf-8")
+    if "v1_5" in config_text or "v1.5" in config_text:
+        return "v1.5"
+    return "v1"
 
 
 def _load_model() -> RetrievalNL2SQLModel:
@@ -64,7 +85,7 @@ def _load_model() -> RetrievalNL2SQLModel:
         sample_examples_path=EXAMPLES_PATH,
         templates_path=TEMPLATES_PATH,
         synonyms_path=SYNONYMS_PATH,
-        option_a_model_dir=OPTION_A_ARTIFACT_DIR,
+        option_a_model_dir=_option_a_artifact_dir() if _option_a_ready() else None,
     )
 
 
@@ -94,7 +115,8 @@ with st.expander("Model Status", expanded=True):
     dataset_stats = _load_json(ARTIFACT_DIR / "dataset_stats.json")
     option_c_ready = _artifact_ready()
     option_a_ready = _option_a_ready()
-    status_cols = st.columns(5)
+    option_a_version = _option_a_version()
+    status_cols = st.columns(6)
     status_cols[0].metric("Option C artifact", "large" if option_c_ready else "sample")
     status_cols[1].metric("Training examples", training_report.get("supported_examples", "sample"))
     status_cols[2].metric("Unsupported", dataset_stats.get("unsupported_examples", 0))
@@ -103,8 +125,10 @@ with st.expander("Model Status", expanded=True):
     else:
         status_cols[3].metric("Top-5 accuracy", "Not measured")
         st.warning("Accuracy not yet measured — run evaluation after training.")
-    status_cols[4].metric("Option A model", "ready" if option_a_ready else "missing")
-    st.caption(f"Hybrid routing: {'available' if option_a_ready else 'disabled until Option A is trained'}")
+    status_cols[4].metric("Option A version", option_a_version)
+    status_cols[5].metric("Hybrid router", "calibrated" if (_option_a_artifact_dir() / "hybrid_calibration.json").exists() else ("available" if option_a_ready else "disabled"))
+    st.caption(f"Hybrid routing: {'enabled' if option_a_ready else 'disabled until Option A is trained'}")
+    st.caption(f"Option A artifact path: {_option_a_artifact_dir()}")
     st.caption(f"Artifact path: {ARTIFACT_DIR}")
     summary_rows = [
         {"item": "datasets used", "value": ", ".join(training_report.get("datasets_used", [])) or "sample"},
@@ -243,12 +267,23 @@ if generate and question.strip():
         hide_index=True,
     )
 
+    router_decision = result.router_decision or result.debug.get("router_decision") or {}
+    option_a_result = result.option_a_result or result.debug.get("option_a_result") or {}
+
     st.subheader("Confidence")
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
     c1.metric("Confidence", f"{result.confidence:.3f}")
     c2.metric("Tier", result.confidence_tier)
     c3.metric("Intent", result.intent or "unknown")
     c4.metric("Source model used", {"option_c": "Option C", "option_a": "Option A", "hybrid": "Hybrid"}.get(result.source_model, result.source_model))
+    c5.metric("Option C confidence", f"{float(router_decision.get('option_c_confidence', result.confidence) or 0):.3f}")
+    c6.metric("Option A calibrated", f"{float(router_decision.get('option_a_confidence', option_a_result.get('calibrated_confidence', 0)) or 0):.3f}")
+    c7.metric("Option A version", result.option_a_version or option_a_result.get("option_a_version") or _option_a_version())
+    if router_decision:
+        st.caption(f"Router decision: {router_decision.get('selected')} ({router_decision.get('reason')})")
+    repairs_applied = option_a_result.get("repairs_applied") or []
+    if repairs_applied:
+        st.info("Repairs applied: " + ", ".join(str(item) for item in repairs_applied))
 
     st.subheader("Slots")
     slot_rows = [
@@ -346,11 +381,20 @@ if generate and question.strip():
         st.subheader("IR validation JSON")
         st.json(result.ir_validation or {})
         st.subheader("Router decision")
+        st.json(router_decision or {"source_model": result.source_model, "option_a_tried": "option_a_result" in result.debug})
+        st.subheader("Confidence comparison")
         st.json(
             {
-                "decision": result.debug.get("router_decision"),
-                "source_model": result.source_model,
-                "option_a_tried": "option_a_result" in result.debug,
+                "option_c_confidence": router_decision.get("option_c_confidence"),
+                "option_a_confidence": router_decision.get("option_a_confidence"),
+                "selected": router_decision.get("selected"),
+            }
+        )
+        st.subheader("Validation comparison")
+        st.json(
+            {
+                "option_c_valid": router_decision.get("option_c_valid"),
+                "option_a_valid": router_decision.get("option_a_valid"),
             }
         )
         if result.debug.get("option_c_result"):
@@ -359,6 +403,17 @@ if generate and question.strip():
         if result.debug.get("option_a_result"):
             st.subheader("Option A result")
             st.json(result.debug.get("option_a_result"))
+            option_a_debug = result.debug.get("option_a_result", {}).get("debug", {})
+            st.subheader("Schema-link scores")
+            st.json(option_a_debug.get("schema_linking", {}))
+            st.subheader("Candidate pointer scores")
+            st.json(option_a_debug.get("candidate_scores", {}))
+            st.subheader("Raw decoded labels")
+            st.json(option_a_debug.get("decoded_prediction", {}))
+            st.subheader("Repaired QueryIR")
+            st.json(result.debug.get("option_a_result", {}).get("repaired_query_ir", {}))
+            st.subheader("Confidence calibration")
+            st.json(option_a_debug.get("calibration", {}))
         st.subheader("PredictionResult JSON")
         st.json(result.model_dump())
 elif not generate:
