@@ -201,6 +201,57 @@ def run_audit() -> dict[str, Any]:
         "bundle_validator.py exists" if bundle_val.exists() else "Bundle validator missing",
     ))
 
+    # 16. Pipeline runner rejects unknown steps
+    step_runner = ROOT / "orchestration" / "step_runner.py"
+    unknown_steps_fail = False
+    if step_runner.exists():
+        source = step_runner.read_text(encoding="utf-8")
+        unknown_steps_fail = "Unknown pipeline step" in source and "no runner implemented" not in source
+    checks.append(_check(
+        "pipeline_unknown_steps_fail",
+        "Pipeline unknown steps fail",
+        unknown_steps_fail,
+        "Unknown steps raise errors" if unknown_steps_fail else "Unknown steps may still skip silently",
+    ))
+
+    # 17. Neural wrapper defaults to generic corpus
+    neural_train = ROOT / "training" / "train_neural_ir_model.py"
+    neural_generic_default = False
+    if neural_train.exists():
+        source = neural_train.read_text(encoding="utf-8")
+        neural_generic_default = "generic_ir_train.jsonl" in source and "--legacy" in source and "ir_training_examples.jsonl" not in source
+    checks.append(_check(
+        "neural_wrapper_generic_default",
+        "Neural wrapper uses generic corpus by default",
+        neural_generic_default,
+        "Optimized generic-corpus path is default" if neural_generic_default else "Old IR training default still visible",
+    ))
+
+    # 18. Runtime sample fallback is dev-only
+    runtime_model = ROOT / "retriever" / "retrieval_nl2sql_model.py"
+    no_sample_fallback = False
+    if runtime_model.exists():
+        source = runtime_model.read_text(encoding="utf-8")
+        no_sample_fallback = "allow_dev_fallback" in source and "No validated model bundle found" in source
+    checks.append(_check(
+        "runtime_no_sample_fallback",
+        "Runtime sample fallback is dev-only",
+        no_sample_fallback,
+        "Missing artifacts raise bundle error by default" if no_sample_fallback else "Runtime may still silently fall back",
+    ))
+
+    # 19. Bundle validator has blocking artifact and dataset checks
+    bundle_strict = False
+    if bundle_val.exists():
+        source = bundle_val.read_text(encoding="utf-8")
+        bundle_strict = "Required {label} artifact missing" in source and "Dataset leakage check failed" in source
+    checks.append(_check(
+        "bundle_validator_strict",
+        "Bundle validator has strict checks",
+        bundle_strict,
+        "Strict artifact and dataset checks found" if bundle_strict else "Bundle validator still appears advisory",
+    ))
+
     # Compute summary
     passed = sum(1 for c in checks if c["passed"])
     failed = sum(1 for c in checks if not c["passed"])

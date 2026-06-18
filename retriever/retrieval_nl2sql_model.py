@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -14,18 +15,13 @@ from nl2sql_v1.schema import SchemaGraph
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# New canonical artifact dirs (with fallback to old names)
-def _resolve_dir(new_name: str, old_name: str) -> Path:
-    new_path = ROOT / "artifacts" / new_name
-    return new_path if new_path.exists() else ROOT / "artifacts" / old_name
-
-DEFAULT_ARTIFACT_DIR = _resolve_dir("retrieval_ir_model", "option_c_model")
+DEFAULT_ARTIFACT_DIR = ROOT / "artifacts" / "work" / "retrieval_ir"
 DEFAULT_SAMPLE_MODEL = ROOT / "models" / "tfidf_retriever.joblib"
 DEFAULT_SAMPLE_EXAMPLES = ROOT / "training_data" / "examples.jsonl"
 DEFAULT_TEMPLATES = ROOT / "data" / "templates.yaml"
 DEFAULT_SYNONYMS = ROOT / "data" / "synonyms.yaml"
-DEFAULT_NEURAL_IR_ARTIFACT_DIR = _resolve_dir("neural_ir_model", "option_a_ir_model")
-DEFAULT_NEURAL_IR_V2_ARTIFACT_DIR = _resolve_dir("neural_ir_model", "option_a_ir_model_v2")
+DEFAULT_NEURAL_IR_ARTIFACT_DIR = ROOT / "artifacts" / "work" / "neural_ir"
+DEFAULT_NEURAL_IR_V2_ARTIFACT_DIR = ROOT / "artifacts" / "work" / "neural_ir"
 
 
 @dataclass
@@ -51,6 +47,7 @@ class RetrievalNL2SQLModel:
         synonyms_path: str | Path = DEFAULT_SYNONYMS,
         neural_ir_model_dir: str | Path | None = None,
         use_neural_ir_fallback: bool = False,
+        allow_dev_fallback: bool | None = None,
         # Backward-compatible aliases
         option_a_model_dir: str | Path | None = None,
         use_option_a_fallback: bool | None = None,
@@ -99,6 +96,11 @@ class RetrievalNL2SQLModel:
                 neural_ir_model_dir=neural_ir_path,
                 use_neural_ir_fallback=_fallback,
             )
+        dev_fallback = cls._dev_fallbacks_enabled() if allow_dev_fallback is None else allow_dev_fallback
+        if not dev_fallback:
+            raise RuntimeError(
+                "No validated model bundle found. Run python training/train_model.py --config configs/training.yaml"
+            )
         return cls(
             retriever=TfidfRetriever.load_or_train(sample_model_path, sample_examples_path),
             templates_path=templates,
@@ -129,11 +131,19 @@ class RetrievalNL2SQLModel:
             and (path / "schema_index.pkl").exists()
             and (path / "pattern_index.pkl").exists()
             and (path / "rag_metadata.json").exists()
+            and (path / "manifest.json").exists()
         )
 
     @staticmethod
     def _default_neural_ir_dir() -> Path:
         return DEFAULT_NEURAL_IR_V2_ARTIFACT_DIR if (DEFAULT_NEURAL_IR_V2_ARTIFACT_DIR / "model.pt").exists() else DEFAULT_NEURAL_IR_ARTIFACT_DIR
+
+    @staticmethod
+    def _dev_fallbacks_enabled() -> bool:
+        return (
+            os.getenv("APP_MODE", "").strip().lower() == "demo"
+            or os.getenv("ENABLE_DEV_FALLBACKS", "").strip().lower() in {"1", "true", "yes"}
+        )
 
     def predict(self, question: str, schema: SchemaGraph, use_neural_ir_fallback: bool | None = None, use_option_a_fallback: bool | None = None) -> PredictionResult:
         _fallback = use_neural_ir_fallback if use_neural_ir_fallback is not None else use_option_a_fallback

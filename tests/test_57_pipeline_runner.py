@@ -22,9 +22,11 @@ steps:
     runner = PipelineRunner(state_path)
     report = runner.run(str(config))
 
-    assert report["status"] == "completed"
+    assert report["status"] == "failed"
     assert [step["step"] for step in report["steps"]] == ["run_app_smoke_check", "unknown_step"]
+    assert report["steps"][-1]["status"] == "failed"
     assert state_path.exists()
 
     resumed = runner.run(str(config), start_at="unknown_step")
     assert resumed["steps"][0]["step"] == "unknown_step"
+    assert resumed["status"] == "failed"

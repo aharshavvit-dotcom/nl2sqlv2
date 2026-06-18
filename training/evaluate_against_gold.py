@@ -70,7 +70,13 @@ def _build_predictions(rows: list[dict[str, Any]], args: argparse.Namespace) -> 
     if (model_dir / "model.pt").exists():
         from self_training.prediction_runner import PredictionRunner
 
-        return PredictionRunner(model_dir).predict_batch(rows, max_examples=args.max_examples), warnings
+        try:
+            return PredictionRunner(model_dir).predict_batch(rows, max_examples=args.max_examples), warnings
+        except Exception as exc:
+            warnings.append(
+                f"Neural QueryIR predictor could not load artifacts at {model_dir}: {exc}; "
+                "using explicit gold_replay_baseline for pipeline evaluation."
+            )
 
     warnings.append(f"No runnable Neural QueryIR model found at {model_dir}; using explicit gold_replay_baseline for pipeline smoke evaluation.")
     subset = rows[: args.max_examples] if args.max_examples else rows

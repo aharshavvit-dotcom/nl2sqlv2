@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import json
 from pathlib import Path
 from typing import Any
 
@@ -9,75 +11,133 @@ from .step_contract import StepContract
 
 ROOT = Path(__file__).resolve().parents[1]
 
+STEP_ALIASES = {
+    "train_neural_ir_model": "train_neural_ir",
+    "train_ranking_from_gold": "train_adaptive_ranker",
+    "run_model_quality_gate": "run_quality_gate",
+}
+
 
 class StepRunner:
     def get_contract(self, step: str, config: PipelineConfig) -> StepContract:
-        """Return the contract for a given step, based on config."""
-        factory = getattr(self, f"_contract_{step}", None)
+        """Return the contract for a pipeline step."""
+        canonical = _canonical_step(step)
+        factory = getattr(self, f"_contract_{canonical}", None)
         if factory is not None:
             return factory(config)
-        # Default: no declared inputs/outputs, not required
-        return StepContract(name=step, required=False)
+        if getattr(self, f"_run_{canonical}", None) is not None:
+            return StepContract(name=step, required=True)
+        raise ValueError(f"Unknown pipeline step: {step}")
 
     def run_step(self, step: str, config: PipelineConfig) -> dict[str, Any]:
-        if step in {"build_generic_ir_corpus", "build_retrieval_rag_index", "train_neural_ir_model"} and config.skip_heavy_steps:
+        canonical = _canonical_step(step)
+        if canonical in {"build_generic_ir_corpus", "build_retrieval_rag_index", "train_neural_ir"} and config.skip_heavy_steps:
             return {"status": "skipped", "reason": "skip_heavy_steps enabled for smoke pipeline"}
-        method = getattr(self, f"_run_{step}", None)
+        method = getattr(self, f"_run_{canonical}", None)
         if method is None:
-            return {"status": "skipped", "reason": f"no runner implemented for {step}"}
+            raise ValueError(f"Unknown pipeline step: {step}")
         return method(config)
 
-    # ──────────────────── Step Contracts ────────────────────
+    # Contracts
+
+    def _contract_verify_datasets(self, config: PipelineConfig) -> StepContract:
+        return StepContract(name="verify_datasets", required=True)
 
     def _contract_build_generic_ir_corpus(self, config: PipelineConfig) -> StepContract:
         return StepContract(
             name="build_generic_ir_corpus",
             required=True,
-            inputs=[],  # Datasets checked separately
             outputs=[
                 str(ROOT / "data/processed/generic_ir_train.jsonl"),
                 str(ROOT / "data/processed/generic_ir_validation.jsonl"),
+                str(ROOT / "data/processed/generic_ir_test.jsonl"),
+                str(ROOT / "data/processed/generic_ir_unseen_db_test.jsonl"),
+                str(ROOT / "data/processed/generic_ir_unsupported.jsonl"),
+                str(ROOT / "artifacts/generic_training/dataset_contribution_report.json"),
+                str(ROOT / "artifacts/generic_training/unsupported_sql_report.json"),
             ],
         )
 
     def _contract_build_retrieval_rag_index(self, config: PipelineConfig) -> StepContract:
+        artifacts = _artifacts(config)
+        output = Path(artifacts["retrieval_model_dir"])
         return StepContract(
             name="build_retrieval_rag_index",
             required=True,
             inputs=[str(ROOT / "data/processed/generic_ir_train.jsonl")],
-            outputs=[],  # RAG index files are variable
+            outputs=[
+                str(output / "example_index.pkl"),
+                str(output / "schema_index.pkl"),
+                str(output / "pattern_index.pkl"),
+                str(output / "manifest.json"),
+            ],
         )
 
-    def _contract_train_neural_ir_model(self, config: PipelineConfig) -> StepContract:
+    def _contract_train_neural_ir(self, config: PipelineConfig) -> StepContract:
+        artifacts = _artifacts(config)
+        output = Path(artifacts["neural_model_dir"])
         return StepContract(
-            name="train_neural_ir_model",
+            name="train_neural_ir",
             required=True,
-            inputs=[str(ROOT / "data/processed/generic_ir_train.jsonl")],
-            outputs=[],  # Model files are variable
+            inputs=[
+                str(ROOT / "data/processed/generic_ir_train.jsonl"),
+                str(ROOT / "data/processed/generic_ir_validation.jsonl"),
+            ],
+            outputs=[
+                str(output / "model.pt"),
+                str(output / "training_metrics.json"),
+            ],
         )
 
     def _contract_evaluate_against_gold(self, config: PipelineConfig) -> StepContract:
+        artifacts = _artifacts(config)
         return StepContract(
             name="evaluate_against_gold",
-            required=False,
+            required=True,
             inputs=[str(ROOT / "data/processed/generic_ir_validation.jsonl")],
-            outputs=[],
+            outputs=[
+                str(Path(artifacts["self_training_dir"]) / "validation_predictions.jsonl"),
+                str(Path(artifacts["self_training_dir"]) / "validation_gold_comparison_report.json"),
+            ],
         )
 
     def _contract_mine_validation_errors(self, config: PipelineConfig) -> StepContract:
-        return StepContract(name="mine_validation_errors", required=False)
+        if not (config.training.get("_integrated_config") or {}).get("self_training", {}).get("enabled", False):
+            return StepContract(name="mine_validation_errors", required=False, can_skip=True, skip_reason="self_training disabled in config")
+        return StepContract(
+            name="mine_validation_errors",
+            required=True,
+            inputs=[str(Path(_artifacts(config)["self_training_dir"]) / "validation_predictions.jsonl")],
+            outputs=[str(ROOT / "data/processed/self_training/error_summary.json")],
+        )
 
     def _contract_build_corrections_from_gold(self, config: PipelineConfig) -> StepContract:
-        return StepContract(name="build_corrections_from_gold", required=False)
+        if not (config.training.get("_integrated_config") or {}).get("self_training", {}).get("enabled", False):
+            return StepContract(name="build_corrections_from_gold", required=False, can_skip=True, skip_reason="self_training disabled in config")
+        return StepContract(
+            name="build_corrections_from_gold",
+            required=True,
+            inputs=[str(Path(_artifacts(config)["self_training_dir"]) / "validation_predictions.jsonl")],
+            outputs=[str(ROOT / "data/processed/self_training/correction_summary.json")],
+        )
+
+    def _contract_train_adaptive_ranker(self, config: PipelineConfig) -> StepContract:
+        enabled = (config.training.get("_integrated_config") or {}).get("ranker", {}).get("enabled", False)
+        if not enabled:
+            return StepContract(name="train_adaptive_ranker", required=False, can_skip=True, skip_reason="ranker disabled in config")
+        output = Path(_artifacts(config).get("adaptive_ranker_dir", ROOT / "artifacts/work/adaptive_ranker"))
+        return StepContract(
+            name="train_adaptive_ranker",
+            required=True,
+            inputs=[str(Path(_artifacts(config)["self_training_dir"]) / "validation_predictions.jsonl")],
+            outputs=[str(output / "manifest.json")],
+        )
 
     def _contract_train_ranking_from_gold(self, config: PipelineConfig) -> StepContract:
-        enabled = (config.training.get("_integrated_config") or {}).get("ranker", {}).get("enabled", True)
-        if not enabled:
-            return StepContract(name="train_ranking_from_gold", required=False, can_skip=True, skip_reason="ranker disabled in config")
-        return StepContract(name="train_ranking_from_gold", required=False)
+        return self._contract_train_adaptive_ranker(config)
 
     def _contract_run_self_improvement_loop(self, config: PipelineConfig) -> StepContract:
-        enabled = (config.training.get("_integrated_config") or {}).get("self_training", {}).get("enabled", True)
+        enabled = (config.training.get("_integrated_config") or {}).get("self_training", {}).get("enabled", False)
         if not enabled:
             return StepContract(name="run_self_improvement_loop", required=False, can_skip=True, skip_reason="self_training disabled in config")
         return StepContract(name="run_self_improvement_loop", required=False)
@@ -86,17 +146,43 @@ class StepRunner:
         return StepContract(name="run_execution_aware_evaluation", required=False)
 
     def _contract_evaluate_generic_models(self, config: PipelineConfig) -> StepContract:
-        return StepContract(name="evaluate_generic_models", required=False)
+        return StepContract(
+            name="evaluate_generic_models",
+            required=True,
+            inputs=[
+                str(ROOT / "data/processed/generic_ir_test.jsonl"),
+                str(ROOT / "data/processed/generic_ir_unseen_db_test.jsonl"),
+            ],
+            outputs=[str(Path(_artifacts(config)["evaluation_dir"]) / "generic_model_evaluation_report.json")],
+        )
 
-    def _contract_run_model_quality_gate(self, config: PipelineConfig) -> StepContract:
+    def _contract_run_quality_gate(self, config: PipelineConfig) -> StepContract:
         required = (config.training.get("_integrated_config") or {}).get("quality_gate", {}).get("required", False)
-        return StepContract(name="run_model_quality_gate", required=required)
+        if not required:
+            return StepContract(name="run_quality_gate", required=False, can_skip=True, skip_reason="quality_gate.required is false")
+        return StepContract(
+            name="run_quality_gate",
+            required=True,
+            inputs=[str(Path(_artifacts(config)["evaluation_dir"]) / "generic_model_evaluation_report.json")],
+            outputs=[str(Path(_artifacts(config)["evaluation_dir"]) / "model_quality_gate_report.json")],
+        )
 
     def _contract_build_model_bundle(self, config: PipelineConfig) -> StepContract:
-        return StepContract(name="build_model_bundle", required=True)
+        candidate = _candidate_bundle_dir(config)
+        return StepContract(
+            name="build_model_bundle",
+            required=True,
+            outputs=[str(candidate / "bundle_manifest.json")],
+        )
 
     def _contract_validate_model_bundle(self, config: PipelineConfig) -> StepContract:
-        return StepContract(name="validate_model_bundle", required=True)
+        candidate = _candidate_bundle_dir(config)
+        return StepContract(
+            name="validate_model_bundle",
+            required=True,
+            inputs=[str(candidate / "bundle_manifest.json")],
+            outputs=[str(candidate / "bundle_validation_report.json")],
+        )
 
     def _contract_promote_model_bundle(self, config: PipelineConfig) -> StepContract:
         should_promote = (config.training.get("_integrated_config") or {}).get("bundle", {}).get("promote_if_quality_gate_passes", False)
@@ -104,7 +190,83 @@ class StepRunner:
             return StepContract(name="promote_model_bundle", required=False, can_skip=True, skip_reason="promotion disabled in config")
         return StepContract(name="promote_model_bundle", required=False)
 
-    # ──────────────────── Step Runners ────────────────────
+    # Runners
+
+    def _run_verify_datasets(self, config: PipelineConfig) -> dict[str, Any]:
+        from dataset_training.dataset_registry import DatasetRegistry
+
+        requested = [str(item) for item in config.datasets.get("names", [])]
+        registry_report = DatasetRegistry().validate_dataset_presence(requested)
+        missing = [name for name, report in registry_report.items() if not report.get("available")]
+        allow_missing = bool((config.training.get("_integrated_config") or {}).get("datasets", {}).get("allow_missing_dataset", False))
+        if missing and not allow_missing:
+            raise FileNotFoundError(
+                "Required datasets are missing: "
+                + ", ".join(missing)
+                + ". Run python scripts/download_datasets.py --datasets "
+                + " ".join(missing)
+            )
+        return {"status": "completed", "summary": {"requested": requested, "missing": missing, "allow_missing_dataset": allow_missing}}
+
+    def _run_build_generic_ir_corpus(self, config: PipelineConfig) -> dict[str, Any]:
+        from training.build_generic_ir_corpus import build_generic_ir_corpus
+
+        integrated = config.training.get("_integrated_config") or {}
+        dataset_cfg = integrated.get("datasets", {})
+        args = argparse.Namespace(
+            datasets=",".join(config.datasets.get("names", [])),
+            max_examples=config.datasets.get("max_examples"),
+            output_dir=ROOT / "data" / "processed",
+            artifact_dir=ROOT / "artifacts" / "generic_training",
+            seed=config.seed,
+            train_ratio=float(dataset_cfg.get("train_ratio", 0.8)),
+            validation_ratio=float(dataset_cfg.get("validation_ratio", 0.1)),
+            test_ratio=float(dataset_cfg.get("test_ratio", 0.1)),
+            unseen_db_test_ratio=float(dataset_cfg.get("unseen_db_test_ratio", 0.15)),
+            include_unsupported=True,
+        )
+        report = build_generic_ir_corpus(args)
+        _enforce_dataset_contribution(report, config)
+        contribution = report.get("dataset_contribution_report") or {}
+        return {
+            "status": "completed",
+            "summary": {
+                "train_examples": contribution.get("total_training_examples", 0),
+                "datasets": config.datasets.get("names", []),
+            },
+        }
+
+    def _run_build_retrieval_rag_index(self, config: PipelineConfig) -> dict[str, Any]:
+        from retrieval.rag_index_builder import RAGIndexBuilder
+
+        report = RAGIndexBuilder().build_from_jsonl(
+            ROOT / "data/processed/generic_ir_train.jsonl",
+            Path(_artifacts(config)["retrieval_model_dir"]),
+        )
+        return {"status": "completed", "summary": report}
+
+    def _run_train_neural_ir(self, config: PipelineConfig) -> dict[str, Any]:
+        from neural_optimization.training_config import load_training_config, merge_cli_overrides
+        from training.train_neural_ir_optimized import run_optimized_training
+
+        artifacts = _artifacts(config)
+        neural_config = ROOT / str(config.training.get("neural_config") or "configs/neural_training_default.yaml")
+        training_config = load_training_config(neural_config)
+        training_config = merge_cli_overrides(
+            training_config,
+            {
+                "train": str(ROOT / "data/processed/generic_ir_train.jsonl"),
+                "validation": str(ROOT / "data/processed/generic_ir_validation.jsonl"),
+                "output_dir": artifacts["neural_model_dir"],
+                "epochs": config.training.get("neural_epochs"),
+                "batch_size": config.training.get("batch_size"),
+                "max_examples": config.datasets.get("max_examples"),
+            },
+        )
+        report = run_optimized_training(training_config, Path(artifacts["neural_model_dir"]))
+        if report.get("error"):
+            return {"status": "failed", "error": str(report["error"])}
+        return {"status": "completed", "summary": report}
 
     def _run_audit_execution_pipeline(self, config: PipelineConfig) -> dict[str, Any]:
         from scripts.audit_execution_pipeline_readiness import run_audit
@@ -122,9 +284,8 @@ class StepRunner:
         from training.evaluate_against_gold import _Args, evaluate_against_gold
 
         artifacts = _artifacts(config)
-        validation = Path(config.training.get("validation_path") or ROOT / "data/processed/generic_ir_validation.jsonl")
         args = _Args(
-            input=validation,
+            input=ROOT / "data/processed/generic_ir_validation.jsonl",
             retrieval_model_dir=Path(artifacts["retrieval_model_dir"]),
             neural_model_dir=Path(artifacts["neural_model_dir"]),
             output=Path(artifacts["self_training_dir"]) / "validation_predictions.jsonl",
@@ -138,8 +299,7 @@ class StepRunner:
         from dataset_training.utils import read_jsonl, write_json, write_jsonl
         from self_training.hard_negative_miner import HardNegativeMiner
 
-        artifacts = _artifacts(config)
-        predictions = Path(artifacts["self_training_dir"]) / "validation_predictions.jsonl"
+        predictions = Path(_artifacts(config)["self_training_dir"]) / "validation_predictions.jsonl"
         result = HardNegativeMiner().mine(read_jsonl(predictions))
         output = ROOT / "data/processed/self_training"
         write_jsonl(output / "mined_hard_negatives.jsonl", result["mined_hard_negatives"])
@@ -150,8 +310,7 @@ class StepRunner:
         from dataset_training.utils import read_jsonl, write_json, write_jsonl
         from self_training.correction_builder import CorrectionBuilder
 
-        artifacts = _artifacts(config)
-        predictions = Path(artifacts["self_training_dir"]) / "validation_predictions.jsonl"
+        predictions = Path(_artifacts(config)["self_training_dir"]) / "validation_predictions.jsonl"
         result = CorrectionBuilder().build(read_jsonl(predictions))
         output = ROOT / "data/processed/self_training"
         write_jsonl(output / "correction_positive_examples.jsonl", result["correction_positive_examples"])
@@ -159,21 +318,31 @@ class StepRunner:
         write_json(output / "correction_summary.json", result["summary"])
         return {"status": "completed", "summary": result["summary"]}
 
-    def _run_train_ranking_from_gold(self, config: PipelineConfig) -> dict[str, Any]:
+    def _run_train_adaptive_ranker(self, config: PipelineConfig) -> dict[str, Any]:
         from dataset_training.utils import read_jsonl
         from self_training.ranking_trainer import RankingTrainer
 
         artifacts = _artifacts(config)
-        report = RankingTrainer().train(read_jsonl(Path(artifacts["self_training_dir"]) / "validation_predictions.jsonl"), ROOT / "artifacts/adaptive_ranker")
+        output_dir = Path(artifacts.get("adaptive_ranker_dir", ROOT / "artifacts/work/adaptive_ranker"))
+        report = RankingTrainer().train(read_jsonl(Path(artifacts["self_training_dir"]) / "validation_predictions.jsonl"), output_dir)
+        manifest = {
+            "created_from": str(Path(artifacts["self_training_dir"]) / "validation_predictions.jsonl"),
+            "training_rows": report.get("training_rows", 0),
+            "feature_names": report.get("feature_names", []),
+        }
+        (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         return {"status": "completed", "summary": report}
+
+    def _run_train_ranking_from_gold(self, config: PipelineConfig) -> dict[str, Any]:
+        return self._run_train_adaptive_ranker(config)
 
     def _run_run_self_improvement_loop(self, config: PipelineConfig) -> dict[str, Any]:
         from self_training.self_improvement_loop import SelfImprovementLoop
 
         artifacts = _artifacts(config)
         report = SelfImprovementLoop().run(
-            train_path=config.training.get("train_path") or ROOT / "data/processed/generic_ir_train.jsonl",
-            validation_path=config.training.get("validation_path") or ROOT / "data/processed/generic_ir_validation.jsonl",
+            train_path=ROOT / "data/processed/generic_ir_train.jsonl",
+            validation_path=ROOT / "data/processed/generic_ir_validation.jsonl",
             retrieval_model_dir=artifacts["retrieval_model_dir"],
             neural_model_dir=artifacts["neural_model_dir"],
             output_dir=artifacts["self_training_dir"],
@@ -194,20 +363,34 @@ class StepRunner:
         return {"status": "completed", "summary": report["summary"]}
 
     def _run_evaluate_generic_models(self, config: PipelineConfig) -> dict[str, Any]:
-        if config.skip_heavy_steps:
-            return {"status": "skipped", "reason": "existing generic evaluation report reused in smoke pipeline"}
-        return {"status": "skipped", "reason": "invoke training/evaluate_generic_models.py for full evaluation"}
+        from training.evaluate_generic_models import evaluate_generic_models
+
+        artifacts = _artifacts(config)
+        args = argparse.Namespace(
+            test=ROOT / "data/processed/generic_ir_test.jsonl",
+            unseen_db_test=ROOT / "data/processed/generic_ir_unseen_db_test.jsonl",
+            retrieval_model_dir=Path(artifacts["retrieval_model_dir"]),
+            neural_model_dir=Path(artifacts["neural_model_dir"]),
+            output=Path(artifacts["evaluation_dir"]) / "generic_model_evaluation_report.json",
+            thresholds=ROOT / "evaluation/model_quality_thresholds.yaml",
+        )
+        report = evaluate_generic_models(args)
+        return {"status": "completed", "summary": report.get("summary", {})}
 
     def _run_select_best_model(self, config: PipelineConfig) -> dict[str, Any]:
-        from training.select_best_model import _metrics, _read
+        from datetime import datetime, timezone
+
         from model_selection.model_candidate import ModelCandidate
         from model_selection.model_selector import ModelSelector
         from model_selection.selection_reporter import SelectionReporter
         from quality_gates.thresholds import load_thresholds
-        from datetime import datetime, timezone
+        from training.select_best_model import _metrics, _read
 
         artifacts = _artifacts(config)
-        metrics = _metrics(_read(Path(artifacts["evaluation_dir"]) / "generic_model_evaluation_report.json"), _read(Path(artifacts["evaluation_dir"]) / "execution_aware_evaluation_report.json"))
+        metrics = _metrics(
+            _read(Path(artifacts["evaluation_dir"]) / "generic_model_evaluation_report.json"),
+            _read(Path(artifacts["evaluation_dir"]) / "execution_aware_evaluation_report.json"),
+        )
         candidate = ModelCandidate("adaptive_router", str(ROOT / "artifacts"), "adaptive_router", metrics, datetime.now(timezone.utc).replace(microsecond=0).isoformat(), {})
         report = ModelSelector().select_best([candidate], load_thresholds(ROOT / "evaluation/model_quality_thresholds.yaml"))
         SelectionReporter().write(Path(artifacts["evaluation_dir"]) / "model_selection_report.json", report)
@@ -229,22 +412,13 @@ class StepRunner:
         write_json(schema_path, schema)
         profile = build_semantic_profile(schema)
         SemanticProfileStore(ROOT / "artifacts/semantic_profiles").save(profile["schema_fingerprint"], profile)
-        return {
-            "status": "completed",
-            "summary": {
-                "schema": str(schema_path),
-                "tables": len(profile.get("tables") or {}),
-                "metrics": len(profile.get("metrics") or {}),
-                "dimensions": len(profile.get("dimensions") or {}),
-            },
-        }
+        return {"status": "completed", "summary": {"schema": str(schema_path), "tables": len(profile.get("tables") or {})}}
 
     def _run_generate_connected_db_regressions(self, config: PipelineConfig) -> dict[str, Any]:
         from connected_db_testing.schema_case_generator import SchemaCaseGenerator, write_cases_jsonl
 
         schema = _connected_schema(config)
-        artifacts = _artifacts(config)
-        output = Path(artifacts["connected_db_regression_dir"]) / "generated_cases.jsonl"
+        output = Path(_artifacts(config)["connected_db_regression_dir"]) / "generated_cases.jsonl"
         cases = SchemaCaseGenerator().generate_cases(schema, max_tables=3 if config.smoke else None)
         write_cases_jsonl(str(output), cases)
         return {"status": "completed", "summary": {"case_count": len(cases), "output": str(output)}}
@@ -258,139 +432,129 @@ class StepRunner:
         cases_path = Path(artifacts["connected_db_regression_dir"]) / "generated_cases.jsonl"
         if not cases_path.exists():
             self._run_generate_connected_db_regressions(config)
-        cases = read_jsonl(cases_path)
-        report = ConnectedDBRegressionRunner().run(cases, schema)
-        output = Path(artifacts["connected_db_regression_dir"]) / "regression_report.json"
-        ConnectedDBRegressionReporter().write(report, output)
+        report = ConnectedDBRegressionRunner().run(read_jsonl(cases_path), schema)
+        ConnectedDBRegressionReporter().write(report, Path(artifacts["connected_db_regression_dir"]) / "regression_report.json")
         return {"status": "completed", "summary": report["summary"]}
 
     def _run_run_app_smoke_check(self, config: PipelineConfig) -> dict[str, Any]:
         return {"status": "completed", "summary": {"streamlit_app": str(ROOT / "app/streamlit_app.py"), "exists": (ROOT / "app/streamlit_app.py").exists()}}
 
-    # ──────────────────── New Bundle Steps ────────────────────
-
-    def _run_run_model_quality_gate(self, config: PipelineConfig) -> dict[str, Any]:
-        """Run the integrated quality gate."""
+    def _run_run_quality_gate(self, config: PipelineConfig) -> dict[str, Any]:
         from quality_gates.model_quality_gate import ModelQualityGate
         from quality_gates.thresholds import load_thresholds
 
         artifacts = _artifacts(config)
-        integrated_config = config.training.get("_integrated_config") or {}
-        thresholds_path = integrated_config.get("quality_gate", {}).get(
-            "thresholds", "evaluation/model_quality_thresholds.yaml"
-        )
+        integrated = config.training.get("_integrated_config") or {}
+        thresholds_path = integrated.get("quality_gate", {}).get("thresholds", "evaluation/model_quality_thresholds.yaml")
         thresholds = load_thresholds(ROOT / thresholds_path)
 
-        # Try to load evaluation report
-        eval_report = {}
-        for name in ["generic_model_evaluation_report.json", "execution_aware_evaluation_report.json"]:
-            path = Path(artifacts["evaluation_dir"]) / name
-            if path.exists():
-                import json
-                eval_report.update(json.loads(path.read_text(encoding="utf-8")))
+        eval_path = Path(artifacts["evaluation_dir"]) / "generic_model_evaluation_report.json"
+        if not eval_path.exists():
+            return {"status": "failed", "error": f"Missing evaluation report: {eval_path}"}
+        eval_report = json.loads(eval_path.read_text(encoding="utf-8"))
+        execution_path = Path(artifacts["evaluation_dir"]) / "execution_aware_evaluation_report.json"
+        if execution_path.exists():
+            eval_report["execution_aware_evaluation"] = json.loads(execution_path.read_text(encoding="utf-8"))
+        contribution_path = ROOT / "artifacts/generic_training/dataset_contribution_report.json"
+        eval_report["dataset_contribution_report_required"] = True
+        if contribution_path.exists():
+            eval_report["dataset_contribution_report"] = json.loads(contribution_path.read_text(encoding="utf-8"))
 
-        gate = ModelQualityGate()
-        report = gate.evaluate(eval_report, thresholds)
-
-        # Write quality gate report
-        import json
-        output_dir = Path(artifacts.get("evaluation_dir", "artifacts/work/evaluation"))
-        output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "model_quality_gate_report.json").write_text(
-            json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-
+        report = ModelQualityGate().evaluate(eval_report, thresholds)
+        output = Path(artifacts["evaluation_dir"]) / "model_quality_gate_report.json"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+        if not report.get("passed") and integrated.get("quality_gate", {}).get("required", False):
+            return {"status": "failed", "error": "Quality gate failed", "summary": report}
         return {"status": "completed", "summary": {"passed": report["passed"], "failed_checks": len(report.get("failed_checks", []))}}
 
     def _run_build_model_bundle(self, config: PipelineConfig) -> dict[str, Any]:
-        """Build the candidate model bundle."""
         from model_bundle.bundle_builder import ModelBundleBuilder
-        import json
 
-        integrated_config = config.training.get("_integrated_config") or {}
+        integrated = config.training.get("_integrated_config") or {}
         artifacts = _artifacts(config)
-        bundle_config = integrated_config.get("bundle", {})
-        paths_config = integrated_config.get("paths", {})
-
-        candidate_dir = ROOT / paths_config.get("candidate_bundle_dir", "artifacts/model_bundle/candidate")
-
-        # Load pipeline report if available
-        pipeline_report_path = ROOT / "artifacts" / "pipeline" / "train_model_report.json"
-        pipeline_report = {}
-        if pipeline_report_path.exists():
-            pipeline_report = json.loads(pipeline_report_path.read_text(encoding="utf-8"))
-
-        # Load evaluation report if available
-        eval_report = None
         eval_path = Path(artifacts["evaluation_dir"]) / "generic_model_evaluation_report.json"
-        if eval_path.exists():
-            eval_report = json.loads(eval_path.read_text(encoding="utf-8"))
-
-        # Load quality gate report if available
-        qg_report = None
         qg_path = Path(artifacts["evaluation_dir"]) / "model_quality_gate_report.json"
-        if qg_path.exists():
-            qg_report = json.loads(qg_path.read_text(encoding="utf-8"))
-
-        builder = ModelBundleBuilder()
-        result = builder.build_candidate_bundle(
+        pipeline_path = ROOT / "artifacts/pipeline/train_model_report.json"
+        result = ModelBundleBuilder().build_candidate_bundle(
             work_dir=ROOT / "artifacts",
-            output_dir=candidate_dir,
-            config=integrated_config,
-            pipeline_report=pipeline_report,
-            evaluation_report=eval_report,
-            quality_gate_report=qg_report,
+            output_dir=_candidate_bundle_dir(config),
+            config=integrated,
+            pipeline_report=json.loads(pipeline_path.read_text(encoding="utf-8")) if pipeline_path.exists() else {},
+            evaluation_report=json.loads(eval_path.read_text(encoding="utf-8")) if eval_path.exists() else None,
+            quality_gate_report=json.loads(qg_path.read_text(encoding="utf-8")) if qg_path.exists() else None,
         )
         return {"status": "completed", "summary": result}
 
     def _run_validate_model_bundle(self, config: PipelineConfig) -> dict[str, Any]:
-        """Validate the candidate model bundle."""
         from model_bundle.bundle_validator import ModelBundleValidator
 
-        integrated_config = config.training.get("_integrated_config") or {}
-        paths_config = integrated_config.get("paths", {})
-        candidate_dir = ROOT / paths_config.get("candidate_bundle_dir", "artifacts/model_bundle/candidate")
-
-        validator = ModelBundleValidator()
-        result = validator.validate(candidate_dir)
+        candidate = _candidate_bundle_dir(config)
+        result = ModelBundleValidator().validate(candidate)
+        (candidate / "bundle_validation_report.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+        if not result.get("passed"):
+            return {"status": "failed", "error": "; ".join(result.get("blocking_issues", [])), "summary": result}
         return {"status": "completed", "summary": result}
 
     def _run_promote_model_bundle(self, config: PipelineConfig) -> dict[str, Any]:
-        """Promote candidate bundle to current."""
         from model_bundle.bundle_promoter import ModelBundlePromoter
 
-        integrated_config = config.training.get("_integrated_config") or {}
-        paths_config = integrated_config.get("paths", {})
-        qg_config = integrated_config.get("quality_gate", {})
+        integrated = config.training.get("_integrated_config") or {}
+        current_dir = ROOT / integrated.get("paths", {}).get("current_bundle_dir", "artifacts/model_bundle/current")
+        skip_qg = not integrated.get("quality_gate", {}).get("required", False)
+        result = ModelBundlePromoter().promote(_candidate_bundle_dir(config), current_dir, skip_quality_gate=skip_qg)
+        return {"status": "completed" if result.get("promoted") or skip_qg else "failed", "summary": result, "error": result.get("reason")}
 
-        candidate_dir = ROOT / paths_config.get("candidate_bundle_dir", "artifacts/model_bundle/candidate")
-        current_dir = ROOT / paths_config.get("current_bundle_dir", "artifacts/model_bundle/current")
-        skip_qg = not qg_config.get("required", False)
 
-        promoter = ModelBundlePromoter()
-        result = promoter.promote(candidate_dir, current_dir, skip_quality_gate=skip_qg)
-        return {"status": "completed", "summary": result}
+def _canonical_step(step: str) -> str:
+    return STEP_ALIASES.get(step, step)
+
+
+def _candidate_bundle_dir(config: PipelineConfig) -> Path:
+    integrated = config.training.get("_integrated_config") or {}
+    return ROOT / integrated.get("paths", {}).get("candidate_bundle_dir", "artifacts/model_bundle/candidate")
 
 
 def _artifacts(config: PipelineConfig) -> dict[str, str]:
     defaults = {
         "generic_training_dir": str(ROOT / "artifacts/generic_training"),
-        "retrieval_model_dir": str(ROOT / "artifacts/retrieval_ir_model"),
-        "neural_model_dir": str(ROOT / "artifacts/neural_ir_model"),
+        "retrieval_model_dir": str(ROOT / "artifacts/work/retrieval_ir"),
+        "neural_model_dir": str(ROOT / "artifacts/work/neural_ir"),
+        "adaptive_ranker_dir": str(ROOT / "artifacts/work/adaptive_ranker"),
         "self_training_dir": str(ROOT / "artifacts/self_training"),
-        "evaluation_dir": str(ROOT / "artifacts/evaluation"),
+        "evaluation_dir": str(ROOT / "artifacts/work/evaluation"),
         "schema_dir": str(ROOT / "artifacts/schema"),
         "connected_db_regression_dir": str(ROOT / "artifacts/connected_db_regressions"),
     }
     return {**defaults, **{key: str(value) for key, value in config.artifacts.items()}}
 
 
+def _enforce_dataset_contribution(report: dict[str, Any], config: PipelineConfig) -> None:
+    contribution = report.get("dataset_contribution_report") or {}
+    integrated = config.training.get("_integrated_config") or {}
+    allow_missing = bool(integrated.get("datasets", {}).get("allow_missing_dataset", False))
+    if config.smoke or allow_missing:
+        return
+    requested = [str(item) for item in contribution.get("datasets_requested") or config.datasets.get("names", [])]
+    blocking = []
+    for name in requested:
+        if name == "bird-full":
+            continue
+        row = (contribution.get("by_dataset") or {}).get(name) or {}
+        if int(row.get("converted_to_queryir", 0)) <= 0:
+            blocking.append(name)
+    if blocking:
+        raise ValueError(
+            "Requested datasets produced zero usable QueryIR examples: "
+            + ", ".join(blocking)
+            + ". Set datasets.allow_missing_dataset=true only for explicit dev/smoke runs."
+        )
+
+
 def _connected_schema(config: PipelineConfig) -> dict[str, Any]:
     artifacts = _artifacts(config)
     schema_path = Path(config.training.get("connected_schema_path") or Path(artifacts["schema_dir"]) / "current_schema.json")
     if schema_path.exists():
-        import json
-
         return json.loads(schema_path.read_text(encoding="utf-8"))
     return {
         "dialect": "postgres",

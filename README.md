@@ -38,19 +38,13 @@ source venv/bin/activate    # Linux/macOS
 pip install -r requirements.txt
 ```
 
-### 2. Create Sample Database
-
-```bash
-python scripts/create_sample_db.py
-```
-
-### 3. Download Datasets
+### 2. Download Datasets
 
 ```bash
 python scripts/download_datasets.py --datasets wikisql spider bird-mini
 ```
 
-### 4. Train the Model (One Command)
+### 3. Train the Model (One Command)
 
 ```bash
 python training/train_model.py --config configs/training.yaml
@@ -58,6 +52,7 @@ python training/train_model.py --config configs/training.yaml
 
 This single command internally runs:
 - Corpus building
+- Dataset contribution and unsupported SQL reporting
 - Retrieval RAG index building
 - Neural QueryIR training
 - Gold validation & error mining
@@ -70,7 +65,7 @@ For a quick smoke test:
 python training/train_model.py --config configs/smoke_training.yaml
 ```
 
-### 5. Launch the App
+### 4. Launch the App
 
 ```bash
 streamlit run app/streamlit_app.py

@@ -20,6 +20,33 @@ class ModelQualityGate:
             if not passed:
                 failed_checks.append({"metric": key, "actual": actual, "expected": expected, "comparison": "<=" if key.endswith("_max") else ">="})
 
+        contribution = evaluation_report.get("dataset_contribution_report")
+        if evaluation_report.get("dataset_contribution_report_required") and not contribution:
+            failed_checks.append({
+                "metric": "dataset_contribution_report",
+                "actual": "missing",
+                "expected": "present",
+                "comparison": "exists",
+            })
+        if contribution:
+            if not contribution.get("leakage_check_passed", False):
+                failed_checks.append({
+                    "metric": "dataset_leakage_check",
+                    "actual": False,
+                    "expected": True,
+                    "comparison": "==",
+                })
+            requested = set(contribution.get("datasets_requested") or [])
+            by_dataset = contribution.get("by_dataset") or {}
+            for dataset_name in ["spider", "bird-mini"]:
+                if dataset_name in requested and int((by_dataset.get(dataset_name) or {}).get("converted_to_queryir", 0)) <= 0:
+                    failed_checks.append({
+                        "metric": f"{dataset_name}_usable_examples",
+                        "actual": 0,
+                        "expected": "> 0",
+                        "comparison": ">",
+                    })
+
         return {
             "passed": not failed_checks,
             "failed_checks": failed_checks,

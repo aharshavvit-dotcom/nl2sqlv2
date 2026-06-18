@@ -117,13 +117,16 @@ def run_optimized_training(
         return {"error": f"Training file not found: {train_path}"}
 
     # Build datasets and model using existing neural_ir infrastructure
-    from neural_ir.ir_dataset import IRDataset
+    from neural_ir.ir_dataset import IRTrainingDataset, collate_ir_batch, load_jsonl
     from neural_ir.ir_label_encoder import IRLabelEncoder
     from neural_ir.attention_model import SchemaAwareOptionAIRModel
     from neural_ir.trainer import HEAD_TO_LABEL, HEAD_TO_MASK, MODEL_INPUT_KEYS
+    from neural_ir.vocab import Vocabulary
     from neural_optimization.loss_registry import masked_cross_entropy_fn, margin_ranking_loss
 
     label_encoder = IRLabelEncoder()
+    vocab = Vocabulary()
+    vocab.build(_token_sequences(load_jsonl(train_path), max_examples=max_examples))
 
     # Build model config from our training config
     model_config = {
@@ -136,36 +139,45 @@ def run_optimized_training(
         "epochs": config.training.get("epochs", 10),
     }
 
-    train_dataset = IRDataset(
+    train_dataset = IRTrainingDataset(
         str(train_path),
+        vocab=vocab,
         label_encoder=label_encoder,
-        config=model_config,
+        max_question_len=int(model_config.get("max_question_len", 64)),
+        max_schema_len=int(model_config.get("max_schema_len", 320)),
+        max_candidate_tokens=int(model_config.get("max_candidate_tokens", 16)),
+        max_tables=int(model_config.get("max_tables", 64)),
+        max_columns=int(model_config.get("max_columns", 256)),
         max_examples=max_examples,
-        hard_negatives_path=str(hard_neg_path) if hard_neg_path and hard_neg_path.exists() else None,
     )
     if len(train_dataset) == 0:
         return {"error": "No training examples loaded"}
 
-    val_dataset = IRDataset(
+    val_dataset = IRTrainingDataset(
         str(val_path),
+        vocab=vocab,
         label_encoder=train_dataset.label_encoder,
-        config=model_config,
+        max_question_len=int(model_config.get("max_question_len", 64)),
+        max_schema_len=int(model_config.get("max_schema_len", 320)),
+        max_candidate_tokens=int(model_config.get("max_candidate_tokens", 16)),
+        max_tables=int(model_config.get("max_tables", 64)),
+        max_columns=int(model_config.get("max_columns", 256)),
         max_examples=max_examples,
     ) if val_path.exists() else None
 
     batch_size = int(config.training.get("batch_size", 8))
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
-        collate_fn=train_dataset.collate_fn,
+        collate_fn=collate_ir_batch,
     )
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False,
-        collate_fn=val_dataset.collate_fn,
+        collate_fn=collate_ir_batch,
     ) if val_dataset and len(val_dataset) > 0 else None
 
     # Build model
-    vocab_size = train_dataset.label_encoder.vocab.size()
-    label_sizes = train_dataset.label_encoder.label_sizes()
+    vocab_size = len(vocab)
+    label_sizes = train_dataset.label_encoder.label_sizes
     model = SchemaAwareOptionAIRModel(model_config, vocab_size, label_sizes)
     device = torch.device("cpu")
     model.to(device)
@@ -219,6 +231,7 @@ def run_optimized_training(
     print(f"  Batch size: {batch_size} | Gradient clipping: {grad_clip}")
 
     history: list[dict[str, Any]] = []
+    last_loss_by_head: dict[str, float] = {}
 
     for epoch in range(1, epochs + 1):
         epoch_start = time.time()
@@ -342,7 +355,7 @@ def run_optimized_training(
         epoch_time = time.time() - epoch_start
         current_lr = optimizer.param_groups[0]["lr"]
 
-        print(f"  Epoch {epoch:02d} in {epoch_time:.1f}s — "
+        print(f"  Epoch {epoch:02d} in {epoch_time:.1f}s - "
               f"Train Loss: {train_loss:.4f} | Val Loss: {val_metrics.get('loss', 0):.4f} | "
               f"Slot Acc: {val_metrics.get('overall_slot_accuracy', train_metrics.get('overall_slot_accuracy', 0)):.4f}")
 
@@ -355,12 +368,13 @@ def run_optimized_training(
             epoch_time=epoch_time,
             loss_by_head=epoch_head_losses,
         )
+        last_loss_by_head = dict(epoch_head_losses)
 
         # Checkpoint
         check_metrics = val_metrics if val_metrics else train_metrics
         saved = ckpt_manager.maybe_save_best(model, optimizer, epoch, check_metrics, config.to_dict())
         if saved:
-            print(f"  ✓ New best checkpoint saved")
+            print("  New best checkpoint saved")
 
             # Also save as model.pt for predictor compatibility
             torch.save(model.state_dict(), output_dir / "model.pt")
@@ -393,7 +407,8 @@ def run_optimized_training(
         torch.save(model.state_dict(), output_dir / "model.pt")
 
     # Save label encoder artifacts
-    train_dataset.label_encoder.save(str(output_dir))
+    train_dataset.label_encoder.save(str(output_dir / "label_maps.json"))
+    vocab.save(str(output_dir / "vocab.json"))
 
     # Save diagnostics
     if config.output.get("save_diagnostics", True):
@@ -401,13 +416,27 @@ def run_optimized_training(
 
     # Save training metrics
     final_metrics = val_metrics if val_metrics else train_metrics
+    best_epoch = diagnostics.best_epoch()
+    checkpoint_path = output_dir / "best_model.pt"
+    if not checkpoint_path.exists():
+        checkpoint_path = output_dir / "model.pt"
     report = {
-        "best_epoch": diagnostics.best_epoch().get("epoch"),
-        "best_overall_slot_accuracy": diagnostics.best_epoch().get("overall_slot_accuracy"),
+        "best_epoch": best_epoch.get("epoch"),
+        "best_metric": best_epoch.get("overall_slot_accuracy"),
+        "best_overall_slot_accuracy": best_epoch.get("overall_slot_accuracy"),
         "final_train_loss": train_loss,
         "final_val_loss": val_metrics.get("loss"),
         "optimizer": config.optimizer.get("name"),
+        "optimizer_name": config.optimizer.get("name"),
         "activation": config.model.get("activation"),
+        "activation_name": config.model.get("activation"),
+        "gradient_clipping_value": grad_clip,
+        "loss_by_head": last_loss_by_head,
+        "train_path": str(train_path),
+        "validation_path": str(val_path),
+        "train_examples_count": len(train_dataset),
+        "validation_examples_count": len(val_dataset) if val_dataset else 0,
+        "checkpoint_path": str(checkpoint_path),
         "epochs_ran": len(history),
         "early_stopped": early_stopper.counter >= early_stopper.patience,
         **{k: v for k, v in final_metrics.items()},
@@ -418,8 +447,39 @@ def run_optimized_training(
 
     # Save model config for predictor compatibility
     _save_model_config(output_dir, model_config, train_dataset.label_encoder)
+    _save_training_manifest(output_dir, report, config)
 
     return report
+
+
+def _save_training_manifest(output_dir: Path, report: dict[str, Any], config: NeuralTrainingConfig) -> None:
+    manifest = {
+        "artifact_type": "neural_queryir_model",
+        "source_train_file": report.get("train_path"),
+        "source_validation_file": report.get("validation_path"),
+        "train_examples_count": report.get("train_examples_count", 0),
+        "validation_examples_count": report.get("validation_examples_count", 0),
+        "optimizer_name": report.get("optimizer_name"),
+        "activation_name": report.get("activation_name"),
+        "gradient_clipping_value": report.get("gradient_clipping_value"),
+        "checkpoint_path": report.get("checkpoint_path"),
+        "config": config.to_dict(),
+    }
+    (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+
+
+def _token_sequences(rows: list[dict[str, Any]], max_examples: int | None = None) -> list[list[str]]:
+    from neural_ir.tokenizer import tokenize
+
+    limited = rows[:max_examples] if max_examples is not None and max_examples > 0 else rows
+    sequences: list[list[str]] = []
+    for row in limited:
+        question = str(row.get("question") or "")
+        schema_text = str(row.get("serialized_schema") or "")
+        sequences.append(tokenize(question))
+        if schema_text:
+            sequences.append(tokenize(schema_text))
+    return sequences
 
 
 def _save_model_config(output_dir: Path, model_config: dict, label_encoder: Any) -> None:

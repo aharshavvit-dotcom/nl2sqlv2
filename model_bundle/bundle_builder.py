@@ -49,11 +49,12 @@ class ModelBundleBuilder:
         out.mkdir(parents=True, exist_ok=True)
 
         # Determine source dirs
-        retrieval_src = self._find_artifact(work, "retrieval_ir_model", "retrieval_ir")
-        neural_src = self._find_artifact(work, "neural_ir_model", "neural_ir")
-        ranker_src = self._find_artifact(work, "adaptive_ranker")
+        retrieval_src = self._find_artifact(work, "work/retrieval_ir", "retrieval_ir_model", "retrieval_ir")
+        neural_src = self._find_artifact(work, "work/neural_ir", "neural_ir_model", "neural_ir")
+        ranker_src = self._find_artifact(work, "work/adaptive_ranker", "adaptive_ranker")
         semantic_src = self._find_artifact(work, "semantic_profiles", "semantic_defaults")
-        eval_src = self._find_artifact(work, "evaluation")
+        eval_src = self._find_artifact(work, "work/evaluation", "evaluation")
+        generic_training_src = self._find_artifact(work, "generic_training")
 
         # Copy artifacts into bundle structure
         paths: dict[str, str] = {}
@@ -72,6 +73,9 @@ class ModelBundleBuilder:
         if eval_src and eval_src.exists():
             self._copy_dir(eval_src, out / "evaluation")
             paths["evaluation"] = "evaluation/"
+        if generic_training_src and generic_training_src.exists():
+            self._copy_dir(generic_training_src, out / "generic_training")
+            paths["generic_training"] = "generic_training/"
 
         # Copy pipeline report
         pipeline_dir = out / "pipeline"
@@ -83,7 +87,7 @@ class ModelBundleBuilder:
         # Copy configs
         configs_dir = out / "configs"
         configs_dir.mkdir(parents=True, exist_ok=True)
-        config_path = config.get("pipeline", {}).get("config_path") or config.get("_config_path", "")
+        config_path = config.get("_config_path") or config.get("pipeline", {}).get("config_path") or ""
         if config_path and Path(config_path).exists():
             shutil.copy2(config_path, configs_dir / Path(config_path).name)
         paths["configs"] = "configs/"
@@ -96,7 +100,12 @@ class ModelBundleBuilder:
         config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()[:16]
         datasets = config.get("datasets", {}).get("names", [])
 
-        quality_gate_info = {"passed": False, "report_path": "evaluation/model_quality_gate_report.json"}
+        quality_gate_required = bool(config.get("quality_gate", {}).get("required", False))
+        quality_gate_info = {
+            "passed": not quality_gate_required,
+            "required": quality_gate_required,
+            "report_path": "evaluation/model_quality_gate_report.json",
+        }
         if quality_gate_report:
             quality_gate_info["passed"] = bool(quality_gate_report.get("passed", False))
             qg_path = out / "evaluation" / "model_quality_gate_report.json"
@@ -116,6 +125,8 @@ class ModelBundleBuilder:
                 "retrieval_manifest": "retrieval_ir/manifest.json",
                 "neural_manifest": "neural_ir/manifest.json",
                 "ranker_manifest": "adaptive_ranker/manifest.json",
+                "dataset_contribution_report": "generic_training/dataset_contribution_report.json",
+                "unsupported_sql_report": "generic_training/unsupported_sql_report.json",
             },
             metrics=metrics,
             quality_gate=quality_gate_info,

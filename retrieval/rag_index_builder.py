@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from datetime import datetime, timezone
 
 import joblib
 
@@ -13,7 +14,12 @@ from .schema_index import SchemaIndex
 
 
 class RAGIndexBuilder:
-    def build(self, examples: list[dict[str, Any]], output_dir: str | Path) -> dict[str, Any]:
+    def build(
+        self,
+        examples: list[dict[str, Any]],
+        output_dir: str | Path,
+        source_train_file: str | Path | None = None,
+    ) -> dict[str, Any]:
         output = Path(output_dir)
         output.mkdir(parents=True, exist_ok=True)
         example_index = ExampleIndex()
@@ -25,18 +31,34 @@ class RAGIndexBuilder:
         example_index.save(str(output / "example_index.pkl"))
         joblib.dump(schema_index, output / "schema_index.pkl")
         joblib.dump(pattern_index, output / "pattern_index.pkl")
-        metadata = {"example_count": len(examples), "index_version": "local_rag_v1"}
+        by_dataset: dict[str, int] = {}
+        for row in examples:
+            name = str(row.get("dataset_name") or row.get("dataset") or "unknown")
+            by_dataset[name] = by_dataset.get(name, 0) + 1
+        metadata = {"example_count": len(examples), "index_version": "local_rag_v1", "by_dataset": by_dataset}
         (output / "rag_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        manifest = {
+            "source_train_file": str(source_train_file or ""),
+            "total_examples": len(examples),
+            "by_dataset": by_dataset,
+            "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "schema_index_built": (output / "schema_index.pkl").exists(),
+            "example_index_built": (output / "example_index.pkl").exists(),
+            "pattern_index_built": (output / "pattern_index.pkl").exists(),
+        }
+        (output / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         return {
             "output_dir": str(output),
             "example_count": len(examples),
+            "by_dataset": by_dataset,
             "files": {
                 "example_index": str(output / "example_index.pkl"),
                 "schema_index": str(output / "schema_index.pkl"),
                 "pattern_index": str(output / "pattern_index.pkl"),
                 "metadata": str(output / "rag_metadata.json"),
+                "manifest": str(output / "manifest.json"),
             },
         }
 
     def build_from_jsonl(self, input_path: str | Path, output_dir: str | Path) -> dict[str, Any]:
-        return self.build(read_jsonl(input_path), output_dir)
+        return self.build(read_jsonl(input_path), output_dir, source_train_file=input_path)

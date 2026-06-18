@@ -39,17 +39,23 @@ class PipelineConfig:
     steps: list[str] = field(default_factory=lambda: list(DEFAULT_STEPS))
     smoke: bool = False
     skip_heavy_steps: bool = False
+    integrated_config: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str | Path) -> "PipelineConfig":
         payload = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+        integrated_config = payload.get("_integrated_config") or {}
+        training = payload.get("training") or {}
+        if integrated_config:
+            training = {**training, "_integrated_config": integrated_config}
         return cls(
             pipeline_name=payload.get("pipeline_name", Path(path).stem),
             seed=int(payload.get("seed", 42)),
             datasets=payload.get("datasets") or {},
-            training=payload.get("training") or {},
+            training=training,
             artifacts=payload.get("artifacts") or {},
             steps=payload.get("steps") or list(DEFAULT_STEPS),
             smoke=bool(payload.get("smoke", False)),
             skip_heavy_steps=bool(payload.get("skip_heavy_steps", False)),
+            integrated_config=integrated_config,
         )

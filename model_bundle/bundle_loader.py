@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .bundle_manifest import BundleManifest, load_manifest
+from .bundle_validator import ModelBundleValidator
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,11 @@ class ModelBundleLoader:
             )
 
         manifest = load_manifest(manifest_path)
+        validation = ModelBundleValidator().validate(path)
+        if not validation.get("passed"):
+            raise ValueError(
+                "Invalid model bundle: " + "; ".join(validation.get("blocking_issues", []))
+            )
 
         # Rule 2: Refuse failed bundle
         if manifest.status == "failed":

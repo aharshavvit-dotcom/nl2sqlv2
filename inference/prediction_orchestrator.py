@@ -43,7 +43,7 @@ class PredictionOrchestrator:
         top_k: int = 10,
         max_limit: int = 1000,
         neural_ir_model_dir: str | Path | None = None,
-        use_neural_ir_fallback: bool = True,
+        use_neural_ir_fallback: bool = False,
         neural_ir_threshold: float = 0.80,
         # Backward-compatible aliases
         option_a_model_dir: str | Path | None = None,
@@ -60,13 +60,8 @@ class PredictionOrchestrator:
         _threshold = neural_ir_threshold if option_a_threshold is None else option_a_threshold
 
         self._explicit_neural_ir_model_dir = _model_dir is not None
-        self.neural_ir_v2_model_dir = root / "artifacts" / "neural_ir_model"
-        self.neural_ir_v1_model_dir = root / "artifacts" / "neural_ir_model"
-        # Fallback to old folder names if new ones don't exist
-        if not self.neural_ir_v2_model_dir.exists():
-            self.neural_ir_v2_model_dir = root / "artifacts" / "option_a_ir_model_v2"
-        if not self.neural_ir_v1_model_dir.exists():
-            self.neural_ir_v1_model_dir = root / "artifacts" / "option_a_ir_model"
+        self.neural_ir_v2_model_dir = root / "artifacts" / "work" / "neural_ir"
+        self.neural_ir_v1_model_dir = root / "artifacts" / "work" / "neural_ir"
         self.neural_ir_model_dir = Path(_model_dir) if _model_dir else self._default_neural_ir_model_dir()
         self.hybrid_calibration = load_hybrid_calibration(self.neural_ir_model_dir / "hybrid_calibration.json")
         self.use_neural_ir_fallback = _use_fallback

@@ -199,11 +199,45 @@ class TestTrainModelIntegration:
         manifest = BundleManifest(
             bundle_id="test_valid",
             status="candidate",
-            paths={"evaluation": "evaluation/", "configs": "configs/"},
-            metrics={"unsafe_sql_count": 0},
+            datasets=["wikisql"],
+            paths={
+                "retrieval_ir": "retrieval_ir/",
+                "neural_ir": "neural_ir/",
+                "evaluation": "evaluation/",
+                "generic_training": "generic_training/",
+                "configs": "configs/",
+            },
+            metrics={
+                "unsafe_sql_count": 0,
+                "sql_validation_rate": 1.0,
+                "unnecessary_join_rate": 0.0,
+                "wrong_table_rate": 0.0,
+            },
+            quality_gate={"passed": True, "required": False, "report_path": "evaluation/model_quality_gate_report.json"},
         )
         save_manifest(manifest, tmp_path / "bundle_manifest.json")
-        (tmp_path / "evaluation").mkdir()
+        retrieval = tmp_path / "retrieval_ir"
+        retrieval.mkdir()
+        for name in ["example_index.pkl", "schema_index.pkl", "pattern_index.pkl", "manifest.json"]:
+            (retrieval / name).write_text("{}", encoding="utf-8")
+        neural = tmp_path / "neural_ir"
+        neural.mkdir()
+        for name in ["model.pt", "config.yaml", "manifest.json"]:
+            (neural / name).write_text("{}", encoding="utf-8")
+        evaluation = tmp_path / "evaluation"
+        evaluation.mkdir()
+        (evaluation / "generic_model_evaluation_report.json").write_text("{}", encoding="utf-8")
+        generic_training = tmp_path / "generic_training"
+        generic_training.mkdir()
+        (generic_training / "dataset_contribution_report.json").write_text(
+            json.dumps({
+                "datasets_requested": ["wikisql"],
+                "leakage_check_passed": True,
+                "by_dataset": {"wikisql": {"converted_to_queryir": 1}},
+            }),
+            encoding="utf-8",
+        )
+        (generic_training / "unsupported_sql_report.json").write_text("{}", encoding="utf-8")
         (tmp_path / "configs").mkdir()
 
         validator = ModelBundleValidator()

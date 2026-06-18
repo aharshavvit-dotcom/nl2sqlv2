@@ -25,12 +25,15 @@ class BundleManifest:
         "adaptive_ranker": "adaptive_ranker/",
         "semantic_defaults": "semantic_defaults/",
         "evaluation": "evaluation/",
+        "generic_training": "generic_training/",
         "configs": "configs/",
     })
     artifacts: dict[str, str] = field(default_factory=lambda: {
         "retrieval_manifest": "retrieval_ir/manifest.json",
         "neural_manifest": "neural_ir/manifest.json",
         "ranker_manifest": "adaptive_ranker/manifest.json",
+        "dataset_contribution_report": "generic_training/dataset_contribution_report.json",
+        "unsupported_sql_report": "generic_training/unsupported_sql_report.json",
     })
     metrics: dict[str, Any] = field(default_factory=lambda: {
         "query_ir_validity_rate": 0.0,

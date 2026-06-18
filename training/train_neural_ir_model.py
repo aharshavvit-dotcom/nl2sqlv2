@@ -37,12 +37,12 @@ def main() -> None:
           "Prefer `python training/train_model.py --config configs/training.yaml` for full integrated training.")
 
     parser = argparse.ArgumentParser(description="Train the Neural QueryIR Model")
-    parser.add_argument("--epochs", type=int, default=30)
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--train", type=str, default=None, help="Path to generic IR training JSONL")
-    parser.add_argument("--validation", type=str, default=None, help="Path to generic IR validation JSONL")
+    parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--train", type=str, default=str(ROOT / "data" / "processed" / "generic_ir_train.jsonl"), help="Path to generic IR training JSONL")
+    parser.add_argument("--validation", type=str, default=str(ROOT / "data" / "processed" / "generic_ir_validation.jsonl"), help="Path to generic IR validation JSONL")
     parser.add_argument("--hard-negatives", type=str, default=None, help="Path to hard-negative JSONL")
-    parser.add_argument("--output-dir", type=str, default=None, help="Artifact output directory")
+    parser.add_argument("--output-dir", type=str, default=str(ROOT / "artifacts" / "work" / "neural_ir"), help="Artifact output directory")
     parser.add_argument("--artifact-dir", type=str, default=None,
                         help="Artifact output directory")
     parser.add_argument("--training-data", type=str, default=None,
@@ -53,15 +53,16 @@ def main() -> None:
     parser.add_argument("--complexity-filter", type=str, default=None)
     parser.add_argument("--curriculum", action="store_true")
     parser.add_argument("--optimized", action="store_true",
-                        help="Use the optimized training loop with configurable optimizer/scheduler/etc.")
-    parser.add_argument("--config", type=str, default=None,
+                        help="Deprecated no-op; optimized training is now the default.")
+    parser.add_argument("--legacy", action="store_true",
+                        help="Explicitly use the old legacy trainer path.")
+    parser.add_argument("--config", type=str, default=str(ROOT / "configs" / "neural_training_default.yaml"),
                         help="YAML config path (used with --optimized)")
     args = parser.parse_args()
 
-    # Delegate to optimized trainer if requested
-    if args.optimized:
+    # Delegate to optimized trainer by default. Legacy mode must be explicit.
+    if not args.legacy:
         from training.train_neural_ir_optimized import main as optimized_main
-        # Re-build sys.argv for the optimized trainer
         new_argv = [sys.argv[0]]
         if args.config:
             new_argv.extend(["--config", args.config])
@@ -83,7 +84,6 @@ def main() -> None:
         optimized_main()
         return
 
-
     artifact_dir = Path(args.output_dir or args.artifact_dir) if (args.output_dir or args.artifact_dir) else _resolve_dir("neural_ir_model", "option_a_ir_model_v2")
 
     if args.train:
@@ -96,9 +96,8 @@ def main() -> None:
         if not validation_path.exists():
             validation_path = train_path
     else:
-        # Fall back to default location
-        train_path = ROOT / "data" / "processed" / "ir_training_examples.jsonl"
-        validation_path = ROOT / "data" / "processed" / "ir_validation_examples.jsonl"
+        print("Error: --legacy requires --train or --training-data. Default training uses generic_ir_train.jsonl.")
+        sys.exit(1)
 
     if not train_path.exists():
         print(f"Error: Training data file not found at {train_path}")

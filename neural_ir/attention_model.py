@@ -6,6 +6,8 @@ from typing import Any
 import torch
 from torch import nn
 
+from neural_optimization.activation_factory import get_activation
+
 from .model import masked_logits
 from .pointer_network import SchemaPointerNetwork
 
@@ -93,7 +95,7 @@ class SchemaAwareOptionAIRModel(nn.Module):
         head_dim = sequence_dim
         self.fusion = nn.Sequential(
             nn.Linear(sequence_dim * 4, head_dim),
-            nn.ReLU(),
+            get_activation(str(merged.get("activation", "gelu"))),
             nn.Dropout(dropout),
         )
         self.fallback_candidate_projection = nn.Linear(sequence_dim, candidate_dim)

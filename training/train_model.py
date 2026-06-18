@@ -98,7 +98,7 @@ def verify_datasets(config: dict[str, Any]) -> bool:
 
 def build_pipeline_steps(config: dict[str, Any]) -> list[str]:
     """Build the ordered list of pipeline steps from config."""
-    steps = []
+    steps = ["verify_datasets"]
 
     # Always start with corpus building if retrieval or neural is enabled
     retrieval_cfg = config.get("retrieval", {})
@@ -119,20 +119,18 @@ def build_pipeline_steps(config: dict[str, Any]) -> list[str]:
 
     # Neural training
     if neural_cfg.get("enabled", True):
-        steps.append("train_neural_ir_model")
+        steps.append("train_neural_ir")
 
     # Gold evaluation (needed for self-training)
     if self_training_cfg.get("enabled", False) or eval_cfg.get("enabled", True):
         steps.append("evaluate_against_gold")
 
     # Self-training steps
-    if self_training_cfg.get("enabled", False):
-        steps.append("mine_validation_errors")
-        steps.append("build_corrections_from_gold")
+    steps.append("mine_validation_errors")
+    steps.append("build_corrections_from_gold")
 
     # Ranker training
-    if ranker_cfg.get("enabled", False):
-        steps.append("train_ranking_from_gold")
+    steps.append("train_adaptive_ranker")
 
     # Self-improvement loop
     if self_training_cfg.get("enabled", False):
@@ -145,8 +143,7 @@ def build_pipeline_steps(config: dict[str, Any]) -> list[str]:
         steps.append("evaluate_generic_models")
 
     # Quality gate
-    if qg_cfg.get("required", False):
-        steps.append("run_model_quality_gate")
+    steps.append("run_quality_gate")
 
     # Bundle
     if bundle_cfg.get("build", True):
@@ -190,6 +187,7 @@ def config_to_pipeline_config(config: dict[str, Any], steps: list[str]) -> dict[
             "generic_training_dir": str(ROOT / "artifacts/generic_training"),
             "retrieval_model_dir": str(ROOT / (config.get("retrieval", {}).get("output_dir", "artifacts/retrieval_ir_model"))),
             "neural_model_dir": str(ROOT / neural.get("output_dir", "artifacts/neural_ir_model")),
+            "adaptive_ranker_dir": str(ROOT / (config.get("ranker", {}).get("output_dir", "artifacts/work/adaptive_ranker"))),
             "self_training_dir": str(ROOT / "artifacts/self_training"),
             "evaluation_dir": str(ROOT / evaluation.get("output_dir", "artifacts/evaluation")),
             "schema_dir": str(ROOT / "artifacts/schema"),
@@ -254,8 +252,8 @@ def write_training_report(report: dict[str, Any], config: dict[str, Any]) -> Non
         "",
     ]
     for step in report.get("steps", []):
-        status_icon = {"completed": "✅", "failed": "❌", "skipped": "⏭️", "dry_run": "🔍"}.get(
-            step.get("status", ""), "❓"
+        status_icon = {"completed": "[ok]", "failed": "[failed]", "skipped": "[skipped]", "dry_run": "[dry-run]"}.get(
+            step.get("status", ""), "[unknown]"
         )
         lines.append(f"- {status_icon} **{step.get('step', 'unknown')}**: {step.get('status', 'unknown')}")
         if step.get("error"):

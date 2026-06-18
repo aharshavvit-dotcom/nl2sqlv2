@@ -194,6 +194,38 @@ def check_streamlit_uses_bundle_loader() -> None:
     check("Streamlit: uses ModelBundleLoader", "ModelBundleLoader" in source)
 
 
+def check_pipeline_rejects_unknown_steps() -> None:
+    source = (ROOT / "orchestration" / "step_runner.py").read_text(encoding="utf-8")
+    passed = "Unknown pipeline step" in source and "no runner implemented" not in source
+    check("Pipeline: unknown steps fail", passed)
+
+
+def check_neural_wrapper_generic_default() -> None:
+    source = (ROOT / "training" / "train_neural_ir_model.py").read_text(encoding="utf-8")
+    passed = (
+        "generic_ir_train.jsonl" in source
+        and "--legacy" in source
+        and "ir_training_examples.jsonl" not in source
+    )
+    check("Neural wrapper: generic corpus default", passed)
+
+
+def check_runtime_no_sample_fallback_by_default() -> None:
+    source = (ROOT / "retriever" / "retrieval_nl2sql_model.py").read_text(encoding="utf-8")
+    passed = "allow_dev_fallback" in source and "No validated model bundle found" in source
+    check("Runtime: no sample fallback by default", passed)
+
+
+def check_bundle_validator_is_blocking() -> None:
+    source = (ROOT / "model_bundle" / "bundle_validator.py").read_text(encoding="utf-8")
+    passed = (
+        "Required {label} artifact missing" in source
+        and "Dataset leakage check failed" in source
+        and "Required quality gate failed" in source
+    )
+    check("Bundle validator: strict blocking checks", passed)
+
+
 def check_train_model_exists() -> None:
     """train_model.py exists."""
     check("Integration: train_model.py exists",
@@ -254,6 +286,10 @@ def main() -> None:
     check_readme_no_old_primary_commands()
     check_streamlit_no_training_imports()
     check_streamlit_uses_bundle_loader()
+    check_pipeline_rejects_unknown_steps()
+    check_neural_wrapper_generic_default()
+    check_runtime_no_sample_fallback_by_default()
+    check_bundle_validator_is_blocking()
     check_train_model_exists()
     check_bundle_manifest_module()
     check_smoke_training_config()

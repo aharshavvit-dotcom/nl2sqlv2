@@ -1,6 +1,6 @@
 """Training diagnostics tracker.
 
-Records per-epoch metrics and produces JSON + Markdown reports.
+Records per-epoch metrics and produces JSON plus Markdown reports.
 """
 
 from __future__ import annotations
@@ -22,12 +22,15 @@ class TrainingDiagnostics:
 
     def set_config(self, config: dict[str, Any]) -> None:
         self.config_summary = {
-            "optimizer": config.get("optimizer", {}).get("name", "unknown"),
-            "activation": config.get("model", {}).get("activation", "unknown"),
+            "optimizer_name": config.get("optimizer", {}).get("name", "unknown"),
+            "activation_name": config.get("model", {}).get("activation", "unknown"),
             "learning_rate": config.get("optimizer", {}).get("learning_rate"),
             "batch_size": config.get("training", {}).get("batch_size"),
             "epochs": config.get("training", {}).get("epochs"),
-            "gradient_clipping": config.get("training", {}).get("gradient_clipping"),
+            "gradient_clipping_value": config.get("training", {}).get("gradient_clipping"),
+            "train_path": config.get("data", {}).get("train_path"),
+            "validation_path": config.get("data", {}).get("validation_path"),
+            "hard_negatives_path": config.get("data", {}).get("hard_negatives_path"),
         }
 
     def start_training(self) -> None:
@@ -47,8 +50,7 @@ class TrainingDiagnostics:
             "train_total_loss": train_metrics.get("loss", 0.0),
             "validation_total_loss": val_metrics.get("loss", 0.0),
             "intent_accuracy": val_metrics.get("intent_accuracy", 0.0),
-            "base_table_accuracy": val_metrics.get("base_table_accuracy",
-                                    val_metrics.get("metric_pointer_accuracy", 0.0)),
+            "base_table_accuracy": val_metrics.get("base_table_accuracy", val_metrics.get("metric_pointer_accuracy", 0.0)),
             "metric_column_accuracy": val_metrics.get("metric_column_accuracy", 0.0),
             "dimension_column_accuracy": val_metrics.get("dimension_column_accuracy", 0.0),
             "filter_column_accuracy": val_metrics.get("filter_column_accuracy", 0.0),
@@ -83,10 +85,10 @@ class TrainingDiagnostics:
         target.mkdir(parents=True, exist_ok=True)
         data = self.to_dict()
         (target / "training_diagnostics.json").write_text(
-            json.dumps(data, indent=2, default=str), encoding="utf-8",
+            json.dumps(data, indent=2, default=str), encoding="utf-8"
         )
         (target / "training_diagnostics.md").write_text(
-            _render_markdown(data), encoding="utf-8",
+            _render_markdown(data), encoding="utf-8"
         )
 
 
@@ -94,19 +96,21 @@ def _render_markdown(data: dict[str, Any]) -> str:
     lines = ["# Neural QueryIR Training Diagnostics", ""]
     cfg = data.get("config", {})
     lines.append("## Configuration")
-    lines.append(f"- **Optimizer**: {cfg.get('optimizer', '—')}")
-    lines.append(f"- **Activation**: {cfg.get('activation', '—')}")
-    lines.append(f"- **Learning rate**: {cfg.get('learning_rate', '—')}")
-    lines.append(f"- **Batch size**: {cfg.get('batch_size', '—')}")
-    lines.append(f"- **Gradient clipping**: {cfg.get('gradient_clipping', '—')}")
+    lines.append(f"- **Optimizer**: {cfg.get('optimizer_name', '-')}")
+    lines.append(f"- **Activation**: {cfg.get('activation_name', '-')}")
+    lines.append(f"- **Learning rate**: {cfg.get('learning_rate', '-')}")
+    lines.append(f"- **Batch size**: {cfg.get('batch_size', '-')}")
+    lines.append(f"- **Gradient clipping**: {cfg.get('gradient_clipping_value', '-')}")
+    lines.append(f"- **Train path**: {cfg.get('train_path', '-')}")
+    lines.append(f"- **Validation path**: {cfg.get('validation_path', '-')}")
     lines.append("")
     lines.append("## Summary")
     lines.append(f"- **Total epochs**: {data.get('total_epochs', 0)}")
-    lines.append(f"- **Best epoch**: {data.get('best_epoch', '—')}")
+    lines.append(f"- **Best epoch**: {data.get('best_epoch', '-')}")
     lines.append(f"- **Best slot accuracy**: {data.get('best_overall_slot_accuracy', 0):.4f}")
-    tt = data.get("total_training_time_seconds")
-    if tt is not None:
-        lines.append(f"- **Total training time**: {tt:.1f}s")
+    total_time = data.get("total_training_time_seconds")
+    if total_time is not None:
+        lines.append(f"- **Total training time**: {total_time:.1f}s")
     lines.append("")
     epochs = data.get("epochs", [])
     if epochs:
@@ -114,19 +118,14 @@ def _render_markdown(data: dict[str, Any]) -> str:
         lines.append("")
         lines.append("| Epoch | Train Loss | Val Loss | Intent Acc | Slot Acc | LR | Time (s) |")
         lines.append("|------:|-----------:|---------:|-----------:|---------:|---:|---------:|")
-        for e in epochs:
+        for epoch in epochs:
             lines.append(
-                f"| {e.get('epoch', '—')} "
-                f"| {e.get('train_total_loss', 0):.4f} "
-                f"| {e.get('validation_total_loss', 0):.4f} "
-                f"| {e.get('intent_accuracy', 0):.4f} "
-                f"| {e.get('overall_slot_accuracy', 0):.4f} "
-                f"| {e.get('learning_rate', '—')} "
-                f"| {e.get('epoch_time_seconds', '—')} |"
+                f"| {epoch.get('epoch', '-')} "
+                f"| {epoch.get('train_total_loss', 0):.4f} "
+                f"| {epoch.get('validation_total_loss', 0):.4f} "
+                f"| {epoch.get('intent_accuracy', 0):.4f} "
+                f"| {epoch.get('overall_slot_accuracy', 0):.4f} "
+                f"| {epoch.get('learning_rate', '-')} "
+                f"| {epoch.get('epoch_time_seconds', '-')} |"
             )
-    lines.append("")
-    best = data.get("best_epoch")
-    if best:
-        lines.append(f"## Recommended Next Action")
-        lines.append(f"Best model from epoch {best}. Review validation metrics and run experiment grid for further tuning.")
-    return "\n".join(lines)
+    return "\n".join(lines) + "\n"

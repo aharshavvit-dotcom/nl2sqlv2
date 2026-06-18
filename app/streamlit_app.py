@@ -41,14 +41,9 @@ MODEL_PATH = ROOT / "models" / "tfidf_retriever.joblib"
 # Default bundle path
 DEFAULT_BUNDLE_DIR = ROOT / "artifacts" / "model_bundle" / "current"
 
-# Legacy artifact dirs (used only in dev fallback mode)
-def _resolve_artifact_dir(new_name: str, old_name: str) -> Path:
-    new_path = ROOT / "artifacts" / new_name
-    return new_path if new_path.exists() else ROOT / "artifacts" / old_name
-
-ARTIFACT_DIR = _resolve_artifact_dir("retrieval_ir_model", "option_c_model")
-NEURAL_IR_ARTIFACT_DIR = _resolve_artifact_dir("neural_ir_model", "option_a_ir_model")
-NEURAL_IR_V2_ARTIFACT_DIR = _resolve_artifact_dir("neural_ir_model", "option_a_ir_model_v2")
+ARTIFACT_DIR = ROOT / "artifacts" / "work" / "retrieval_ir"
+NEURAL_IR_ARTIFACT_DIR = ROOT / "artifacts" / "work" / "neural_ir"
+NEURAL_IR_V2_ARTIFACT_DIR = ROOT / "artifacts" / "work" / "neural_ir"
 FEEDBACK_PATH = ROOT / "data" / "feedback" / "query_feedback.jsonl"
 EVALUATION_DIR = ROOT / "evaluation"
 GOLDEN_RESULTS_PATH = EVALUATION_DIR / "golden_runtime_report.json"
@@ -123,14 +118,17 @@ def _load_model_from_bundle(bundle: dict[str, Any]) -> RetrievalNL2SQLModel:
     retrieval_dir = Path(bundle["retrieval_model_dir"])
     neural_dir = Path(bundle["neural_model_dir"])
     neural_ready = (neural_dir / "model.pt").exists()
+    if not retrieval_dir.exists():
+        raise FileNotFoundError(f"Bundle retrieval artifact directory missing: {retrieval_dir}")
 
     return RetrievalNL2SQLModel.load(
-        artifact_dir=retrieval_dir if retrieval_dir.exists() else ARTIFACT_DIR,
+        artifact_dir=retrieval_dir,
         sample_model_path=MODEL_PATH,
         sample_examples_path=EXAMPLES_PATH,
         templates_path=TEMPLATES_PATH,
         synonyms_path=SYNONYMS_PATH,
         neural_ir_model_dir=neural_dir if neural_ready else None,
+        allow_dev_fallback=False,
     )
 
 
@@ -143,6 +141,7 @@ def _load_model_legacy() -> RetrievalNL2SQLModel:
         templates_path=TEMPLATES_PATH,
         synonyms_path=SYNONYMS_PATH,
         neural_ir_model_dir=_neural_ir_artifact_dir() if _neural_ir_ready() else None,
+        allow_dev_fallback=True,
     )
 
 
@@ -338,22 +337,8 @@ with st.expander("Model Status", expanded=False):
         metrics = manifest.get("metrics", {})
         status_cols[3].metric("SQL Validation Rate", f"{metrics.get('sql_validation_rate', 0):.1%}")
     else:
-        evaluation_path = ARTIFACT_DIR / "evaluation_report.json"
-        training_report = _load_json(ARTIFACT_DIR / "training_report.json")
-        evaluation_report = _load_json(evaluation_path)
-        dataset_stats = _load_json(ARTIFACT_DIR / "dataset_stats.json")
-        retrieval_ir_ready = _artifact_ready()
-        neural_ir_ready = _neural_ir_ready()
-        status_cols = st.columns(4)
-        status_cols[0].metric("Retrieval QueryIR Model", "trained" if retrieval_ir_ready else "sample")
-        status_cols[1].metric("Training examples", training_report.get("supported_examples", "sample"))
-        if evaluation_path.exists():
-            status_cols[2].metric("Top-5 accuracy", f"{evaluation_report.get('top_5_template_accuracy', 0):.3f}")
-        else:
-            status_cols[2].metric("Top-5 accuracy", "Not measured")
-        router_status = "calibrated" if (_neural_ir_artifact_dir() / "hybrid_calibration.json").exists() else ("available" if neural_ir_ready else "disabled")
-        status_cols[3].metric("Adaptive QueryIR Router", router_status)
-        st.caption(f"Neural QueryIR Model: {'ready' if neural_ir_ready else 'not trained'}")
+        st.error("No validated model bundle loaded.")
+        st.code("python training/train_model.py --config configs/training.yaml", language="bash")
 
 # ───────────────────────── Dataset Training (Developer Mode Only) ─────────────────────────
 if ENABLE_DEV_TRAINING_UI:
@@ -452,8 +437,6 @@ if generate and question.strip():
         )
         st.caption(str(exc))
         st.stop()
-    if model.artifact_dir is None:
-        st.info("Using sample model trained on hand-written examples. Train from datasets for better accuracy.")
     try:
         result = model.predict(question, schema, use_neural_ir_fallback=use_neural_fallback)
     except Exception as exc:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +91,16 @@ class GenericIRCorpusBuilder:
         save_report_pair(artifacts / "dataset_split_report.json", split_report, "Dataset Split Report")
         save_report_pair(artifacts / "leakage_report.json", leakage_report, "Dataset Leakage Report")
         save_report_pair(artifacts / "corpus_quality_report.json", quality_report, "Corpus Quality Report")
+        contribution_report = self._dataset_contribution_report(
+            requested=requested,
+            registry_report=registry_report,
+            examples=examples,
+            splits=splits,
+            leakage_report=leakage_report,
+        )
+        unsupported_report = self._unsupported_sql_report(unsupported_rows)
+        save_report_pair(artifacts / "dataset_contribution_report.json", contribution_report, "Dataset Contribution Report")
+        save_report_pair(artifacts / "unsupported_sql_report.json", unsupported_report, "Unsupported SQL Report")
 
         return {
             "output_dir": str(output),
@@ -97,6 +108,8 @@ class GenericIRCorpusBuilder:
             "split_report": split_report,
             "leakage_report": leakage_report,
             "corpus_quality_report": quality_report,
+            "dataset_contribution_report": contribution_report,
+            "unsupported_sql_report": unsupported_report,
             "output_files": {
                 name: str(output / f"generic_ir_{name}.jsonl")
                 for name in ["train", "validation", "test", "unseen_db_test", "unsupported"]
@@ -169,11 +182,17 @@ class GenericIRCorpusBuilder:
     ) -> dict[str, Any]:
         return {
             "example_id": example.example_id,
+            "dataset": example.dataset_name,
             "dataset_name": example.dataset_name,
             "db_id": example.db_id,
             "question": example.question,
+            "gold_sql": example.sql,
             "source_sql": example.sql,
             "unsupported_reason": reason or result.get("unsupported_reason") or "unsupported",
+            "unsupported_feature": GenericIRCorpusBuilder._unsupported_feature(
+                reason or result.get("unsupported_reason") or "unsupported",
+                result.get("error_message"),
+            ),
             "error_message": result.get("error_message"),
             "metadata": {
                 "difficulty": example.difficulty,
@@ -182,6 +201,118 @@ class GenericIRCorpusBuilder:
                 "warnings": result.get("warnings", []),
             },
         }
+
+    @staticmethod
+    def _dataset_contribution_report(
+        requested: list[str],
+        registry_report: dict[str, dict[str, Any]],
+        examples: list[Text2SQLExample],
+        splits: dict[str, list[dict[str, Any]]],
+        leakage_report: dict[str, Any],
+    ) -> dict[str, Any]:
+        by_dataset: dict[str, dict[str, Any]] = {}
+        all_names = list(dict.fromkeys([*requested, "wikisql", "spider", "bird-mini", "bird-full"]))
+        raw_counts = Counter(example.dataset_name for example in examples)
+        loaded_counts = Counter(example.dataset_name for example in examples)
+        for name in all_names:
+            split_counts = {
+                split_name: sum(1 for row in splits.get(split_name, []) if row.get("dataset_name") == name)
+                for split_name in ["train", "validation", "test", "unseen_db_test", "unsupported"]
+            }
+            unsupported_reasons = Counter(
+                row.get("unsupported_reason") or "unsupported"
+                for row in splits.get("unsupported", [])
+                if row.get("dataset_name") == name
+            )
+            by_dataset[name] = {
+                "raw_examples": int(raw_counts.get(name, 0)),
+                "loaded_examples": int(loaded_counts.get(name, 0)),
+                "converted_to_queryir": int(
+                    split_counts["train"]
+                    + split_counts["validation"]
+                    + split_counts["test"]
+                    + split_counts["unseen_db_test"]
+                ),
+                "used_in_train": int(split_counts["train"]),
+                "used_in_validation": int(split_counts["validation"]),
+                "used_in_test": int(split_counts["test"]),
+                "used_in_unseen_db_test": int(split_counts["unseen_db_test"]),
+                "unsupported": int(split_counts["unsupported"]),
+                "unsupported_reasons": dict(unsupported_reasons),
+            }
+        return {
+            "datasets_requested": requested,
+            "datasets_found": [name for name in requested if registry_report.get(name, {}).get("available")],
+            "datasets_missing": [name for name in requested if not registry_report.get(name, {}).get("available")],
+            "by_dataset": by_dataset,
+            "total_training_examples": len(splits.get("train", [])),
+            "leakage_check_passed": bool(
+                leakage_report.get("passed", leakage_report.get("ok", not leakage_report.get("has_leakage", False)))
+            ),
+        }
+
+    @staticmethod
+    def _unsupported_sql_report(unsupported_rows: list[dict[str, Any]]) -> dict[str, Any]:
+        by_dataset = Counter(row.get("dataset_name") or row.get("dataset") or "unknown" for row in unsupported_rows)
+        by_feature = Counter(row.get("unsupported_feature") or row.get("unsupported_reason") or "unsupported" for row in unsupported_rows)
+        total = len(unsupported_rows)
+        return {
+            "summary": {
+                "unsupported_examples": total,
+                "datasets": len(by_dataset),
+                "features": len(by_feature),
+            },
+            "unsupported_by_dataset": dict(by_dataset),
+            "unsupported_by_feature": dict(by_feature),
+            "training_data_loss_by_feature": {
+                feature: {
+                    "count": count,
+                    "share_of_unsupported": count / total if total else 0.0,
+                }
+                for feature, count in by_feature.items()
+            },
+            "top_20_examples": [
+                {
+                    "dataset": row.get("dataset_name") or row.get("dataset"),
+                    "db_id": row.get("db_id"),
+                    "question": row.get("question"),
+                    "gold_sql": row.get("gold_sql") or row.get("source_sql"),
+                    "unsupported_reason": row.get("unsupported_reason"),
+                    "unsupported_feature": row.get("unsupported_feature"),
+                    "error_message": row.get("error_message"),
+                }
+                for row in unsupported_rows[:20]
+            ],
+        }
+
+    @staticmethod
+    def _unsupported_feature(reason: str, message: str | None = None) -> str:
+        text = f"{reason} {message or ''}".lower()
+        if "nested" in text:
+            return "nested_query"
+        if "set operation" in text or reason == "set_operation":
+            return "set_operation"
+        if "window" in text:
+            return "window_function"
+        if "having" in text:
+            return "having_clause"
+        if "case" in text:
+            return "case_expression"
+        if " or " in f" {text} " or "or filters" in text:
+            return "or_filter"
+        if "join" in text:
+            return "unsupported_join"
+        if "select expression" in text:
+            return "unsupported_select_expression"
+        if "parse" in text:
+            return "parse_error"
+        if "schema" in text or "unknown" in text or "ambiguous" in text:
+            return "schema_mapping_failed"
+        if "validation" in text:
+            return "validator_failed"
+        if "roundtrip" in text or "render" in text:
+            return "renderer_failed"
+        return reason
 
     @staticmethod
     def _write_split_files(output: Path, splits: dict[str, list[dict[str, Any]]]) -> None:

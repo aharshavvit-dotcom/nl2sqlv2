@@ -40,7 +40,14 @@ class PipelineRunner:
         results = []
         status = "completed"
         for step in selected_steps:
-            contract = self.steps.get_contract(step, config)
+            try:
+                contract = self.steps.get_contract(step, config)
+            except Exception as exc:
+                status = "failed"
+                failure = {"step": step, "status": "failed", "error": str(exc)}
+                self.state.update_step(step, "failed", failure)
+                results.append(failure)
+                break
 
             # Check if step is skippable
             if contract.can_skip:
@@ -74,7 +81,23 @@ class PipelineRunner:
                 result = self.steps.run_step(step, config)
                 step_status = result.get("status", "completed")
                 if step_status == "skipped":
+                    if contract.required:
+                        status = "failed"
+                        failure = {
+                            "step": step,
+                            "status": "failed",
+                            "error": f"Required step {step} was skipped: {result.get('reason') or 'no reason'}",
+                        }
+                        self.state.update_step(step, "failed", failure)
+                        results.append(failure)
+                        break
                     self.state.update_step(step, "skipped", result)
+                elif step_status == "failed":
+                    status = "failed"
+                    failure = {"step": step, **result}
+                    self.state.update_step(step, "failed", failure)
+                    results.append(failure)
+                    break
                 else:
                     self.state.update_step(step, "completed", result)
                 results.append({"step": step, **result})
@@ -86,7 +109,12 @@ class PipelineRunner:
                         if not force:
                             error_msg = f"Missing required outputs from {step}: {output_check['missing']}"
                             status = "failed"
-                            failure = {"step": step, "status": "output_validation_failed", "error": error_msg}
+                            failure = {
+                                "step": step,
+                                "status": "failed",
+                                "error": error_msg,
+                                "validation_status": "output_validation_failed",
+                            }
                             self.state.update_step(step, "failed", failure)
                             results.append(failure)
                             break
@@ -105,6 +133,10 @@ class PipelineRunner:
 
 
 def _slice_steps(steps: list[str], start_at: str | None, stop_after: str | None) -> list[str]:
+    if start_at is not None and start_at not in steps:
+        raise ValueError(f"Unknown start step: {start_at}")
+    if stop_after is not None and stop_after not in steps:
+        raise ValueError(f"Unknown stop step: {stop_after}")
     start = steps.index(start_at) if start_at in steps else 0
     end = steps.index(stop_after) + 1 if stop_after in steps else len(steps)
     return steps[start:end]

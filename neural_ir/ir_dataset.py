@@ -26,6 +26,7 @@ class IRTrainingDataset(Dataset):
         max_candidate_tokens: int = 16,
         max_tables: int = 64,
         max_columns: int = 256,
+        max_examples: int | None = None,
     ):
         self.path = Path(path)
         self.vocab = vocab
@@ -39,6 +40,8 @@ class IRTrainingDataset(Dataset):
         self.candidate_builder = SchemaCandidateBuilder()
         self.schema_linker = SchemaLinker()
         self.examples = load_jsonl(self.path)
+        if max_examples is not None and max_examples > 0:
+            self.examples = self.examples[:max_examples]
 
     def __len__(self) -> int:
         return len(self.examples)
