@@ -25,7 +25,11 @@ from connected_db_testing.schema_case_generator import SchemaCaseGenerator, writ
 from semantic_layer import build_semantic_profile
 from semantic_layer.semantic_profile_store import SemanticProfileStore
 from scripts.verify_datasets import verify_all
-from training.train_retriever_from_datasets import train_from_datasets
+
+# ──────────────────── Developer Config Flag ────────────────────
+# Set to True to show training UI in the app (developer mode only).
+# Normal users should train via: python training/train_model.py --config configs/training.yaml
+ENABLE_DEV_TRAINING_UI = False
 
 
 DEFAULT_DB = ROOT / "data" / "sample_retail.db"
@@ -34,7 +38,10 @@ TEMPLATES_PATH = ROOT / "data" / "templates.yaml"
 SYNONYMS_PATH = ROOT / "data" / "synonyms.yaml"
 MODEL_PATH = ROOT / "models" / "tfidf_retriever.joblib"
 
-# Resolve artifact dirs with fallback to old names
+# Default bundle path
+DEFAULT_BUNDLE_DIR = ROOT / "artifacts" / "model_bundle" / "current"
+
+# Legacy artifact dirs (used only in dev fallback mode)
 def _resolve_artifact_dir(new_name: str, old_name: str) -> Path:
     new_path = ROOT / "artifacts" / new_name
     return new_path if new_path.exists() else ROOT / "artifacts" / old_name
@@ -73,6 +80,18 @@ def _schema_fingerprint(schema_payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _try_load_bundle(bundle_dir: Path) -> dict[str, Any] | None:
+    """Try to load a model bundle. Returns bundle info or None."""
+    try:
+        from model_bundle.bundle_loader import ModelBundleLoader
+        loader = ModelBundleLoader()
+        return loader.load(bundle_dir)
+    except (FileNotFoundError, ValueError):
+        return None
+    except Exception:
+        return None
+
+
 def _artifact_ready() -> bool:
     return (
         (ARTIFACT_DIR / "training_examples.jsonl").exists()
@@ -99,7 +118,24 @@ def _neural_ir_ready(path: Path | None = None) -> bool:
     )
 
 
-def _load_model() -> RetrievalNL2SQLModel:
+def _load_model_from_bundle(bundle: dict[str, Any]) -> RetrievalNL2SQLModel:
+    """Load model using bundle-resolved paths."""
+    retrieval_dir = Path(bundle["retrieval_model_dir"])
+    neural_dir = Path(bundle["neural_model_dir"])
+    neural_ready = (neural_dir / "model.pt").exists()
+
+    return RetrievalNL2SQLModel.load(
+        artifact_dir=retrieval_dir if retrieval_dir.exists() else ARTIFACT_DIR,
+        sample_model_path=MODEL_PATH,
+        sample_examples_path=EXAMPLES_PATH,
+        templates_path=TEMPLATES_PATH,
+        synonyms_path=SYNONYMS_PATH,
+        neural_ir_model_dir=neural_dir if neural_ready else None,
+    )
+
+
+def _load_model_legacy() -> RetrievalNL2SQLModel:
+    """Legacy model loading using artifact folder guessing (dev mode only)."""
     return RetrievalNL2SQLModel.load(
         artifact_dir=ARTIFACT_DIR,
         sample_model_path=MODEL_PATH,
@@ -129,6 +165,31 @@ def _dataset_missing_messages(selected: list[str]) -> list[str]:
 # ───────────────────────── Page Config ─────────────────────────
 st.set_page_config(page_title="QueryIR NL-to-SQL", layout="wide")
 st.title("QueryIR NL-to-SQL")
+
+# ───────────────────────── Model Bundle ─────────────────────────
+with st.sidebar:
+    st.subheader("Model Bundle")
+    bundle_path_input = st.text_input(
+        "Model Bundle Path",
+        value=str(DEFAULT_BUNDLE_DIR),
+        help="Path to a validated model bundle directory",
+    )
+    bundle_dir = Path(bundle_path_input)
+    bundle_info = _try_load_bundle(bundle_dir)
+
+    if bundle_info:
+        manifest = bundle_info.get("manifest", {})
+        st.success(f"Bundle loaded: {manifest.get('bundle_id', 'unknown')}")
+        st.caption(f"Status: {manifest.get('status', 'unknown')}")
+        if manifest.get("status") == "candidate":
+            st.warning("This is a candidate bundle (not yet promoted).")
+    else:
+        st.warning(
+            "No validated model bundle found.\n\n"
+            "Run:\n```\npython training/train_model.py \\\n  --config configs/training.yaml\n```"
+        )
+        if ENABLE_DEV_TRAINING_UI:
+            st.info("Developer mode: falling back to legacy artifact loading.")
 
 # ───────────────────────── Database Connection ─────────────────────────
 with st.expander("Database Connection", expanded=True):
@@ -267,56 +328,70 @@ with st.expander("Schema Summary", expanded=True):
 
 # ───────────────────────── Model Status ─────────────────────────
 with st.expander("Model Status", expanded=False):
-    evaluation_path = ARTIFACT_DIR / "evaluation_report.json"
-    training_report = _load_json(ARTIFACT_DIR / "training_report.json")
-    evaluation_report = _load_json(evaluation_path)
-    dataset_stats = _load_json(ARTIFACT_DIR / "dataset_stats.json")
-    retrieval_ir_ready = _artifact_ready()
-    neural_ir_ready = _neural_ir_ready()
-    status_cols = st.columns(4)
-    status_cols[0].metric("Retrieval QueryIR Model", "trained" if retrieval_ir_ready else "sample")
-    status_cols[1].metric("Training examples", training_report.get("supported_examples", "sample"))
-    if evaluation_path.exists():
-        status_cols[2].metric("Top-5 accuracy", f"{evaluation_report.get('top_5_template_accuracy', 0):.3f}")
+    if bundle_info:
+        manifest = bundle_info.get("manifest", {})
+        status_cols = st.columns(4)
+        status_cols[0].metric("Bundle Status", manifest.get("status", "unknown"))
+        status_cols[1].metric("Bundle ID", manifest.get("bundle_id", "unknown")[:20])
+        qg = manifest.get("quality_gate", {})
+        status_cols[2].metric("Quality Gate", "passed" if qg.get("passed") else "not passed")
+        metrics = manifest.get("metrics", {})
+        status_cols[3].metric("SQL Validation Rate", f"{metrics.get('sql_validation_rate', 0):.1%}")
     else:
-        status_cols[2].metric("Top-5 accuracy", "Not measured")
-    router_status = "calibrated" if (_neural_ir_artifact_dir() / "hybrid_calibration.json").exists() else ("available" if neural_ir_ready else "disabled")
-    status_cols[3].metric("Adaptive QueryIR Router", router_status)
-    st.caption(f"Neural QueryIR Model: {'ready' if neural_ir_ready else 'not trained'}")
-
-# ───────────────────────── Dataset Training ─────────────────────────
-with st.expander("Dataset Training", expanded=False):
-    c1, c2, c3 = st.columns(3)
-    use_wikisql = c1.checkbox("WikiSQL", value=True)
-    use_spider = c2.checkbox("Spider", value=True)
-    use_bird = c3.checkbox("BIRD Mini-Dev", value=True)
-    max_examples = st.number_input("Max examples per dataset (0 = no limit)", min_value=0, value=0, step=100)
-    include_schema_text = st.checkbox("Include schema text")
-    if st.button("Train From Local Datasets"):
-        selected = []
-        if use_wikisql:
-            selected.append("wikisql")
-        if use_spider:
-            selected.append("spider")
-        if use_bird:
-            selected.append("bird-mini")
-        if not selected:
-            st.warning("Select at least one dataset.")
+        evaluation_path = ARTIFACT_DIR / "evaluation_report.json"
+        training_report = _load_json(ARTIFACT_DIR / "training_report.json")
+        evaluation_report = _load_json(evaluation_path)
+        dataset_stats = _load_json(ARTIFACT_DIR / "dataset_stats.json")
+        retrieval_ir_ready = _artifact_ready()
+        neural_ir_ready = _neural_ir_ready()
+        status_cols = st.columns(4)
+        status_cols[0].metric("Retrieval QueryIR Model", "trained" if retrieval_ir_ready else "sample")
+        status_cols[1].metric("Training examples", training_report.get("supported_examples", "sample"))
+        if evaluation_path.exists():
+            status_cols[2].metric("Top-5 accuracy", f"{evaluation_report.get('top_5_template_accuracy', 0):.3f}")
         else:
-            missing_messages = _dataset_missing_messages(selected)
-            if missing_messages:
-                for message in missing_messages:
-                    st.warning(message)
+            status_cols[2].metric("Top-5 accuracy", "Not measured")
+        router_status = "calibrated" if (_neural_ir_artifact_dir() / "hybrid_calibration.json").exists() else ("available" if neural_ir_ready else "disabled")
+        status_cols[3].metric("Adaptive QueryIR Router", router_status)
+        st.caption(f"Neural QueryIR Model: {'ready' if neural_ir_ready else 'not trained'}")
+
+# ───────────────────────── Dataset Training (Developer Mode Only) ─────────────────────────
+if ENABLE_DEV_TRAINING_UI:
+    with st.expander("Dataset Training (Developer Mode)", expanded=False):
+        st.warning("⚠️ Developer mode training. For production, use: `python training/train_model.py --config configs/training.yaml`")
+        from training.train_retriever_from_datasets import train_from_datasets
+
+        c1, c2, c3 = st.columns(3)
+        use_wikisql = c1.checkbox("WikiSQL", value=True)
+        use_spider = c2.checkbox("Spider", value=True)
+        use_bird = c3.checkbox("BIRD Mini-Dev", value=True)
+        max_examples = st.number_input("Max examples per dataset (0 = no limit)", min_value=0, value=0, step=100)
+        include_schema_text = st.checkbox("Include schema text")
+        if st.button("Train From Local Datasets"):
+            selected = []
+            if use_wikisql:
+                selected.append("wikisql")
+            if use_spider:
+                selected.append("spider")
+            if use_bird:
+                selected.append("bird-mini")
+            if not selected:
+                st.warning("Select at least one dataset.")
             else:
-                with st.spinner("Training TF-IDF retriever from local datasets..."):
-                    report = train_from_datasets(
-                        selected,
-                        artifact_dir=ARTIFACT_DIR,
-                        max_examples=int(max_examples) or None,
-                        include_schema_text=include_schema_text,
-                    )
-                st.success("Training complete.")
-                st.json(report)
+                missing_messages = _dataset_missing_messages(selected)
+                if missing_messages:
+                    for message in missing_messages:
+                        st.warning(message)
+                else:
+                    with st.spinner("Training TF-IDF retriever from local datasets..."):
+                        report = train_from_datasets(
+                            selected,
+                            artifact_dir=ARTIFACT_DIR,
+                            max_examples=int(max_examples) or None,
+                            include_schema_text=include_schema_text,
+                        )
+                    st.success("Training complete.")
+                    st.json(report)
 
 # ───────────────────────── Testing ─────────────────────────
 with st.expander("Testing", expanded=False):
@@ -360,9 +435,21 @@ with right:
 
 if generate and question.strip():
     try:
-        model = _load_model()
+        if bundle_info:
+            model = _load_model_from_bundle(bundle_info)
+        elif ENABLE_DEV_TRAINING_UI:
+            model = _load_model_legacy()
+        else:
+            st.error(
+                "No validated model bundle found. Run:\n\n"
+                "```\npython training/train_model.py --config configs/training.yaml\n```"
+            )
+            st.stop()
     except (FileNotFoundError, ValueError) as exc:
-        st.error("Model could not be loaded. Run: python scripts/create_sample_db.py to create the database, then click Train From Local Datasets.")
+        st.error(
+            "Model could not be loaded. Run:\n\n"
+            "```\npython training/train_model.py --config configs/training.yaml\n```"
+        )
         st.caption(str(exc))
         st.stop()
     if model.artifact_dir is None:

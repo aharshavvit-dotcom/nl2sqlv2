@@ -1,0 +1,183 @@
+"""Build a candidate model bundle from pipeline artifacts."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import shutil
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from .bundle_manifest import BundleManifest, save_manifest
+
+
+class ModelBundleBuilder:
+    """Assembles a candidate model bundle from training artifacts."""
+
+    # Sensitive patterns that must never appear in manifests
+    _SENSITIVE_PATTERNS = [
+        "password", "secret", "token", "api_key", "apikey",
+        "credential", "connection_string", "conn_str",
+    ]
+
+    def build_candidate_bundle(
+        self,
+        work_dir: str | Path,
+        output_dir: str | Path,
+        config: dict[str, Any],
+        pipeline_report: dict[str, Any],
+        evaluation_report: dict[str, Any] | None = None,
+        quality_gate_report: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Build a candidate bundle from work artifacts.
+
+        Args:
+            work_dir: Root of working artifacts (e.g. ``artifacts/work`` or ``artifacts/``).
+            output_dir: Where to write the candidate bundle (e.g. ``artifacts/model_bundle/candidate``).
+            config: The training config dict.
+            pipeline_report: The pipeline execution report.
+            evaluation_report: Optional evaluation report.
+            quality_gate_report: Optional quality gate report.
+
+        Returns:
+            dict with bundle_dir, manifest_path, and manifest summary.
+        """
+        work = Path(work_dir)
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+
+        # Determine source dirs
+        retrieval_src = self._find_artifact(work, "retrieval_ir_model", "retrieval_ir")
+        neural_src = self._find_artifact(work, "neural_ir_model", "neural_ir")
+        ranker_src = self._find_artifact(work, "adaptive_ranker")
+        semantic_src = self._find_artifact(work, "semantic_profiles", "semantic_defaults")
+        eval_src = self._find_artifact(work, "evaluation")
+
+        # Copy artifacts into bundle structure
+        paths: dict[str, str] = {}
+        if retrieval_src and retrieval_src.exists():
+            self._copy_dir(retrieval_src, out / "retrieval_ir")
+            paths["retrieval_ir"] = "retrieval_ir/"
+        if neural_src and neural_src.exists():
+            self._copy_dir(neural_src, out / "neural_ir")
+            paths["neural_ir"] = "neural_ir/"
+        if ranker_src and ranker_src.exists():
+            self._copy_dir(ranker_src, out / "adaptive_ranker")
+            paths["adaptive_ranker"] = "adaptive_ranker/"
+        if semantic_src and semantic_src.exists():
+            self._copy_dir(semantic_src, out / "semantic_defaults")
+            paths["semantic_defaults"] = "semantic_defaults/"
+        if eval_src and eval_src.exists():
+            self._copy_dir(eval_src, out / "evaluation")
+            paths["evaluation"] = "evaluation/"
+
+        # Copy pipeline report
+        pipeline_dir = out / "pipeline"
+        pipeline_dir.mkdir(parents=True, exist_ok=True)
+        (pipeline_dir / "train_model_report.json").write_text(
+            json.dumps(pipeline_report, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+        # Copy configs
+        configs_dir = out / "configs"
+        configs_dir.mkdir(parents=True, exist_ok=True)
+        config_path = config.get("pipeline", {}).get("config_path") or config.get("_config_path", "")
+        if config_path and Path(config_path).exists():
+            shutil.copy2(config_path, configs_dir / Path(config_path).name)
+        paths["configs"] = "configs/"
+
+        # Extract metrics
+        metrics = self._extract_metrics(evaluation_report, quality_gate_report)
+
+        # Build manifest
+        bundle_id = f"nl2sql_bundle_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+        config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()[:16]
+        datasets = config.get("datasets", {}).get("names", [])
+
+        quality_gate_info = {"passed": False, "report_path": "evaluation/model_quality_gate_report.json"}
+        if quality_gate_report:
+            quality_gate_info["passed"] = bool(quality_gate_report.get("passed", False))
+            qg_path = out / "evaluation" / "model_quality_gate_report.json"
+            qg_path.parent.mkdir(parents=True, exist_ok=True)
+            qg_path.write_text(json.dumps(quality_gate_report, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        manifest = BundleManifest(
+            bundle_id=bundle_id,
+            status="candidate",
+            created_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            git_commit=self._git_commit(),
+            training_config_path=str(config_path) if config_path else "",
+            training_config_hash=config_hash,
+            datasets=datasets,
+            paths=paths,
+            artifacts={
+                "retrieval_manifest": "retrieval_ir/manifest.json",
+                "neural_manifest": "neural_ir/manifest.json",
+                "ranker_manifest": "adaptive_ranker/manifest.json",
+            },
+            metrics=metrics,
+            quality_gate=quality_gate_info,
+            pipeline_report="pipeline/train_model_report.json",
+        )
+
+        manifest_path = out / "bundle_manifest.json"
+        save_manifest(manifest, manifest_path)
+
+        return {
+            "bundle_dir": str(out),
+            "manifest_path": str(manifest_path),
+            "bundle_id": bundle_id,
+            "status": "candidate",
+        }
+
+    @staticmethod
+    def _find_artifact(base: Path, *names: str) -> Path | None:
+        for name in names:
+            candidate = base / name
+            if candidate.exists():
+                return candidate
+        return None
+
+    @staticmethod
+    def _copy_dir(src: Path, dst: Path) -> None:
+        if dst.exists():
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst, dirs_exist_ok=True)
+
+    @staticmethod
+    def _git_commit() -> str:
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True, text=True, check=False, timeout=5,
+            )
+            return result.stdout.strip() if result.returncode == 0 else "unknown"
+        except Exception:
+            return "unknown"
+
+    @staticmethod
+    def _extract_metrics(
+        evaluation_report: dict[str, Any] | None,
+        quality_gate_report: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        metrics: dict[str, Any] = {
+            "query_ir_validity_rate": 0.0,
+            "sql_validation_rate": 0.0,
+            "unnecessary_join_rate": 0.0,
+            "wrong_table_rate": 0.0,
+            "unsafe_sql_count": 0,
+        }
+        if evaluation_report:
+            summary = evaluation_report.get("summary", evaluation_report.get("test_performance", {}).get("summary", {}))
+            metrics["query_ir_validity_rate"] = summary.get("query_ir_validity_rate", 0.0)
+            metrics["sql_validation_rate"] = summary.get("sql_validation_rate", 0.0)
+            metrics["unnecessary_join_rate"] = summary.get("unnecessary_join_rate", 0.0)
+            metrics["wrong_table_rate"] = summary.get("wrong_table_rate", 0.0)
+            metrics["unsafe_sql_count"] = summary.get("unsafe_sql_count", evaluation_report.get("unsafe_sql_count", 0))
+        if quality_gate_report:
+            for key, value in (quality_gate_report.get("metrics", {})).items():
+                if isinstance(value, (int, float)):
+                    metrics.setdefault(key, value)
+        return metrics

@@ -1,0 +1,54 @@
+pipeline:
+  name: full_integrated_training
+  seed: 42
+  fail_fast: true
+  promote_if_passed: true
+
+datasets:
+  names:
+    - wikisql
+    - spider
+    - bird-mini
+  max_examples: 5000
+
+paths:
+  processed_dir: data/processed
+  artifacts_dir: artifacts
+  model_bundle_dir: artifacts/model_bundle
+  current_bundle_dir: artifacts/model_bundle/current
+  candidate_bundle_dir: artifacts/model_bundle/candidate
+
+retrieval:
+  enabled: true
+  output_dir: artifacts/work/retrieval_ir
+
+neural:
+  enabled: true
+  config: configs/neural_training_default.yaml
+  output_dir: artifacts/work/neural_ir
+  epochs: 5
+  batch_size: 8
+
+self_training:
+  enabled: true
+  iterations: 1
+  max_examples: 1000
+
+ranker:
+  enabled: true
+  output_dir: artifacts/work/adaptive_ranker
+
+evaluation:
+  enabled: true
+  output_dir: artifacts/work/evaluation
+  run_unseen_db: true
+  run_execution_aware: true
+
+quality_gate:
+  thresholds: evaluation/model_quality_thresholds.yaml
+  required: true
+
+bundle:
+  build: true
+  validate: true
+  promote_if_quality_gate_passes: true

@@ -1,7 +1,8 @@
 """Train the Neural QueryIR Model.
 
-This is the canonical entry point for training the neural IR model.
-It wraps ``training_ir.train_option_a_v2_model``.
+This is a compatibility wrapper around the optimized trainer.
+Prefer ``python training/train_model.py --config configs/training.yaml``
+for full integrated training.
 
 Usage:
     python training/train_neural_ir_model.py --train data/processed/generic_ir_train.jsonl --validation data/processed/generic_ir_validation.jsonl
@@ -25,6 +26,16 @@ def _resolve_dir(new_name: str, old_name: str) -> Path:
 
 
 def main() -> None:
+    import warnings
+    warnings.warn(
+        "This command is a compatibility wrapper. "
+        "Prefer `python training/train_model.py --config configs/training.yaml` for full integrated training.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    print("WARNING: This command is a compatibility wrapper. "
+          "Prefer `python training/train_model.py --config configs/training.yaml` for full integrated training.")
+
     parser = argparse.ArgumentParser(description="Train the Neural QueryIR Model")
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=32)

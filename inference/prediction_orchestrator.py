@@ -737,3 +737,34 @@ class PredictionOrchestrator:
         if confidence >= 0.60:
             return "medium"
         return "low"
+
+
+def create_orchestrator_from_bundle(bundle_dir: str | Path) -> PredictionOrchestrator:
+    """Create a PredictionOrchestrator from a validated model bundle.
+
+    Loads the bundle manifest, resolves all artifact paths, and returns
+    a configured orchestrator. No legacy artifact folder guessing.
+
+    Args:
+        bundle_dir: Path to the model bundle directory
+            (e.g. ``artifacts/model_bundle/current``).
+
+    Returns:
+        Configured PredictionOrchestrator.
+
+    Raises:
+        FileNotFoundError: If the bundle manifest is missing.
+        ValueError: If the bundle status is 'failed'.
+    """
+    from model_bundle.bundle_loader import ModelBundleLoader
+
+    loader = ModelBundleLoader()
+    bundle = loader.load(bundle_dir)
+
+    neural_dir = Path(bundle["neural_model_dir"])
+    neural_model_dir = neural_dir if (neural_dir / "model.pt").exists() else None
+
+    return PredictionOrchestrator(
+        neural_ir_model_dir=neural_model_dir,
+        use_neural_ir_fallback=neural_model_dir is not None,
+    )
