@@ -1,0 +1,23 @@
+pipeline_name: smoke_training
+seed: 42
+smoke: true
+skip_heavy_steps: true
+
+datasets:
+  names: ["wikisql", "spider", "bird-mini"]
+  max_examples: 100
+
+training:
+  neural_epochs: 1
+  batch_size: 8
+  self_improvement_iterations: 1
+  max_self_training_examples: 100
+
+artifacts:
+  generic_training_dir: artifacts/generic_training
+  retrieval_model_dir: artifacts/retrieval_ir_model
+  neural_model_dir: artifacts/neural_ir_model
+  self_training_dir: artifacts/self_training
+  evaluation_dir: artifacts/evaluation
+  schema_dir: artifacts/schema
+  connected_db_regression_dir: artifacts/connected_db_regressions

@@ -1,0 +1,15 @@
+{"case_id":"generic_users_list","question":"list all users","schema_id":"generic_pg","expected_intent":"show_records","expected_base_table":"users","expect_no_join":true}
+{"case_id":"generic_users_show","question":"list users","schema_id":"generic_pg","expected_intent":"show_records","expected_base_table":"users","expect_no_join":true}
+{"case_id":"generic_berths_show","question":"show berth_masters","schema_id":"generic_pg","expected_intent":"show_records","expected_base_table":"berth_masters","expect_no_join":true}
+{"case_id":"generic_assignments_count","question":"count assignments","schema_id":"generic_pg","expected_intent":"count_records","expected_base_table":"assignments","expect_no_join":true}
+{"case_id":"generic_users_filter","question":"show users where role is admin","schema_id":"generic_pg","expected_intent":"simple_filter","expected_base_table":"users","expect_no_join":true}
+{"case_id":"generic_assignments_filter","question":"show assignments where status is completed","schema_id":"generic_pg","expected_intent":"simple_filter","expected_base_table":"assignments","expect_no_join":true}
+{"case_id":"generic_assignments_user_names","question":"show assignments with user names","schema_id":"generic_pg","expected_join_policy":"explicit_only"}
+{"case_id":"generic_assignments_by_status","question":"assignments by status","schema_id":"generic_pg","expected_intent":"metric_by_dimension"}
+{"case_id":"generic_assignments_by_berth","question":"count assignments by berth","schema_id":"generic_pg","expected_intent":"count_by_dimension"}
+{"case_id":"retail_top_customers","question":"top 5 customers by sales","schema_id":"sample_retail","expected_intent":"top_n_metric_by_dimension"}
+{"case_id":"retail_region_revenue","question":"revenue by region","schema_id":"sample_retail","expected_intent":"metric_by_dimension"}
+{"case_id":"retail_sales_month","question":"sales by month","schema_id":"sample_retail","expected_intent":"trend_by_date"}
+{"case_id":"retail_top_products","question":"top products by revenue","schema_id":"sample_retail","expected_intent":"top_n_metric_by_dimension"}
+{"case_id":"retail_sales_last_month","question":"sales last month","schema_id":"sample_retail","expected_intent":"metric_summary"}
+{"case_id":"retail_orders_completed","question":"orders where status is completed","schema_id":"sample_retail","expected_intent":"simple_filter"}

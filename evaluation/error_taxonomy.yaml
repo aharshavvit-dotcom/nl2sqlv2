@@ -1,0 +1,23 @@
+categories:
+  wrong_intent: Predicted QueryIR intent differs from gold.
+  wrong_base_table: Predicted base table differs from gold.
+  wrong_selected_columns: Selected record columns differ from gold.
+  wrong_metric: Metric expression or aggregation differs from gold.
+  missing_metric: Gold requires a metric but prediction omitted it.
+  wrong_dimension: Dimension expression differs from gold.
+  missing_dimension: Gold requires a dimension but prediction omitted it.
+  wrong_filter: Filter column, operator, or value differs from gold.
+  missing_filter: Gold requires a filter but prediction omitted it.
+  extra_filter: Prediction added a filter not present in gold.
+  wrong_date_filter: Date filter differs from gold.
+  missing_date_filter: Gold requires a date filter but prediction omitted it.
+  wrong_join: Join path or condition differs from gold.
+  missing_join: Gold requires a join but prediction omitted it.
+  unnecessary_join: Prediction joined extra tables when gold did not require them.
+  wrong_group_by: GROUP BY differs from gold.
+  wrong_order_by: ORDER BY differs from gold.
+  wrong_limit: LIMIT differs from gold.
+  invalid_sql: SQL validation failed.
+  unsafe_sql: SQL uses blocked or unsafe operations.
+  execution_failed: Safe execution failed.
+  result_mismatch: Predicted and gold result sets differ.

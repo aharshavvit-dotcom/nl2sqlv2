@@ -6,7 +6,7 @@ from typing import Any
 from .query_ir_models import IRDateFilter, IRFilter, IRMetric, QueryIR
 
 
-SENSITIVE_MARKERS = ("email", "phone", "password", "token", "secret", "ssn", "address")
+SENSITIVE_MARKERS = ("email", "phone", "password", "token", "secret", "ssn", "address", "dob", "birth_date", "credit_card", "api_key", "auth")
 
 
 class IRToSQLRenderer:
@@ -14,17 +14,19 @@ class IRToSQLRenderer:
         self.max_limit = max_limit
 
     @staticmethod
-    def _quote_identifier(value: str) -> str:
+    def _quote_identifier(value: str, force: bool = False) -> str:
         if not value:
             return ""
         if value == "*":
             return "*"
         if "." in value:
             parts = value.split(".")
-            return ".".join(IRToSQLRenderer._quote_identifier(part) for part in parts)
+            return ".".join(IRToSQLRenderer._quote_identifier(part, force=force) for part in parts)
         if (value.startswith('"') and value.endswith('"')) or (value.startswith('`') and value.endswith('`')):
             return value
         safe_regex = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+        if force and safe_regex.match(value):
+            return f'"{value}"'
         if not safe_regex.match(value):
             return f'"{value}"'
         return value
@@ -46,6 +48,7 @@ class IRToSQLRenderer:
         template_id = query_ir.template_id
         metric = query_ir.metrics[0] if query_ir.metrics else None
         dimension = query_ir.dimensions[0] if query_ir.dimensions else None
+        force_quotes = bool(query_ir.metadata.get("force_quoted_identifiers"))
 
         if template_id == "count_records" or (query_ir.select_mode == "count" and not dimension):
             return "SELECT\n  COUNT(*) AS record_count"
@@ -64,11 +67,13 @@ class IRToSQLRenderer:
             return f"SELECT\n  {self._metric_sql(metric)} AS {metric.alias}"
 
         record_columns = self._record_select_columns(query_ir)
+        if force_quotes and query_ir.dimensions:
+            record_columns = [f"{self._quote_identifier(item.expression, force=True)} AS {item.alias}" for item in query_ir.dimensions]
         return "SELECT\n  " + ",\n  ".join(record_columns)
 
-    @staticmethod
-    def render_from(query_ir: QueryIR) -> str:
-        return f"FROM {IRToSQLRenderer._quote_identifier(query_ir.base_table)}" if query_ir.base_table else ""
+    def render_from(self, query_ir: QueryIR) -> str:
+        force_quotes = bool(query_ir.metadata.get("force_quoted_identifiers"))
+        return f"FROM {self._quote_identifier(query_ir.base_table, force=force_quotes)}" if query_ir.base_table else ""
 
     @staticmethod
     def render_joins(query_ir: QueryIR) -> str:
@@ -80,7 +85,8 @@ class IRToSQLRenderer:
         return "\n".join(lines)
 
     def render_where(self, query_ir: QueryIR, dialect: str = "sqlite") -> str:
-        clauses = [self._filter_sql(item, dialect=dialect) for item in query_ir.filters]
+        force_quotes = bool(query_ir.metadata.get("force_quoted_identifiers"))
+        clauses = [self._filter_sql(item, dialect=dialect, force_quotes=force_quotes) for item in query_ir.filters]
         clauses.extend(self._date_filter_sql(item) for item in query_ir.date_filters if item.filter_type != "grain")
         clauses = [clause for clause in clauses if clause]
         if not clauses:
@@ -130,8 +136,8 @@ class IRToSQLRenderer:
         expr = IRToSQLRenderer._quote_identifier(metric.expression)
         return f"{aggregation}({expr})"
 
-    def _filter_sql(self, item: IRFilter, dialect: str = "sqlite") -> str:
-        expression = self._quote_identifier(item.expression)
+    def _filter_sql(self, item: IRFilter, dialect: str = "sqlite", force_quotes: bool = False) -> str:
+        expression = self._quote_identifier(item.expression, force=force_quotes)
         operator = item.operator
         value = item.value
         if operator == "equals":

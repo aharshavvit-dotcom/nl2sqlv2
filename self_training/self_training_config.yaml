@@ -1,0 +1,30 @@
+# Self-Training Loop — Default Configuration
+#
+# These defaults are used when no CLI overrides are provided.
+# All paths are relative to the repository root.
+
+# Data paths
+train_path: data/processed/generic_ir_train.jsonl
+validation_path: data/processed/generic_ir_validation.jsonl
+test_path: data/processed/generic_ir_test.jsonl
+
+# Model output
+model_output_dir: artifacts/neural_ir_model
+artifacts_dir: artifacts/self_training
+
+# Loop control
+max_iterations: 3
+min_improvement: 0.005        # Stop if <0.5% improvement
+correction_weight: 2.0        # Correction examples weighted 2x
+hard_negative_weight: 1.5     # Hard negatives weighted 1.5x
+
+# Training hyperparameters (per iteration)
+batch_size: 32
+epochs_per_iteration: 10
+
+# Feature flags
+use_hard_negatives: true
+use_corrections: true
+
+# Limit predictions for quick iteration (null = no limit)
+max_prediction_examples: null

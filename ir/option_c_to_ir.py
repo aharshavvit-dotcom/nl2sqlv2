@@ -306,6 +306,8 @@ class RetrievalIRConverter:
 
     @staticmethod
     def _required_tables(base_table: str | None, mapping: dict[str, Any], joins: list[IRJoin], template_id: str | None) -> list[str]:
+        if template_id in {"show_records", "count_records", "simple_filter"}:
+            return [table for table in [base_table] if table]
         include_metric = template_id in METRIC_INTENTS or template_id in COUNT_INTENTS
         tables = [
             base_table,

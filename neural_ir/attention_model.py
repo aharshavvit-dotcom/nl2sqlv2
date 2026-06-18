@@ -10,6 +10,32 @@ from .model import masked_logits
 from .pointer_network import SchemaPointerNetwork
 
 
+def _maybe_ffn_head(input_dim: int, output_dim: int, config: dict) -> nn.Module:
+    """Return an FFN-wrapped head or a plain Linear, depending on config."""
+    if not config.get("feed_forward_heads", False):
+        return nn.Linear(input_dim, output_dim)
+    try:
+        from neural_optimization.ffn_blocks import FeedForwardBlock
+    except ImportError:
+        return nn.Linear(input_dim, output_dim)
+    ffn_dim = int(config.get("feed_forward_dim", 256))
+    activation = str(config.get("activation", "gelu"))
+    dropout = float(config.get("dropout", 0.25))
+    layer_norm = bool(config.get("layer_norm", True))
+    return nn.Sequential(
+        FeedForwardBlock(
+            input_dim=input_dim,
+            hidden_dim=ffn_dim,
+            output_dim=input_dim,
+            activation=activation,
+            dropout=dropout,
+            layer_norm=layer_norm,
+            residual=True,
+        ),
+        nn.Linear(input_dim, output_dim),
+    )
+
+
 DEFAULT_V2_CONFIG = {
     "model_version": "option_a_v2",
     "embedding_dim": 128,
@@ -72,14 +98,14 @@ class SchemaAwareOptionAIRModel(nn.Module):
         )
         self.fallback_candidate_projection = nn.Linear(sequence_dim, candidate_dim)
 
-        self.intent_head = nn.Linear(head_dim, label_sizes["intent"])
-        self.metric_aggregation_head = nn.Linear(head_dim, label_sizes["metric_aggregation"])
-        self.metric_expression_type_head = nn.Linear(head_dim, label_sizes["metric_expression_type"])
-        self.date_grain_head = nn.Linear(head_dim, label_sizes["date_grain"])
-        self.date_filter_type_head = nn.Linear(head_dim, label_sizes["date_filter_type"])
-        self.filter_operator_head = nn.Linear(head_dim, label_sizes["filter_operator"])
-        self.order_direction_head = nn.Linear(head_dim, label_sizes["order_direction"])
-        self.limit_bucket_head = nn.Linear(head_dim, label_sizes["limit_bucket"])
+        self.intent_head = _maybe_ffn_head(head_dim, label_sizes["intent"], merged)
+        self.metric_aggregation_head = _maybe_ffn_head(head_dim, label_sizes["metric_aggregation"], merged)
+        self.metric_expression_type_head = _maybe_ffn_head(head_dim, label_sizes["metric_expression_type"], merged)
+        self.date_grain_head = _maybe_ffn_head(head_dim, label_sizes["date_grain"], merged)
+        self.date_filter_type_head = _maybe_ffn_head(head_dim, label_sizes["date_filter_type"], merged)
+        self.filter_operator_head = _maybe_ffn_head(head_dim, label_sizes["filter_operator"], merged)
+        self.order_direction_head = _maybe_ffn_head(head_dim, label_sizes["order_direction"], merged)
+        self.limit_bucket_head = _maybe_ffn_head(head_dim, label_sizes["limit_bucket"], merged)
 
         self.table_pointer = SchemaPointerNetwork(head_dim, candidate_dim, candidate_hidden_dim)
         self.metric_pointer = SchemaPointerNetwork(head_dim, candidate_dim, candidate_hidden_dim)

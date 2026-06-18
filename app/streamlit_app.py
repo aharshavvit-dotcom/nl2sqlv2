@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 import subprocess
 import sys
@@ -16,8 +17,13 @@ if str(ROOT) not in sys.path:
 from db.connection_config import DatabaseConnectionConfig, safe_config_summary
 from db.schema_reader import read_database_schema, schema_dict_to_graph, schema_summary
 from execution.query_executor import execute_select, execute_query
-from nl2sql_v1.feedback import append_feedback
+from feedback.feedback_models import QueryFeedback
+from feedback.feedback_store import FeedbackStore
 from retriever.retrieval_nl2sql_model import RetrievalNL2SQLModel
+from connected_db_testing.generated_case_runner import ConnectedDBRegressionReporter, ConnectedDBRegressionRunner
+from connected_db_testing.schema_case_generator import SchemaCaseGenerator, write_cases_jsonl
+from semantic_layer import build_semantic_profile
+from semantic_layer.semantic_profile_store import SemanticProfileStore
 from scripts.verify_datasets import verify_all
 from training.train_retriever_from_datasets import train_from_datasets
 
@@ -36,7 +42,7 @@ def _resolve_artifact_dir(new_name: str, old_name: str) -> Path:
 ARTIFACT_DIR = _resolve_artifact_dir("retrieval_ir_model", "option_c_model")
 NEURAL_IR_ARTIFACT_DIR = _resolve_artifact_dir("neural_ir_model", "option_a_ir_model")
 NEURAL_IR_V2_ARTIFACT_DIR = _resolve_artifact_dir("neural_ir_model", "option_a_ir_model_v2")
-FEEDBACK_PATH = ROOT / "feedback" / "feedback.jsonl"
+FEEDBACK_PATH = ROOT / "data" / "feedback" / "query_feedback.jsonl"
 EVALUATION_DIR = ROOT / "evaluation"
 GOLDEN_RESULTS_PATH = EVALUATION_DIR / "golden_runtime_report.json"
 
@@ -45,6 +51,26 @@ def _load_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _schema_fingerprint(schema_payload: dict[str, Any]) -> str:
+    safe_payload = {
+        "dialect": schema_payload.get("dialect"),
+        "schema_name": schema_payload.get("schema_name"),
+        "tables": {
+            table: [
+                {
+                    "name": column.get("name"),
+                    "type": column.get("type"),
+                    "is_primary_key": column.get("is_primary_key"),
+                }
+                for column in info.get("columns", [])
+            ]
+            for table, info in sorted((schema_payload.get("tables") or {}).items())
+        },
+    }
+    encoded = json.dumps(safe_payload, sort_keys=True, ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _artifact_ready() -> bool:
@@ -179,6 +205,8 @@ if active_config is None:
 try:
     schema_dict = read_database_schema(active_config)
     schema = schema_dict_to_graph(schema_dict)
+    semantic_profile = build_semantic_profile(schema_dict)
+    SemanticProfileStore(ROOT / "artifacts" / "semantic_profiles").save(semantic_profile["schema_fingerprint"], semantic_profile)
 except Exception as exc:
     st.error(f"Failed to read schema: {exc}")
     st.stop()
@@ -196,6 +224,46 @@ with st.expander("Schema Summary", expanded=True):
         for tbl_name, tbl_info in summary["tables"].items():
             pk_text = ", ".join(tbl_info["primary_keys"]) if tbl_info["primary_keys"] else "—"
             st.markdown(f"**{tbl_name}**: {tbl_info['column_count']} columns, PK: {pk_text}, FK: {tbl_info['foreign_key_count']}")
+
+    st.subheader("Semantic Profile")
+    table_infos = semantic_profile.get("tables") or {}
+    semantic_cols = st.columns(5)
+    semantic_cols[0].metric("Entity tables", sum(1 for info in table_infos.values() if info.get("table_type") == "entity"))
+    semantic_cols[1].metric("Master tables", sum(1 for info in table_infos.values() if info.get("table_type") == "lookup"))
+    semantic_cols[2].metric("Assignment tables", sum(1 for info in table_infos.values() if info.get("table_type") == "bridge"))
+    semantic_cols[3].metric("Metrics", len(semantic_profile.get("metrics") or {}))
+    semantic_cols[4].metric("Sensitive columns", sum(len(info.get("sensitive_columns") or []) for info in table_infos.values()))
+    with st.expander("Semantic profile details", expanded=False):
+        st.json(
+            {
+                "entities": [table for table, info in table_infos.items() if info.get("table_type") == "entity"],
+                "masters": [table for table, info in table_infos.items() if info.get("table_type") == "lookup"],
+                "assignments": [table for table, info in table_infos.items() if info.get("table_type") == "bridge"],
+                "metrics": semantic_profile.get("metrics") or {},
+                "dimensions": semantic_profile.get("dimensions") or {},
+                "dates": semantic_profile.get("dates") or {},
+                "sensitive_columns": {
+                    table: info.get("sensitive_columns") or []
+                    for table, info in table_infos.items()
+                    if info.get("sensitive_columns")
+                },
+            }
+        )
+    regression_dir = ROOT / "artifacts" / "connected_db_regressions"
+    cases_path = regression_dir / "generated_cases.jsonl"
+    if st.button("Generate connected-DB regression cases"):
+        cases = SchemaCaseGenerator().generate_cases(schema_dict)
+        write_cases_jsonl(str(cases_path), cases)
+        st.success(f"Generated {len(cases)} cases.")
+    if st.button("Run connected-DB regression smoke test"):
+        if cases_path.exists():
+            cases = [json.loads(line) for line in cases_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        else:
+            cases = SchemaCaseGenerator().generate_cases(schema_dict)
+            write_cases_jsonl(str(cases_path), cases)
+        report = ConnectedDBRegressionRunner().run(cases, schema_dict)
+        ConnectedDBRegressionReporter().write(report, regression_dir / "regression_report.json")
+        st.json(report.get("summary", {}))
 
 # ───────────────────────── Model Status ─────────────────────────
 with st.expander("Model Status", expanded=False):
@@ -305,24 +373,51 @@ if generate and question.strip():
         st.error(f"Could not generate SQL for this schema: {exc}")
         st.stop()
 
-    st.subheader("Retrieved Examples")
-    st.dataframe(
-        pd.DataFrame(
-            [
+    if result.needs_clarification:
+        st.warning("The question is ambiguous.")
+        clarification = result.clarification or {}
+        options = clarification.get("options") or []
+        st.write("Please choose one option:")
+        selected_option = st.radio("Clarification options", options, label_visibility="collapsed") if options else None
+        if st.button("Continue", disabled=not bool(selected_option)):
+            st.session_state["last_clarification_choice"] = {
+                "question": question,
+                "selected_option": selected_option,
+                "clarification": clarification,
+            }
+            st.info(f"Clarification selected: {selected_option}")
+        with st.expander("Clarification Debug", expanded=True):
+            st.json(
                 {
-                    "rank": item.get("rank"),
-                    "id": item.get("example_id"),
-                    "similarity": round(float(item.get("similarity_score") or 0), 4),
-                    "rerank": round(float(item.get("rerank_score") or 0), 4),
-                    "question": item.get("question"),
-                    "template": item.get("template_id"),
+                    "ambiguity_type": clarification.get("ambiguity_type"),
+                    "candidate_mappings": clarification.get("candidate_mappings"),
+                    "scores": clarification.get("scores"),
+                    "reason": clarification.get("reason"),
                 }
-                for item in result.retrieved_candidates
-            ]
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
+            )
+        st.stop()
+
+    st.subheader("Retrieved Examples")
+    if result.retrieved_candidates:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "rank": item.get("rank"),
+                        "id": item.get("example_id"),
+                        "similarity": round(float(item.get("similarity_score") or 0), 4),
+                        "rerank": round(float(item.get("rerank_score") or 0), 4),
+                        "question": item.get("question"),
+                        "template": item.get("template_id"),
+                    }
+                    for item in result.retrieved_candidates
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.caption("No retrieval examples used.")
 
     router_decision = result.router_decision or result.debug.get("router_decision") or {}
     neural_ir_raw = result.neural_ir_result or result.debug.get("neural_ir_result") or {}
@@ -330,6 +425,7 @@ if generate and question.strip():
     st.subheader("Confidence")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     source_label = {
+        "generic_direct_planner": "Generic Direct Planner",
         "retrieval_ir": "Retrieval QueryIR", "neural_ir": "Neural QueryIR",
         "adaptive_router": "Adaptive Router",
         "option_c": "Retrieval QueryIR", "option_a": "Neural QueryIR", "hybrid": "Adaptive Router",
@@ -344,25 +440,35 @@ if generate and question.strip():
               f"{float(router_decision.get('neural_ir_confidence', router_decision.get('option_a_confidence', neural_ir_raw.get('calibrated_confidence', 0))) or 0):.3f}")
     if router_decision:
         st.caption(f"Router decision: {router_decision.get('selected')} ({router_decision.get('reason')})")
+    if result.source_model == "generic_direct_planner":
+        planner_debug = result.planner_debug or result.debug.get("generic_planner") or {}
+        st.info("Direct schema-safe query detected")
+        st.caption(f"No joins required. Base table: {planner_debug.get('base_table') or (result.query_ir or {}).get('base_table')}")
+        with st.expander("Generic Planner Debug", expanded=False):
+            st.json(planner_debug)
     repairs_applied = neural_ir_raw.get("repairs_applied") or []
     if repairs_applied:
         st.info("Repairs applied: " + ", ".join(str(item) for item in repairs_applied))
 
     st.subheader("Slots")
-    slot_rows = [
-        {
-            "slot": name,
-            "value": slot.get("value"),
-            "source": slot.get("source"),
-            "confidence": round(float(slot.get("confidence") or 0), 3),
-        }
-        for name, slot in result.slots.items()
-    ]
-    st.dataframe(pd.DataFrame(slot_rows), use_container_width=True, hide_index=True)
+    if result.slots:
+        slot_rows = [
+            {
+                "slot": name,
+                "value": slot.get("value"),
+                "source": slot.get("source"),
+                "confidence": round(float(slot.get("confidence") or 0), 3),
+            }
+            for name, slot in result.slots.items()
+        ]
+        st.dataframe(pd.DataFrame(slot_rows), use_container_width=True, hide_index=True)
+    else:
+        st.caption("Direct planner did not require slot extraction.")
 
     st.subheader("Schema Mapping")
     mapping = result.schema_mapping
     mapping_rows = [
+        {"item": "base", "table": mapping.get("base_table"), "column": None, "score": (mapping.get("match_scores") or {}).get("generic_direct_planner")},
         {"item": "metric", "table": mapping.get("metric_table"), "column": mapping.get("metric_column"), "score": (mapping.get("match_scores") or {}).get("metric")},
         {"item": "dimension", "table": mapping.get("dimension_table"), "column": mapping.get("dimension_column"), "score": (mapping.get("match_scores") or {}).get("dimension")},
         {"item": "entity", "table": mapping.get("entity_table"), "column": None, "score": (mapping.get("match_scores") or {}).get("entity")},
@@ -421,22 +527,53 @@ if generate and question.strip():
         except Exception as exc:  # pragma: no cover - UI guard
             st.error(str(exc))
 
-    st.subheader("Feedback")
-    rating = st.radio("Was this useful?", ["skip", "thumbs_up", "thumbs_down"], horizontal=True)
-    notes = st.text_area("Notes", height=80)
-    if st.button("Save feedback"):
-        append_feedback(
-            FEEDBACK_PATH,
-            {
-                "question": question,
-                "sql": result.sql,
-                "rating": rating,
-                "notes": notes,
-                "db_type": active_config.db_type,
-                "retrieved_examples": [item.get("example_id") for item in result.retrieved_candidates],
-            },
+    with st.expander("Optional: Manual Feedback (Legacy)", expanded=False):
+        st.info("The primary training loop now uses dataset-driven self-improvement. Manual feedback is optional.")
+        st.subheader("Feedback")
+        rating_label = st.radio(
+            "Was this answer useful?",
+            ["Correct", "Partially correct", "Incorrect", "Unsafe", "Not sure"],
+            horizontal=True,
         )
-        st.success("Feedback saved.")
+        tag_options = {
+            "wrong table": "wrong_table",
+            "wrong join": "wrong_join",
+            "unnecessary join": "unnecessary_join",
+            "wrong metric": "wrong_metric",
+            "wrong dimension": "wrong_dimension",
+            "missing filter": "missing_filter",
+            "wrong filter": "wrong_filter",
+            "invalid SQL": "invalid_sql",
+            "unsafe SQL": "unsafe_sql",
+        }
+        selected_tag_labels = st.multiselect("What was wrong?", list(tag_options))
+        corrected_sql = st.text_area("Corrected SQL, optional", height=90)
+        comment = st.text_area("Comment, optional", height=80)
+        if st.button("Submit feedback"):
+            rating_map = {
+                "Correct": "correct",
+                "Partially correct": "partially_correct",
+                "Incorrect": "incorrect",
+                "Unsafe": "unsafe",
+                "Not sure": "not_sure",
+            }
+            feedback = QueryFeedback(
+                db_type=active_config.db_type,
+                schema_fingerprint=_schema_fingerprint(schema_dict),
+                question=question,
+                generated_query_ir=result.query_ir,
+                generated_sql=result.sql,
+                source_model=result.source_model,
+                validation_status=result.validation,
+                execution_status=None,
+                user_rating=rating_map[rating_label],
+                user_comment=comment or None,
+                corrected_sql=corrected_sql.strip() or None,
+                corrected_query_ir=None,
+                feedback_tags=[tag_options[label] for label in selected_tag_labels],
+            )
+            feedback_id = FeedbackStore(FEEDBACK_PATH).append(feedback)
+            st.success(f"Feedback saved: {feedback_id}")
 
     if st.checkbox("Show QueryIR debug"):
         st.subheader("QueryIR JSON")

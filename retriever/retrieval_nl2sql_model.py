@@ -30,7 +30,7 @@ DEFAULT_NEURAL_IR_V2_ARTIFACT_DIR = _resolve_dir("neural_ir_model", "option_a_ir
 
 @dataclass
 class RetrievalNL2SQLModel:
-    retriever: TfidfRetriever
+    retriever: Any
     templates_path: Path = DEFAULT_TEMPLATES
     synonyms_path: Path = DEFAULT_SYNONYMS
     artifact_dir: Path | None = None
@@ -69,6 +69,23 @@ class RetrievalNL2SQLModel:
             use_neural_ir_fallback=_fallback,
         )
         metric_synonyms, dimension_synonyms = cls._load_synonyms(synonyms)
+        if cls.rag_artifact_ready(artifact_path):
+            from retrieval.rag_retriever import RAGRetrieverAdapter
+
+            metadata = cls._load_metadata(artifact_path)
+            metadata["retrieval_backend"] = "local_rag"
+            return cls(
+                retriever=RAGRetrieverAdapter.load(artifact_path),
+                templates_path=templates,
+                synonyms_path=synonyms,
+                artifact_dir=artifact_path,
+                metadata=metadata,
+                orchestrator=orchestrator,
+                metric_synonyms=metric_synonyms,
+                dimension_synonyms=dimension_synonyms,
+                neural_ir_model_dir=neural_ir_path,
+                use_neural_ir_fallback=_fallback,
+            )
         if cls.artifact_ready(artifact_path):
             return cls(
                 retriever=TfidfRetriever.load(artifact_path),
@@ -105,6 +122,16 @@ class RetrievalNL2SQLModel:
         )
 
     @staticmethod
+    def rag_artifact_ready(artifact_dir: str | Path) -> bool:
+        path = Path(artifact_dir)
+        return (
+            (path / "example_index.pkl").exists()
+            and (path / "schema_index.pkl").exists()
+            and (path / "pattern_index.pkl").exists()
+            and (path / "rag_metadata.json").exists()
+        )
+
+    @staticmethod
     def _default_neural_ir_dir() -> Path:
         return DEFAULT_NEURAL_IR_V2_ARTIFACT_DIR if (DEFAULT_NEURAL_IR_V2_ARTIFACT_DIR / "model.pt").exists() else DEFAULT_NEURAL_IR_ARTIFACT_DIR
 
@@ -125,6 +152,7 @@ class RetrievalNL2SQLModel:
     def _load_metadata(artifact_dir: Path) -> dict[str, Any]:
         metadata: dict[str, Any] = {}
         for name in [
+            "rag_metadata.json",
             "supported_patterns.json",
             "dataset_stats.json",
             "training_report.json",

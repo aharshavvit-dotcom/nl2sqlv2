@@ -9,7 +9,7 @@ from nl2sql_v1.schema import SchemaGraph
 from .query_ir_models import IRValidationIssue, IRValidationResult, QueryIR
 
 
-SENSITIVE_MARKERS = ("email", "phone", "password", "token", "secret", "ssn", "address")
+SENSITIVE_MARKERS = ("email", "phone", "password", "token", "secret", "ssn", "address", "dob", "birth_date", "credit_card", "api_key", "auth")
 METRIC_INTENTS = {"metric_summary", "metric_by_dimension", "top_n_metric_by_dimension", "bottom_n_metric_by_dimension", "trend_by_date"}
 DIMENSION_INTENTS = {"metric_by_dimension", "top_n_metric_by_dimension", "bottom_n_metric_by_dimension", "count_by_dimension"}
 EXECUTABLE_INTENTS = {
@@ -44,6 +44,17 @@ class IRValidator:
             self._issue(issues, "error", "missing_metric", "Metric intent requires at least one metric.")
         if query_ir.template_id in DIMENSION_INTENTS and not query_ir.dimensions:
             self._issue(issues, "error", "missing_dimension", "By-dimension intent requires a dimension.")
+        if (
+            query_ir.metadata.get("source") == "generic_direct_planner"
+            and query_ir.template_id in {"show_records", "simple_filter"}
+            and not query_ir.dimensions
+        ):
+            self._issue(
+                issues,
+                "error",
+                "no_safe_select_columns",
+                "No safe non-sensitive columns are available for this direct table query.",
+            )
 
         for date_filter in query_ir.date_filters:
             if not date_filter.date_table or not date_filter.date_column:

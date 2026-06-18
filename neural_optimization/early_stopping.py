@@ -1,0 +1,71 @@
+"""Early stopping for neural model training.
+
+Monitors a metric across epochs and signals when training should halt.
+"""
+
+from __future__ import annotations
+
+
+class EarlyStopping:
+    """Signals when training should stop due to lack of improvement.
+
+    Parameters
+    ----------
+    patience:
+        Number of epochs without improvement before stopping.
+    metric_name:
+        Name of the metric to monitor.
+    mode:
+        ``"max"`` (higher is better) or ``"min"`` (lower is better).
+    min_delta:
+        Minimum improvement to count as an actual improvement.
+    """
+
+    def __init__(
+        self,
+        patience: int = 3,
+        metric_name: str = "validation_gold_score",
+        mode: str = "max",
+        min_delta: float = 0.0,
+    ) -> None:
+        self.patience = patience
+        self.metric_name = metric_name
+        self.mode = mode
+        self.min_delta = min_delta
+        self._best: float | None = None
+        self._counter: int = 0
+
+    def step(self, metrics: dict[str, float]) -> bool:
+        """Check whether training should stop.
+
+        Returns ``True`` when training should be halted.
+        """
+        value = float(metrics.get(
+            self.metric_name,
+            metrics.get("overall_slot_accuracy",
+            metrics.get("loss", 0.0)),
+        ))
+        if self._best is None:
+            self._best = value
+            self._counter = 0
+            return False
+
+        improved = (
+            (value > self._best + self.min_delta) if self.mode == "max"
+            else (value < self._best - self.min_delta)
+        )
+        if improved:
+            self._best = value
+            self._counter = 0
+            return False
+
+        self._counter += 1
+        return self._counter >= self.patience
+
+    @property
+    def counter(self) -> int:
+        return self._counter
+
+    @property
+    def best_value(self) -> float | None:
+        return self._best

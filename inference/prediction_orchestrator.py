@@ -4,11 +4,14 @@ from pathlib import Path
 import re
 from typing import Any
 
+from clarification import AmbiguityDetector, ClarificationQuestionBuilder
+from generic_planner import SchemaProfile, TableIntentResolver, infer_join_policy
 from neural_ir.calibration import choose_route, load_hybrid_calibration
 from ir.ir_to_sql_renderer import IRToSQLRenderer
 from ir.ir_validator import IRValidator
 from ir.option_c_to_ir import OptionCToIRConverter
 from ir.semantic_metric_resolver import SemanticMetricResolver
+from semantic_layer import build_semantic_profile
 from validation.sql_validator import SQLValidator
 
 from .candidate_generator import CandidateGenerator
@@ -112,9 +115,37 @@ class PredictionOrchestrator:
     ) -> PredictionResult:
         normalized_question = self._normalize_question(question)
         schema_context = RuntimeSchemaContext(schema)
+        semantic_profile = self._build_semantic_profile(schema)
+
+        direct_result = TableIntentResolver(SchemaProfile(schema)).resolve(question)
+        clarification = None if direct_result.handled else self._semantic_clarification(
+            question=question,
+            normalized_question=normalized_question,
+            schema=schema,
+            semantic_profile=semantic_profile,
+            direct_result=direct_result,
+        )
+        if clarification is not None:
+            return clarification
+
+        if direct_result.handled and direct_result.query_ir is not None:
+            return self._direct_planner_prediction(
+                question=question,
+                normalized_question=normalized_question,
+                schema=schema,
+                schema_context=schema_context,
+                direct_result=direct_result,
+                semantic_profile=semantic_profile,
+            )
+
         metric_synonyms, dimension_synonyms = self._synonym_maps(metric_synonyms, dimension_synonyms)
 
-        candidates = self.generator.generate_candidates(question, retriever, top_k=self.top_k)
+        candidates = self.generator.generate_candidates(
+            question,
+            retriever,
+            top_k=self.top_k,
+            schema=schema_context.serialize_for_debug(),
+        )
         candidates = self.reranker.rerank_candidates(question, candidates, schema_context)
         selected_template = self.selector.select_template(candidates, question)
         slot_payload = self.slot_resolver.resolve_slots(
@@ -125,11 +156,21 @@ class PredictionOrchestrator:
             {"metrics": metric_synonyms, "dimensions": dimension_synonyms},
         )
         slots = slot_payload["slots"]
-        schema_mapping = self.mapper.map_slots_to_schema(slots, schema_context, metric_synonyms, dimension_synonyms)
-        self._apply_semantic_metric_resolution(schema_mapping, schema_context)
+        template_id = selected_template.get("template_id")
+        schema_mapping = self.mapper.map_slots_to_schema(
+            slots,
+            schema_context,
+            metric_synonyms,
+            dimension_synonyms,
+            template_id=template_id,
+            semantic_profile=semantic_profile,
+        )
+        if template_id not in {"show_records", "simple_filter", "count_records"}:
+            self._apply_semantic_metric_resolution(schema_mapping, schema_context)
         base_table = self._select_base_table(selected_template.get("template_id"), schema_mapping)
         required_tables = self._required_tables(selected_template.get("template_id"), schema_mapping)
-        join_plan = self.join_planner.plan_joins(schema_context, base_table, required_tables)
+        join_policy = infer_join_policy(question, selected_template.get("template_id") or selected_template.get("intent") or "")
+        join_plan = self.join_planner.plan_joins(schema_context, base_table, required_tables, join_policy=join_policy)
 
         query_ir = self.ir_converter.convert(
             question=question,
@@ -200,6 +241,7 @@ class PredictionOrchestrator:
             confidence_breakdown=confidence["confidence_breakdown"],
             debug={
                 "schema_context": schema_context.serialize_for_debug(),
+                "semantic_profile_summary": self._semantic_summary(semantic_profile),
                 "template_selection": selected_template,
                 "confidence_breakdown": confidence["confidence_breakdown"],
                 "confidence_components": confidence["confidence_breakdown"],
@@ -214,6 +256,230 @@ class PredictionOrchestrator:
             schema=schema,
             enabled=self.use_neural_ir_fallback if _fallback is None else _fallback,
         )
+
+    def _direct_planner_prediction(
+        self,
+        question: str,
+        normalized_question: str,
+        schema: Any,
+        schema_context: RuntimeSchemaContext,
+        direct_result: Any,
+        semantic_profile: dict[str, Any] | None = None,
+    ) -> PredictionResult:
+        query_ir = direct_result.query_ir
+        ir_validation = self.ir_validator.validate(query_ir, schema=schema)
+        sql = self.sql_renderer.render(query_ir, dialect=schema_context.dialect) if ir_validation.is_valid else None
+        sql_validation = self.sql_validator.validate(sql, schema=schema, max_limit=self.max_limit, dialect=schema_context.dialect)
+
+        warnings = [
+            *direct_result.warnings,
+            *query_ir.warnings,
+            *ir_validation.warnings,
+            *ir_validation.errors,
+            *([] if sql_validation.get("is_valid") else sql_validation.get("issues", [])),
+        ]
+        confidence = float(direct_result.confidence or 0.0)
+        if not ir_validation.is_valid or not sql_validation.get("is_valid", sql_validation.get("ok", False)):
+            confidence = min(confidence, 0.59)
+        planner_debug = {
+            **(direct_result.debug or {}),
+            "intent": query_ir.intent,
+            "base_table": query_ir.base_table,
+            "required_tables": query_ir.required_tables,
+            "join_policy": query_ir.metadata.get("join_policy", "none"),
+            "safe_selected_columns": query_ir.metadata.get("safe_selected_columns", []),
+            "bypass_reason": direct_result.reason,
+        }
+        join_plan = {
+            "base_table": query_ir.base_table,
+            "required_tables": query_ir.required_tables,
+            "join_clause": "",
+            "join_steps": [],
+            "confidence": 1.0,
+            "warnings": [],
+            "join_policy": "none",
+        }
+        schema_mapping = {
+            "base_table": query_ir.base_table,
+            "metric_table": query_ir.metrics[0].table if query_ir.metrics else None,
+            "metric_column": query_ir.metrics[0].column if query_ir.metrics else None,
+            "filter_table": query_ir.filters[0].table if query_ir.filters else None,
+            "filter_column": query_ir.filters[0].column if query_ir.filters else None,
+            "match_scores": {"generic_direct_planner": confidence},
+            "warnings": list(dict.fromkeys(str(warning) for warning in warnings if warning)),
+        }
+        return PredictionResult(
+            question=question,
+            normalized_question=normalized_question,
+            source_model="generic_direct_planner",
+            intent=query_ir.intent,
+            template_id=query_ir.template_id,
+            slots={},
+            schema_mapping=schema_mapping,
+            join_plan=join_plan,
+            query_ir=query_ir.model_dump(),
+            ir_validation=ir_validation.model_dump(),
+            sql=sql,
+            validation=sql_validation,
+            confidence=confidence,
+            confidence_tier=self._confidence_tier(confidence),
+            retrieved_candidates=[],
+            selected_candidate=None,
+            warnings=list(dict.fromkeys(str(warning) for warning in warnings if warning)),
+            clarification_questions=[] if sql_validation.get("is_valid", sql_validation.get("ok", False)) else ["Choose specific non-sensitive columns for this table."],
+            router_decision={
+                "selected": "generic_direct_planner",
+                "reason": direct_result.reason or "schema-safe direct query",
+                "retrieval_ir_valid": None,
+                "neural_ir_valid": None,
+            },
+            selected_query_ir=query_ir.model_dump(),
+            validation_summary={"ir_validation": ir_validation.model_dump(), "sql_validation": sql_validation},
+            confidence_breakdown={
+                "final": confidence,
+                "generic_direct_planner": float(direct_result.confidence or 0.0),
+                "ir_validation": 1.0 if ir_validation.is_valid else 0.0,
+                "sql_validation": 1.0 if sql_validation.get("is_valid", sql_validation.get("ok", False)) else 0.0,
+                "join_planning": 1.0,
+            },
+            planner_debug=planner_debug,
+            debug={
+                "schema_context": schema_context.serialize_for_debug(),
+                "semantic_profile_summary": self._semantic_summary(semantic_profile),
+                "generic_planner": planner_debug,
+                "router_decision": {
+                    "selected": "generic_direct_planner",
+                    "reason": direct_result.reason or "schema-safe direct query",
+                },
+            },
+        )
+
+    def _semantic_clarification(
+        self,
+        question: str,
+        normalized_question: str,
+        schema: Any,
+        semantic_profile: dict[str, Any] | None,
+        direct_result: Any,
+    ) -> PredictionResult | None:
+        if semantic_profile is None:
+            return None
+        table_match = (direct_result.debug or {}).get("table_match") if getattr(direct_result, "debug", None) else None
+        if isinstance(table_match, dict) and table_match.get("reason") == "ambiguous table match":
+            alternatives = [
+                {"target": item.get("table"), "score": item.get("score"), "match_type": item.get("match_type")}
+                for item in table_match.get("matches", [])
+            ]
+            ambiguity = AmbiguityDetector().detect(
+                question,
+                {
+                    "requires_clarification": True,
+                    "ambiguous": True,
+                    "mapping_type": "table_mapping",
+                    "alternatives": alternatives,
+                },
+                schema,
+            )
+            return self._clarification_prediction(question, normalized_question, ambiguity, semantic_profile)
+
+        phrase = self._simple_schema_phrase(normalized_question)
+        if not phrase:
+            return None
+        from semantic_layer.semantic_mapper import SemanticMapper
+
+        mapper = SemanticMapper(semantic_profile)
+        mapping_result = mapper.map_column(phrase)
+        if mapping_result.get("requires_clarification") and mapping_result.get("alternatives"):
+            ambiguity = AmbiguityDetector().detect(question, {**mapping_result, "phrase": phrase}, schema)
+            if ambiguity.get("ambiguous"):
+                return self._clarification_prediction(question, normalized_question, ambiguity, semantic_profile)
+        return None
+
+    def _clarification_prediction(
+        self,
+        question: str,
+        normalized_question: str,
+        ambiguity: dict[str, Any],
+        semantic_profile: dict[str, Any] | None,
+    ) -> PredictionResult:
+        clarification = ClarificationQuestionBuilder().build(ambiguity)
+        return PredictionResult(
+            question=question,
+            normalized_question=normalized_question,
+            source_model="retrieval_ir",
+            intent=None,
+            template_id=None,
+            sql=None,
+            query_ir=None,
+            ir_validation=None,
+            validation={"is_valid": False, "message": "clarification_required"},
+            confidence=0.0,
+            confidence_tier="low",
+            warnings=["Ambiguous schema mapping; SQL generation is paused until clarification."],
+            clarification_questions=[clarification["question"]],
+            needs_clarification=True,
+            clarification=clarification,
+            debug={
+                "ambiguity": ambiguity,
+                "semantic_profile_summary": self._semantic_summary(semantic_profile),
+            },
+        )
+
+    @staticmethod
+    def _build_semantic_profile(schema: Any) -> dict[str, Any] | None:
+        try:
+            return build_semantic_profile(schema)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _simple_schema_phrase(normalized_question: str) -> str | None:
+        match = re.match(r"^(show|list|display|view|get|fetch|select)\s+(?:all\s+)?(?P<phrase>[a-z0-9_ -]+)$", normalized_question)
+        if not match:
+            return None
+        phrase = match.group("phrase").strip()
+        tokens = set(phrase.split())
+        analytical_or_temporal = {
+            "revenue",
+            "sales",
+            "amount",
+            "total",
+            "average",
+            "avg",
+            "count",
+            "last",
+            "this",
+            "next",
+            "month",
+            "year",
+            "week",
+            "day",
+            "today",
+            "yesterday",
+        }
+        if not phrase or len(tokens) > 2 or tokens & analytical_or_temporal:
+            return None
+        return phrase
+
+    @staticmethod
+    def _semantic_summary(profile: dict[str, Any] | None) -> dict[str, Any]:
+        if not profile:
+            return {}
+        table_types: dict[str, int] = {}
+        sensitive_columns = []
+        for table, info in (profile.get("tables") or {}).items():
+            table_type = info.get("table_type", "unknown")
+            table_types[table_type] = table_types.get(table_type, 0) + 1
+            sensitive_columns.extend(f"{table}.{column}" for column in info.get("sensitive_columns", []))
+        return {
+            "table_count": len(profile.get("tables") or {}),
+            "table_types": table_types,
+            "metric_count": len(profile.get("metrics") or {}),
+            "dimension_count": len(profile.get("dimensions") or {}),
+            "date_count": len(profile.get("dates") or {}),
+            "sensitive_columns": sensitive_columns,
+            "schema_fingerprint": profile.get("schema_fingerprint"),
+        }
 
     def _default_neural_ir_model_dir(self) -> Path:
         return self.neural_ir_v2_model_dir if (self.neural_ir_v2_model_dir / "model.pt").exists() else self.neural_ir_v1_model_dir
@@ -244,11 +510,13 @@ class PredictionOrchestrator:
 
     @staticmethod
     def _required_tables(template_id: str | None, mapping: SchemaMapping) -> list[str]:
-        if template_id in {"simple_filter", "show_records"}:
-            tables = [mapping.filter_table or mapping.entity_table]
+        if template_id in {"simple_filter", "show_records", "count_records"}:
+            tables = [mapping.base_table or mapping.filter_table or mapping.entity_table or mapping.metric_table]
         else:
             tables = [mapping.metric_table or mapping.entity_table]
         tables.append(mapping.base_table)
+        if template_id in {"simple_filter", "show_records", "count_records"}:
+            return [table for table in dict.fromkeys(tables) if table]
         tables.extend(mapping.semantic_required_tables)
         if template_id in {"metric_by_dimension", "top_n_metric_by_dimension", "bottom_n_metric_by_dimension", "count_by_dimension", "trend_by_date"}:
             tables.append(mapping.dimension_table)

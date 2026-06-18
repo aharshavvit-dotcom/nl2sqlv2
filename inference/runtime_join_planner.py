@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import deque
 
+from generic_planner.join_policy import JoinPolicy
+
 from .prediction_models import JoinPlan
 from .runtime_schema_context import RuntimeSchemaContext
 
@@ -12,16 +14,22 @@ class RuntimeJoinPlanner:
         schema_context: RuntimeSchemaContext,
         base_table: str,
         required_tables: list[str],
+        join_policy: JoinPolicy | str | None = JoinPolicy.EXPLICIT_ONLY,
     ) -> JoinPlan:
+        policy = JoinPolicy(join_policy or JoinPolicy.EXPLICIT_ONLY)
+        if policy == JoinPolicy.NONE:
+            return JoinPlan(base_table=base_table, required_tables=[base_table], join_clause="", join_steps=[], join_policy=policy.value, confidence=1.0)
+
         required = [table for table in dict.fromkeys(required_tables) if table and table != base_table]
         if not required:
-            return JoinPlan(base_table=base_table, required_tables=[base_table], join_clause="", join_steps=[], confidence=1.0)
+            return JoinPlan(base_table=base_table, required_tables=[base_table], join_clause="", join_steps=[], join_policy=policy.value, confidence=1.0)
 
+        allow_inferred = policy == JoinPolicy.INFERRED_ALLOWED
         joined = {base_table}
         steps: list[dict[str, str]] = []
         warnings: list[str] = []
         for target in required:
-            path = self._shortest_path(schema_context, joined, target)
+            path = self._shortest_path(schema_context, joined, target, allow_inferred=allow_inferred)
             if not path:
                 warnings.append(f"no join path from {sorted(joined)} to {target}")
                 continue
@@ -45,6 +53,7 @@ class RuntimeJoinPlanner:
             required_tables=[base_table, *required],
             join_clause=join_sql,
             join_steps=steps,
+            join_policy=policy.value,
             confidence=confidence,
             warnings=warnings,
         )
@@ -63,6 +72,7 @@ class RuntimeJoinPlanner:
         schema_context: RuntimeSchemaContext,
         starts: set[str],
         target: str,
+        allow_inferred: bool = False,
     ) -> list[dict[str, str]]:
         queue = deque([(start, []) for start in starts])
         seen = set(starts)
@@ -71,6 +81,8 @@ class RuntimeJoinPlanner:
             if table == target:
                 return path
             for edge in schema_context.relationships.get(table, []):
+                if edge.get("inferred") and not allow_inferred:
+                    continue
                 neighbor = edge["neighbor"]
                 if neighbor in seen:
                     continue

@@ -95,7 +95,9 @@ class RuntimeSchemaContext:
         tables = schema.get("tables", schema)
         normalized = {}
         for table_name, table_info in tables.items():
-            columns = table_info.get("columns", table_info if isinstance(table_info, dict) else {})
+            table_dict = table_info if isinstance(table_info, dict) else {}
+            columns = table_dict.get("columns", table_dict)
+            primary_keys = set(table_dict.get("primary_keys", []))
             normalized[table_name] = {"columns": {}}
             if isinstance(columns, dict):
                 iterable = columns.items()
@@ -106,7 +108,11 @@ class RuntimeSchemaContext:
                 normalized[table_name]["columns"][column_name] = RuntimeSchemaContext._column_flags(
                     column_name,
                     str(raw_dict.get("type", "")),
-                    bool(raw_dict.get("primary_key", False)),
+                    bool(
+                        raw_dict.get("primary_key", False)
+                        or raw_dict.get("is_primary_key", False)
+                        or column_name in primary_keys
+                    ),
                 )
         return normalized
 
@@ -118,6 +124,7 @@ class RuntimeSchemaContext:
             "name": column_name,
             "type": column_type,
             "primary_key": primary_key,
+            "is_primary_key": primary_key,
             "is_numeric": any(marker in typ for marker in NUMERIC_MARKERS) or primary_key,
             "is_text": any(marker in typ for marker in TEXT_MARKERS),
             "is_date": any(marker in name for marker in DATE_MARKERS) or "date" in typ or "time" in typ,
@@ -140,7 +147,47 @@ class RuntimeSchemaContext:
                         }
                     )
             return fks
-        return list(schema.get("foreign_keys", []))
+
+        fks: list[dict[str, str]] = []
+        for fk in schema.get("foreign_keys", []) or []:
+            normalized = RuntimeSchemaContext._normalize_fk(fk, fk.get("from_table") or fk.get("constrained_table"))
+            if normalized:
+                fks.append(normalized)
+        for relationship in schema.get("relationships", []) or []:
+            normalized = RuntimeSchemaContext._normalize_fk(relationship, relationship.get("from_table"))
+            if normalized:
+                fks.append(normalized)
+        for table_name, table_info in (schema.get("tables", {}) or {}).items():
+            if not isinstance(table_info, dict):
+                continue
+            for fk in table_info.get("foreign_keys", []) or []:
+                normalized = RuntimeSchemaContext._normalize_fk(fk, table_name)
+                if normalized:
+                    fks.append(normalized)
+        deduped: list[dict[str, str]] = []
+        seen = set()
+        for fk in fks:
+            key = (fk["from_table"], fk["from_column"], fk["to_table"], fk["to_column"])
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(fk)
+        return deduped
+
+    @staticmethod
+    def _normalize_fk(raw: dict[str, Any], default_from_table: str | None = None) -> dict[str, str] | None:
+        from_table = raw.get("from_table") or raw.get("constrained_table") or default_from_table
+        from_column = raw.get("from_column") or raw.get("constrained_column") or raw.get("column")
+        to_table = raw.get("to_table") or raw.get("referred_table") or raw.get("references_table")
+        to_column = raw.get("to_column") or raw.get("referred_column") or raw.get("references_column")
+        if not all([from_table, from_column, to_table, to_column]):
+            return None
+        return {
+            "from_table": str(from_table),
+            "from_column": str(from_column),
+            "to_table": str(to_table),
+            "to_column": str(to_column),
+        }
 
     def _build_relationships(self) -> dict[str, list[dict[str, str]]]:
         graph: dict[str, list[dict[str, str]]] = defaultdict(list)

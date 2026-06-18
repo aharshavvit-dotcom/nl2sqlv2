@@ -55,6 +55,7 @@ class JoinPlan(BaseModel):
     required_tables: list[str] = Field(default_factory=list)
     join_clause: str = ""
     join_steps: list[dict[str, Any]] = Field(default_factory=list)
+    join_policy: str | None = None
     confidence: float = 1.0
     warnings: list[str] = Field(default_factory=list)
 
@@ -62,7 +63,7 @@ class JoinPlan(BaseModel):
 class PredictionResult(BaseModel):
     question: str
     normalized_question: str
-    source_model: Literal["retrieval_ir", "neural_ir", "adaptive_router",
+    source_model: Literal["generic_direct_planner", "retrieval_ir", "neural_ir", "adaptive_router",
                           # Backward-compatible values:
                           "option_c", "option_a", "hybrid"] = "retrieval_ir"
     intent: str | None = None
@@ -80,6 +81,8 @@ class PredictionResult(BaseModel):
     selected_candidate: dict[str, Any] | None = None
     warnings: list[str] = Field(default_factory=list)
     clarification_questions: list[str] = Field(default_factory=list)
+    needs_clarification: bool = False
+    clarification: dict[str, Any] = Field(default_factory=dict)
     router_decision: dict[str, Any] = Field(default_factory=dict)
     neural_ir_version: str | None = None
     retrieval_ir_result: dict[str, Any] = Field(default_factory=dict)
@@ -87,6 +90,7 @@ class PredictionResult(BaseModel):
     selected_query_ir: dict[str, Any] | None = None
     validation_summary: dict[str, Any] = Field(default_factory=dict)
     confidence_breakdown: dict[str, Any] = Field(default_factory=dict)
+    planner_debug: dict[str, Any] = Field(default_factory=dict)
     debug: dict[str, Any] = Field(default_factory=dict)
 
     # ---- Backward-compatible aliases ----

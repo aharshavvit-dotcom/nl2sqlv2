@@ -1,0 +1,41 @@
+# Neural QueryIR Training — Experiment Grid
+# Compares optimizer/activation combinations
+
+experiments:
+  - name: adamw_gelu
+    optimizer:
+      name: adamw
+      learning_rate: 0.0007
+      weight_decay: 0.00001
+    model:
+      activation: gelu
+
+  - name: adamw_relu
+    optimizer:
+      name: adamw
+      learning_rate: 0.0007
+      weight_decay: 0.00001
+    model:
+      activation: relu
+
+  - name: adam_gelu
+    optimizer:
+      name: adam
+      learning_rate: 0.0007
+    model:
+      activation: gelu
+
+  - name: rmsprop_relu
+    optimizer:
+      name: rmsprop
+      learning_rate: 0.0005
+    model:
+      activation: relu
+
+  - name: sgd_momentum_relu
+    optimizer:
+      name: momentum
+      learning_rate: 0.01
+      momentum: 0.9
+    model:
+      activation: relu

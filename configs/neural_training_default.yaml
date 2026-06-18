@@ -1,0 +1,68 @@
+# Neural QueryIR Training — Default Configuration
+# AdamW + GELU + LayerNorm + Dropout + gradient clipping + ReduceLROnPlateau
+
+model:
+  architecture: schema_aware_queryir
+  encoder: bigru
+  hidden_dim: 192
+  embedding_dim: 128
+  candidate_hidden_dim: 128
+  feed_forward_dim: 256
+  activation: gelu
+  dropout: 0.25
+  layer_norm: true
+  feed_forward_heads: true
+  max_question_len: 64
+  max_schema_len: 320
+  max_candidate_tokens: 16
+  max_tables: 64
+  max_columns: 256
+
+optimizer:
+  name: adamw
+  learning_rate: 0.0007
+  weight_decay: 0.00001
+  momentum: 0.9
+  nesterov: false
+
+scheduler:
+  name: reduce_on_plateau
+  factor: 0.5
+  patience: 2
+  min_lr: 0.000001
+
+training:
+  batch_size: 8
+  epochs: 10
+  gradient_clipping: 1.0
+  early_stopping_patience: 3
+  seed: 42
+  save_best_metric: validation_gold_score
+  save_best_mode: max
+
+loss:
+  intent: 1.0
+  base_table: 1.2
+  metric_column: 1.0
+  metric_aggregation: 0.8
+  metric_expression_type: 0.8
+  dimension_column: 1.0
+  filter_column: 1.2
+  date_column: 1.0
+  date_grain: 0.6
+  date_filter_type: 0.6
+  filter_operator: 0.8
+  order_direction: 0.6
+  limit_bucket: 0.4
+  hard_negative: 0.3
+
+data:
+  train_path: data/processed/generic_ir_train.jsonl
+  validation_path: data/processed/generic_ir_validation.jsonl
+  hard_negatives_path: ""
+  max_examples: 0
+
+output:
+  output_dir: artifacts/neural_ir_model
+  save_diagnostics: true
+  save_effective_config: true

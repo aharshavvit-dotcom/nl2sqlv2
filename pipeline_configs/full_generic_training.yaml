@@ -1,0 +1,23 @@
+pipeline_name: full_generic_training
+seed: 42
+smoke: false
+skip_heavy_steps: false
+
+datasets:
+  names: ["wikisql", "spider", "bird-mini"]
+  max_examples: 5000
+
+training:
+  neural_epochs: 5
+  batch_size: 8
+  self_improvement_iterations: 2
+  max_self_training_examples: 1000
+
+artifacts:
+  generic_training_dir: artifacts/generic_training
+  retrieval_model_dir: artifacts/retrieval_ir_model
+  neural_model_dir: artifacts/neural_ir_model
+  self_training_dir: artifacts/self_training
+  evaluation_dir: artifacts/evaluation
+  schema_dir: artifacts/schema
+  connected_db_regression_dir: artifacts/connected_db_regressions

@@ -1,0 +1,4 @@
+{"case_id":"unseen_users","question":"list all users","db_id":"unseen_generic_a","expected_base_table":"users","expect_no_join":true}
+{"case_id":"unseen_berths","question":"list all berth_masters","db_id":"unseen_generic_a","expected_base_table":"berth_masters","expect_no_join":true}
+{"case_id":"unseen_assignment_status","question":"show assignments where status is completed","db_id":"unseen_generic_a","expected_base_table":"assignments","expect_no_join":true}
+{"case_id":"unseen_count","question":"count users","db_id":"unseen_generic_b","expected_base_table":"users","expect_no_join":true}

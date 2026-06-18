@@ -1,0 +1,47 @@
+from __future__ import annotations
+
+from quality_gates.model_quality_gate import ModelQualityGate
+
+
+THRESHOLDS = {
+    "minimums": {
+        "query_ir_validity_rate": 0.90,
+        "sql_validation_rate": 0.90,
+        "simple_query_pass_rate": 0.95,
+        "no_select_star_rate": 1.00,
+        "unsafe_sql_count_max": 0,
+        "unnecessary_join_rate_max": 0.05,
+        "wrong_table_rate_max": 0.15,
+        "unseen_db_sql_validation_rate": 0.80,
+        "feedback_regression_pass_rate": 0.95,
+    }
+}
+
+
+def test_quality_gate_fails_bad_metrics() -> None:
+    report = {
+        "test_performance": {"summary": {"query_ir_validity_rate": 0.5, "sql_validation_rate": 0.5, "intent_accuracy_rate": 0.5, "unnecessary_join_rate": 0.2, "wrong_table_rate": 0.3}},
+        "unseen_db_performance": {"summary": {"sql_validation_rate": 0.4}},
+        "no_select_star_rate": 0.8,
+        "unsafe_sql_count": 1,
+        "feedback_regression_pass_rate": 0.5,
+    }
+
+    result = ModelQualityGate().evaluate(report, THRESHOLDS)
+
+    assert result["passed"] is False
+    assert result["failed_checks"]
+
+
+def test_quality_gate_passes_good_metrics() -> None:
+    report = {
+        "test_performance": {"summary": {"query_ir_validity_rate": 0.99, "sql_validation_rate": 0.99, "intent_accuracy_rate": 0.98, "unnecessary_join_rate": 0.0, "wrong_table_rate": 0.0}},
+        "unseen_db_performance": {"summary": {"sql_validation_rate": 0.95}},
+        "no_select_star_rate": 1.0,
+        "unsafe_sql_count": 0,
+        "feedback_regression_pass_rate": 1.0,
+    }
+
+    result = ModelQualityGate().evaluate(report, THRESHOLDS)
+
+    assert result["passed"] is True

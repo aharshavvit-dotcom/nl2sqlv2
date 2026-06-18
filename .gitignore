@@ -61,6 +61,11 @@ artifacts/*
 !artifacts/option_c_model/
 artifacts/option_c_model/*
 !artifacts/option_c_model/.gitkeep
+artifacts/self_training/
+artifacts/neural_experiments/
+artifacts/neural_candidate_ranker/
+artifacts/cache/
+artifacts/audit/
 models/*
 !models/.gitkeep
 *.joblib

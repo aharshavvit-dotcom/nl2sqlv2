@@ -4,6 +4,8 @@ from typing import Any
 
 from rapidfuzz import fuzz
 
+from generic_planner.generic_slot_resolver import filter_sample_retail_physical_mappings
+
 from .prediction_models import SchemaMapping
 from .runtime_schema_context import RuntimeSchemaContext
 from .synonym_loader import normalize_section
@@ -24,25 +26,59 @@ class SchemaAwareMapper:
         schema_context: RuntimeSchemaContext,
         metric_synonyms: dict[str, Any] | None = None,
         dimension_synonyms: dict[str, Any] | None = None,
+        template_id: str | None = None,
+        semantic_profile: dict[str, Any] | None = None,
     ) -> SchemaMapping:
         metric_synonyms = normalize_section(metric_synonyms or {})
         dimension_synonyms = normalize_section(dimension_synonyms or {})
+        metric_synonyms, dimension_synonyms = filter_sample_retail_physical_mappings(
+            metric_synonyms,
+            dimension_synonyms,
+            schema_context.get_tables(),
+        )
         slot_values = {key: value.get("value") if isinstance(value, dict) else value for key, value in slots.items()}
         mapping = SchemaMapping()
-        metric = str(slot_values.get("metric") or self._default_metric(metric_synonyms))
         dimension = slot_values.get("dimension")
         entity = slot_values.get("entity")
+        semantic_mapper = _semantic_mapper(semantic_profile)
 
-        metric_match = self._map_metric(metric, schema_context, metric_synonyms, str(entity) if entity else None)
-        mapping.metric_name = metric
-        mapping.metric_table = metric_match.get("table")
-        mapping.metric_column = metric_match.get("column")
-        mapping.metric_aggregation = "COUNT" if metric == "order_count" else ("AVG" if metric in {"average", "average_order_value"} else "SUM")
-        mapping.match_scores["metric"] = metric_match.get("score", 0.0)
-        mapping.warnings.extend(metric_match.get("warnings", []))
+        entity_match = self._map_entity_semantic(str(entity), semantic_mapper) if entity and semantic_mapper else None
+        if not entity_match:
+            entity_match = self._map_entity(str(entity) if entity else None, schema_context)
+        mapping.entity_table = entity_match.get("table")
+        mapping.match_scores["entity"] = entity_match.get("score", 0.0)
+
+        if template_id in {"show_records", "simple_filter"}:
+            mapping.metric_name = None
+            mapping.metric_table = None
+            mapping.metric_column = None
+            mapping.metric_expression = None
+            mapping.metric_aggregation = None
+            mapping.match_scores["metric"] = 1.0
+        elif template_id == "count_records":
+            mapping.metric_name = "record_count"
+            mapping.metric_table = mapping.entity_table
+            mapping.metric_column = None
+            mapping.metric_expression = "*"
+            mapping.metric_aggregation = "COUNT"
+            mapping.metric_alias = "record_count"
+            mapping.match_scores["metric"] = 1.0
+        else:
+            metric = str(slot_values.get("metric") or self._default_metric(metric_synonyms))
+            metric_match = self._map_metric_semantic(metric, semantic_mapper, mapping.entity_table) if semantic_mapper else None
+            if not metric_match:
+                metric_match = self._map_metric(metric, schema_context, metric_synonyms, str(entity) if entity else None)
+            mapping.metric_name = metric
+            mapping.metric_table = metric_match.get("table")
+            mapping.metric_column = metric_match.get("column")
+            mapping.metric_aggregation = "COUNT" if metric == "order_count" else ("AVG" if metric in {"average", "average_order_value"} else "SUM")
+            mapping.match_scores["metric"] = metric_match.get("score", 0.0)
+            mapping.warnings.extend(metric_match.get("warnings", []))
 
         if dimension:
-            dimension_match = self._map_dimension(str(dimension), schema_context, mapping.metric_table, dimension_synonyms)
+            dimension_match = self._map_dimension_semantic(str(dimension), semantic_mapper, mapping.metric_table) if semantic_mapper else None
+            if not dimension_match:
+                dimension_match = self._map_dimension(str(dimension), schema_context, mapping.metric_table, dimension_synonyms)
             mapping.dimension_name = str(dimension)
             mapping.dimension_table = dimension_match.get("table")
             mapping.dimension_column = dimension_match.get("column")
@@ -51,29 +87,68 @@ class SchemaAwareMapper:
 
         filter_column = slot_values.get("filter_column")
         if filter_column:
-            filter_match = self._map_filter(
-                str(filter_column),
-                schema_context,
-                str(entity) if entity else None,
-                mapping.metric_table,
-                dimension_synonyms,
-            )
+            filter_match = self._map_dimension_semantic(str(filter_column), semantic_mapper, mapping.entity_table or mapping.metric_table) if semantic_mapper else None
+            if not filter_match:
+                filter_match = self._map_filter(
+                    str(filter_column),
+                    schema_context,
+                    str(entity) if entity else None,
+                    mapping.metric_table,
+                    dimension_synonyms,
+                )
             mapping.filter_table = filter_match.get("table")
             mapping.filter_column = filter_match.get("column")
             mapping.match_scores["filter"] = filter_match.get("score", 0.0)
             mapping.warnings.extend(filter_match.get("warnings", []))
 
-        entity_match = self._map_entity(str(entity) if entity else None, schema_context)
-        mapping.entity_table = entity_match.get("table")
-        mapping.match_scores["entity"] = entity_match.get("score", 0.0)
-
-        date_match = self._map_date(schema_context, preferred_table=mapping.metric_table or mapping.entity_table)
-        mapping.date_table = date_match.get("table")
-        mapping.date_column = date_match.get("column")
-        mapping.match_scores["date"] = date_match.get("score", 0.0)
-        if not date_match.get("column"):
-            mapping.warnings.append("missing date column")
+        if template_id not in {"show_records", "simple_filter", "count_records"}:
+            date_match = self._map_date_semantic("date", semantic_mapper, mapping.metric_table or mapping.entity_table) if semantic_mapper else None
+            if not date_match:
+                date_match = self._map_date(schema_context, preferred_table=mapping.metric_table or mapping.entity_table)
+            mapping.date_table = date_match.get("table")
+            mapping.date_column = date_match.get("column")
+            mapping.match_scores["date"] = date_match.get("score", 0.0)
+            if not date_match.get("column"):
+                mapping.warnings.append("missing date column")
         return mapping
+
+    @staticmethod
+    def _map_entity_semantic(entity: str, mapper: Any) -> dict[str, Any] | None:
+        result = mapper.map_table(entity)
+        if result.get("matched") and result.get("score", 0.0) >= 0.70:
+            return {"table": result.get("target"), "score": result.get("score")}
+        return None
+
+    @staticmethod
+    def _map_metric_semantic(metric: str, mapper: Any, table: str | None = None) -> dict[str, Any] | None:
+        result = mapper.map_metric(metric, table=table)
+        if result.get("matched") and result.get("score", 0.0) >= 0.70:
+            target = str(result.get("target"))
+            item = mapper.profile.get("metrics", {}).get(target, {})
+            return {"table": item.get("base_table"), "column": item.get("column"), "score": result.get("score"), "warnings": []}
+        return None
+
+    @staticmethod
+    def _map_dimension_semantic(dimension: str, mapper: Any, table: str | None = None) -> dict[str, Any] | None:
+        result = mapper.map_dimension(dimension, table=table)
+        if result.get("matched") and result.get("score", 0.0) >= 0.70:
+            target = str(result.get("target"))
+            item = mapper.profile.get("dimensions", {}).get(target, {})
+            return {"table": item.get("table"), "column": item.get("column"), "score": result.get("score"), "warnings": []}
+        return None
+
+    @staticmethod
+    def _map_date_semantic(date_phrase: str, mapper: Any, table: str | None = None) -> dict[str, Any] | None:
+        dates = mapper.profile.get("dates") or {}
+        if table:
+            for item in dates.values():
+                if item.get("table") == table:
+                    return {"table": item.get("table"), "column": item.get("column"), "score": item.get("confidence", 0.85)}
+        result = mapper.map_date(date_phrase, table=table)
+        if result.get("matched"):
+            item = dates.get(str(result.get("target")), {})
+            return {"table": item.get("table"), "column": item.get("column"), "score": result.get("score")}
+        return None
 
     def _map_metric(
         self,
@@ -256,3 +331,14 @@ class SchemaAwareMapper:
     @staticmethod
     def _default_metric(metric_synonyms: dict[str, list[str]]) -> str:
         return next(iter(metric_synonyms), "metric")
+
+
+def _semantic_mapper(semantic_profile: dict[str, Any] | None) -> Any | None:
+    if not semantic_profile:
+        return None
+    try:
+        from semantic_layer.semantic_mapper import SemanticMapper
+
+        return SemanticMapper(semantic_profile)
+    except Exception:
+        return None
