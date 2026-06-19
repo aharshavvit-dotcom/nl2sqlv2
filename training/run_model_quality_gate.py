@@ -25,6 +25,23 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     evaluation_report = json.loads(args.evaluation_report.read_text(encoding="utf-8")) if args.evaluation_report.exists() else {}
+    contribution_path = ROOT / "artifacts" / "generic_training" / "dataset_contribution_report.json"
+    if contribution_path.exists():
+        evaluation_report["dataset_contribution_report_required"] = True
+        evaluation_report["dataset_contribution_report"] = json.loads(contribution_path.read_text(encoding="utf-8"))
+    execution_path = args.evaluation_report.parent / "execution_aware_evaluation_report.json"
+    if execution_path.exists():
+        execution_report = json.loads(execution_path.read_text(encoding="utf-8"))
+        summary = execution_report.get("summary") or {}
+        if "execution_match_rate" in summary:
+            evaluation_report.setdefault("summary", {})["execution_match_rate"] = summary["execution_match_rate"]
+        evaluation_report["execution_aware_evaluation"] = {**execution_report, "enabled": True, "required": False}
+    else:
+        evaluation_report["execution_aware_evaluation"] = {
+            "enabled": False,
+            "required": False,
+            "reason": "disabled by config",
+        }
     report = ModelQualityGate().evaluate(evaluation_report, load_thresholds(args.thresholds))
     write_json(args.output, report)
     print(json.dumps(report, indent=2, ensure_ascii=True))

@@ -41,6 +41,35 @@ class FakeRegistry(DatasetRegistry):
         return examples[:max_examples], {"db_users": schema}
 
 
+class MultiDatasetRegistry(DatasetRegistry):
+    def __init__(self):
+        super().__init__(root_dir="unused")
+
+    def validate_dataset_presence(self, dataset_names: list[str]) -> dict:
+        return {name: {"available": True, "paths": {}, "missing_files": []} for name in dataset_names}
+
+    def load_examples(self, dataset_names: list[str], max_examples: int | None = None):
+        dataset_name = dataset_names[0]
+        schema = DatabaseSchema(
+            db_id=f"{dataset_name}_db",
+            dataset_name=dataset_name,
+            tables={"users": {"columns": {"id": {}, "name": {}}}},
+            serialized_schema="tables: users(id, name)",
+        )
+        examples = [
+            Text2SQLExample(
+                example_id=f"{dataset_name}_{idx}",
+                dataset_name=dataset_name,
+                db_id=f"{dataset_name}_db",
+                question="list users",
+                sql="SELECT users.id, users.name FROM users LIMIT 100",
+                split="train",
+            )
+            for idx in range(3)
+        ]
+        return examples[:max_examples], {f"{dataset_name}_db": schema}
+
+
 def test_generic_ir_corpus_builder_writes_splits_and_reports(tmp_path: Path) -> None:
     output = tmp_path / "processed"
     artifacts = tmp_path / "artifacts"
@@ -59,3 +88,21 @@ def test_generic_ir_corpus_builder_writes_splits_and_reports(tmp_path: Path) -> 
     assert (artifacts / "corpus_quality_report.json").exists()
     assert report["corpus_quality_report"]["supported_examples"] == 1
     assert report["corpus_quality_report"]["unsupported_examples"] == 1
+
+
+def test_generic_ir_corpus_builder_applies_cap_per_dataset(tmp_path: Path) -> None:
+    report = GenericIRCorpusBuilder(
+        dataset_registry=MultiDatasetRegistry(),
+        split_manager=DatasetSplitManager(seed=1, unseen_db_test_ratio=0.0),
+    ).build(
+        ["wikisql", "spider"],
+        max_examples=1,
+        output_dir=str(tmp_path / "processed"),
+        artifact_dir=str(tmp_path / "artifacts"),
+        min_converted_examples_required={"wikisql": 1, "spider": 1},
+    )
+
+    by_dataset = report["dataset_contribution_report"]["by_dataset"]
+    assert by_dataset["wikisql"]["loaded_examples"] == 1
+    assert by_dataset["spider"]["loaded_examples"] == 1
+    assert report["dataset_contribution_report"]["full_training_dataset_minimums_passed"] is True

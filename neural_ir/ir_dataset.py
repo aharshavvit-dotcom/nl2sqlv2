@@ -27,6 +27,7 @@ class IRTrainingDataset(Dataset):
         max_tables: int = 64,
         max_columns: int = 256,
         max_examples: int | None = None,
+        hard_negative_rows: list[dict[str, Any]] | None = None,
     ):
         self.path = Path(path)
         self.vocab = vocab
@@ -42,6 +43,7 @@ class IRTrainingDataset(Dataset):
         self.examples = load_jsonl(self.path)
         if max_examples is not None and max_examples > 0:
             self.examples = self.examples[:max_examples]
+        self.hard_negative_by_example = _index_hard_negatives(hard_negative_rows or [])
 
     def __len__(self) -> int:
         return len(self.examples)
@@ -63,6 +65,7 @@ class IRTrainingDataset(Dataset):
         table_candidate_token_ids = self._candidate_token_ids(candidates.get("tables", []), self.max_tables)
         column_candidate_token_ids = self._candidate_token_ids(candidates.get("columns", []), self.max_columns)
         labels = self.label_encoder.encode(row["query_ir"], schema_items)
+        labels = self._add_hard_negative_labels(row, schema_items, labels)
         labels = self._cap_pointer_labels(labels)
         self._force_gold_masks(candidate_masks, labels)
         return {
@@ -95,7 +98,44 @@ class IRTrainingDataset(Dataset):
         for key in ["metric_column_index", "dimension_column_index", "date_column_index", "filter_column_index"]:
             if capped.get(key, -1) >= self.max_columns:
                 capped[key] = -1
+        for key in [
+            "negative_base_table_index",
+            "negative_metric_column_index",
+            "negative_dimension_column_index",
+            "negative_date_column_index",
+            "negative_filter_column_index",
+        ]:
+            limit = self.max_tables if key == "negative_base_table_index" else self.max_columns
+            if capped.get(key, -1) >= limit:
+                capped[key] = -1
         return capped
+
+    def _add_hard_negative_labels(
+        self,
+        row: dict[str, Any],
+        schema_items: dict[str, Any],
+        labels: dict[str, int],
+    ) -> dict[str, int]:
+        enriched = {
+            **labels,
+            "negative_base_table_index": -1,
+            "negative_metric_column_index": -1,
+            "negative_dimension_column_index": -1,
+            "negative_date_column_index": -1,
+            "negative_filter_column_index": -1,
+        }
+        example_id = str(row.get("example_id") or "")
+        negative_row = self.hard_negative_by_example.get(example_id)
+        negative_ir = (negative_row or {}).get("negative_query_ir") or (negative_row or {}).get("query_ir")
+        if not isinstance(negative_ir, dict):
+            return enriched
+        negative_labels = self.label_encoder.encode(negative_ir, schema_items)
+        enriched["negative_base_table_index"] = int(negative_labels.get("base_table_index", -1))
+        enriched["negative_metric_column_index"] = int(negative_labels.get("metric_column_index", -1))
+        enriched["negative_dimension_column_index"] = int(negative_labels.get("dimension_column_index", -1))
+        enriched["negative_date_column_index"] = int(negative_labels.get("date_column_index", -1))
+        enriched["negative_filter_column_index"] = int(negative_labels.get("filter_column_index", -1))
+        return enriched
 
     @staticmethod
     def _force_gold_masks(candidate_masks: dict[str, list[float]], labels: dict[str, int]) -> None:
@@ -167,3 +207,15 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
             if line:
                 rows.append(json.loads(line))
     return rows
+
+
+def _index_hard_negatives(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    indexed: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        example_id = str(row.get("example_id") or "")
+        if not example_id or example_id in indexed:
+            continue
+        negative_ir = row.get("negative_query_ir") or row.get("query_ir")
+        if isinstance(negative_ir, dict):
+            indexed[example_id] = row
+    return indexed

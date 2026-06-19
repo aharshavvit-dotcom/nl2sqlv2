@@ -195,6 +195,7 @@ class TestTrainModelIntegration:
         sys.path.insert(0, str(ROOT))
         from model_bundle.bundle_manifest import BundleManifest, save_manifest
         from model_bundle.bundle_validator import ModelBundleValidator
+        from retrieval.rag_index_builder import RAGIndexBuilder
 
         manifest = BundleManifest(
             bundle_id="test_valid",
@@ -202,14 +203,19 @@ class TestTrainModelIntegration:
             datasets=["wikisql"],
             paths={
                 "retrieval_ir": "retrieval_ir/",
-                "neural_ir": "neural_ir/",
                 "evaluation": "evaluation/",
                 "generic_training": "generic_training/",
                 "configs": "configs/",
             },
+            artifacts={
+                "retrieval_manifest": "retrieval_ir/manifest.json",
+                "dataset_contribution_report": "generic_training/dataset_contribution_report.json",
+                "unsupported_sql_report": "generic_training/unsupported_sql_report.json",
+            },
             metrics={
                 "unsafe_sql_count": 0,
                 "sql_validation_rate": 1.0,
+                "query_ir_validity_rate": 1.0,
                 "unnecessary_join_rate": 0.0,
                 "wrong_table_rate": 0.0,
             },
@@ -217,13 +223,32 @@ class TestTrainModelIntegration:
         )
         save_manifest(manifest, tmp_path / "bundle_manifest.json")
         retrieval = tmp_path / "retrieval_ir"
-        retrieval.mkdir()
-        for name in ["example_index.pkl", "schema_index.pkl", "pattern_index.pkl", "manifest.json"]:
-            (retrieval / name).write_text("{}", encoding="utf-8")
-        neural = tmp_path / "neural_ir"
-        neural.mkdir()
-        for name in ["model.pt", "config.yaml", "manifest.json"]:
-            (neural / name).write_text("{}", encoding="utf-8")
+        RAGIndexBuilder().build(
+            [
+                {
+                    "example_id": "users_1",
+                    "dataset_name": "wikisql",
+                    "db_id": "db_users",
+                    "question": "list all users",
+                    "serialized_schema": "tables: users(id, name, role, created_at)",
+                    "intent": "show_records",
+                    "complexity": "level_1_single_table",
+                    "query_ir": {
+                        "intent": "show_records",
+                        "template_id": "show_records",
+                        "base_table": "users",
+                        "required_tables": ["users"],
+                        "dimensions": [],
+                        "metrics": [],
+                        "filters": [],
+                        "joins": [],
+                        "limit": 100,
+                    },
+                }
+            ],
+            retrieval,
+            source_train_file="data/processed/generic_ir_train.jsonl",
+        )
         evaluation = tmp_path / "evaluation"
         evaluation.mkdir()
         (evaluation / "generic_model_evaluation_report.json").write_text("{}", encoding="utf-8")

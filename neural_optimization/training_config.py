@@ -18,6 +18,7 @@ import yaml
 # ── Defaults ──────────────────────────────────────────────────────────────
 
 _DEFAULT_MODEL = {
+    "model_version": "schema_aware_queryir_v1",
     "architecture": "schema_aware_queryir",
     "encoder": "bigru",
     "hidden_dim": 192,
@@ -83,7 +84,7 @@ _DEFAULT_LOSS = {
 _DEFAULT_DATA = {
     "train_path": "data/processed/generic_ir_train.jsonl",
     "validation_path": "data/processed/generic_ir_validation.jsonl",
-    "hard_negatives_path": "",
+    "hard_negatives_path": "data/processed/generic_ir_hard_negatives.jsonl",
     "max_examples": 0,
 }
 

@@ -42,8 +42,9 @@ class ModelBundleLoader:
         manifest = load_manifest(manifest_path)
         validation = ModelBundleValidator().validate(path)
         if not validation.get("passed"):
+            issues = validation.get("blocking_issues", [])
             raise ValueError(
-                "Invalid model bundle: " + "; ".join(validation.get("blocking_issues", []))
+                "Invalid model bundle:\n" + "\n".join(f"- {issue}" for issue in issues)
             )
 
         # Rule 2: Refuse failed bundle

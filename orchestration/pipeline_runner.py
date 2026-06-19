@@ -78,6 +78,15 @@ class PipelineRunner:
 
             self.state.update_step(step, "running")
             try:
+                if step == "build_model_bundle":
+                    PipelineReporter().write(
+                        "artifacts/pipeline",
+                        {
+                            "pipeline_name": config.pipeline_name,
+                            "status": "running",
+                            "steps": [*results, {"step": step, "status": "running"}],
+                        },
+                    )
                 result = self.steps.run_step(step, config)
                 step_status = result.get("status", "completed")
                 if step_status == "skipped":

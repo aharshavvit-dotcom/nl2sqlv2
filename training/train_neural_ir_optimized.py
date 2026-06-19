@@ -18,6 +18,7 @@ import json
 import random
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -106,15 +107,25 @@ def run_optimized_training(
     torch.manual_seed(seed)
 
     # Resolve data paths
-    train_path = Path(config.data.get("train_path", "data/processed/generic_ir_train.jsonl"))
-    val_path = Path(config.data.get("validation_path", "data/processed/generic_ir_validation.jsonl"))
+    train_path = _resolve_path(config.data.get("train_path", "data/processed/generic_ir_train.jsonl"))
+    val_path = _resolve_path(config.data.get("validation_path", "data/processed/generic_ir_validation.jsonl"))
     hard_neg_path_str = config.data.get("hard_negatives_path", "")
-    hard_neg_path = Path(hard_neg_path_str) if hard_neg_path_str else None
+    hard_neg_path = _resolve_path(hard_neg_path_str) if hard_neg_path_str else None
     max_examples = int(config.data.get("max_examples", 0)) or None
+    legacy_mode = bool(config.data.get("legacy_mode", False))
+    sample_mode = bool(config.data.get("sample_mode", False))
+    smoke_mode = bool(config.training.get("smoke", False) or (max_examples is not None and max_examples <= 200))
 
     if not train_path.exists():
         print(f"Error: Training file not found: {train_path}")
         return {"error": f"Training file not found: {train_path}"}
+    if _looks_like_legacy_or_sample_path(train_path) and not (legacy_mode or sample_mode):
+        return {
+            "error": (
+                "Refusing to train from legacy/sample data path without explicit legacy_mode/sample_mode: "
+                f"{train_path}"
+            )
+        }
 
     # Build datasets and model using existing neural_ir infrastructure
     from neural_ir.ir_dataset import IRTrainingDataset, collate_ir_batch, load_jsonl
@@ -124,17 +135,61 @@ def run_optimized_training(
     from neural_ir.vocab import Vocabulary
     from neural_optimization.loss_registry import masked_cross_entropy_fn, margin_ranking_loss
 
+    train_rows_for_stats = load_jsonl(train_path)
+    val_rows_for_stats = load_jsonl(val_path) if val_path.exists() else []
+    hard_negative_weight = float(config.loss.get("hard_negative", 0) or 0)
+    hard_negative_rows, hard_negative_format_issues = _load_hard_negative_rows(hard_neg_path)
+    train_example_ids = {str(row.get("example_id") or "") for row in train_rows_for_stats if row.get("example_id")}
+    hard_negative_examples_matched = sum(
+        1 for row in hard_negative_rows if str(row.get("example_id") or "") in train_example_ids
+    )
+    hard_negative_loss_active = hard_negative_weight > 0 and bool(hard_negative_rows)
+    hard_negative_warning: str | None = None
+    if hard_negative_weight > 0 and not hard_negative_rows:
+        message = (
+            f"Hard-negative weight is {hard_negative_weight}, but no valid hard negatives were loaded "
+            f"from {hard_neg_path or '<none>'}."
+        )
+        if smoke_mode:
+            hard_negative_warning = message + " Disabling hard-negative loss for smoke training."
+            hard_negative_loss_active = False
+        else:
+            return {
+                "error": message,
+                "hard_negative_file": str(hard_neg_path) if hard_neg_path else "",
+                "hard_negative_examples_loaded": 0,
+                "hard_negative_format_issues": hard_negative_format_issues,
+            }
+    if hard_negative_loss_active and hard_negative_examples_matched <= 0:
+        message = (
+            f"Loaded {len(hard_negative_rows)} hard negatives, but none match training example IDs "
+            f"from {train_path}."
+        )
+        if smoke_mode:
+            hard_negative_warning = (hard_negative_warning + " " if hard_negative_warning else "") + (
+                message + " Disabling hard-negative loss for smoke training."
+            )
+            hard_negative_loss_active = False
+        else:
+            return {
+                "error": message,
+                "hard_negative_file": str(hard_neg_path) if hard_neg_path else "",
+                "hard_negative_examples_loaded": len(hard_negative_rows),
+                "hard_negative_examples_matched": hard_negative_examples_matched,
+                "hard_negative_format_issues": hard_negative_format_issues,
+            }
+
     label_encoder = IRLabelEncoder()
     vocab = Vocabulary()
-    vocab.build(_token_sequences(load_jsonl(train_path), max_examples=max_examples))
+    vocab.build(_token_sequences(train_rows_for_stats, max_examples=max_examples))
 
     # Build model config from our training config
     model_config = {
         **config.model,
         "learning_rate": config.optimizer.get("learning_rate", 0.0007),
         "weight_decay": config.optimizer.get("weight_decay", 0.00001),
-        "use_hard_negative_loss": config.loss.get("hard_negative", 0) > 0,
-        "hard_negative_loss_weight": config.loss.get("hard_negative", 0.3),
+        "use_hard_negative_loss": hard_negative_loss_active,
+        "hard_negative_loss_weight": hard_negative_weight,
         "batch_size": config.training.get("batch_size", 8),
         "epochs": config.training.get("epochs", 10),
     }
@@ -149,6 +204,7 @@ def run_optimized_training(
         max_tables=int(model_config.get("max_tables", 64)),
         max_columns=int(model_config.get("max_columns", 256)),
         max_examples=max_examples,
+        hard_negative_rows=hard_negative_rows if hard_negative_loss_active else None,
     )
     if len(train_dataset) == 0:
         return {"error": "No training examples loaded"}
@@ -229,9 +285,16 @@ def run_optimized_training(
     print(f"  Optimizer: {config.optimizer.get('name')} | Activation: {config.model.get('activation')}")
     print(f"  Training: {len(train_dataset)} examples | Validation: {len(val_dataset) if val_dataset else 0}")
     print(f"  Batch size: {batch_size} | Gradient clipping: {grad_clip}")
+    if hard_negative_warning:
+        print(f"  Warning: {hard_negative_warning}")
+    print(
+        "  Hard negatives: "
+        f"{len(hard_negative_rows)} loaded | active={hard_negative_loss_active} | weight={hard_negative_weight}"
+    )
 
     history: list[dict[str, Any]] = []
     last_loss_by_head: dict[str, float] = {}
+    hard_negative_batches_used = 0
 
     for epoch in range(1, epochs + 1):
         epoch_start = time.time()
@@ -261,10 +324,11 @@ def run_optimized_training(
                 head_losses[loss_name] = masked_cross_entropy_fn(outputs[head], target, mask=mask, ignore_index=-1)
 
             # Hard-negative loss
-            if config.loss.get("hard_negative", 0) > 0:
+            if hard_negative_loss_active:
                 hn_loss = _hard_negative_loss(outputs, batch["labels"], HEAD_TO_LABEL, margin_ranking_loss)
                 if hn_loss is not None:
                     head_losses["hard_negative"] = hn_loss
+                    hard_negative_batches_used += 1
 
             combined = loss_weighter.combine(head_losses)
             loss = combined["total_loss"]
@@ -436,6 +500,26 @@ def run_optimized_training(
         "validation_path": str(val_path),
         "train_examples_count": len(train_dataset),
         "validation_examples_count": len(val_dataset) if val_dataset else 0,
+        "train_by_dataset": _dataset_distribution(train_dataset.examples),
+        "validation_by_dataset": _dataset_distribution(val_dataset.examples if val_dataset else []),
+        "legacy_mode": legacy_mode,
+        "sample_mode": sample_mode,
+        "hard_negative_file": str(hard_neg_path) if hard_neg_path else "",
+        "hard_negative_examples_loaded": len(hard_negative_rows),
+        "hard_negative_examples_matched": hard_negative_examples_matched,
+        "hard_negative_format_issues": hard_negative_format_issues,
+        "hard_negative_batches_used": hard_negative_batches_used,
+        "hard_negative_loss_active": hard_negative_loss_active,
+        "hard_negative_weight": hard_negative_weight,
+        "model_architecture": config.model.get("architecture", "schema_aware_queryir"),
+        "ffn_heads_enabled": bool(config.model.get("feed_forward_heads", False)),
+        "scheduler": config.scheduler.get("name"),
+        "best_checkpoint_metric": best_metric,
+        "loss_weights": dict(config.loss),
+        "validation_gold_score_available": "validation_gold_score" in final_metrics,
+        "validation_gold_score_unavailable_reason": (
+            None if "validation_gold_score" in final_metrics else "gold comparator not available inside neural training loop"
+        ),
         "checkpoint_path": str(checkpoint_path),
         "epochs_ran": len(history),
         "early_stopped": early_stopper.counter >= early_stopper.patience,
@@ -459,6 +543,13 @@ def _save_training_manifest(output_dir: Path, report: dict[str, Any], config: Ne
         "source_validation_file": report.get("validation_path"),
         "train_examples_count": report.get("train_examples_count", 0),
         "validation_examples_count": report.get("validation_examples_count", 0),
+        "train_by_dataset": report.get("train_by_dataset", {}),
+        "validation_by_dataset": report.get("validation_by_dataset", {}),
+        "hard_negative_file": report.get("hard_negative_file", ""),
+        "hard_negative_examples_loaded": report.get("hard_negative_examples_loaded", 0),
+        "hard_negative_examples_matched": report.get("hard_negative_examples_matched", 0),
+        "hard_negative_batches_used": report.get("hard_negative_batches_used", 0),
+        "hard_negative_loss_active": report.get("hard_negative_loss_active", False),
         "optimizer_name": report.get("optimizer_name"),
         "activation_name": report.get("activation_name"),
         "gradient_clipping_value": report.get("gradient_clipping_value"),
@@ -466,6 +557,55 @@ def _save_training_manifest(output_dir: Path, report: dict[str, Any], config: Ne
         "config": config.to_dict(),
     }
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+
+
+def _resolve_path(value: str | Path) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else ROOT / path
+
+
+def _looks_like_legacy_or_sample_path(path: Path) -> bool:
+    normalized = str(path).replace("\\", "/").lower()
+    return (
+        normalized.endswith("ir_training_examples.jsonl")
+        or "/training_data/examples.jsonl" in normalized
+        or "/sample" in normalized
+    )
+
+
+def _load_hard_negative_rows(path: Path | None) -> tuple[list[dict[str, Any]], list[str]]:
+    if path is None or not path.exists():
+        return [], []
+    rows: list[dict[str, Any]] = []
+    issues: list[str] = []
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for line_number, line in enumerate(fh, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    issues.append(f"line {line_number}: invalid JSON ({exc})")
+                    continue
+                example_id = row.get("example_id")
+                negative_ir = row.get("negative_query_ir") or row.get("query_ir")
+                if not example_id:
+                    issues.append(f"line {line_number}: missing example_id")
+                    continue
+                if not isinstance(negative_ir, dict):
+                    issues.append(f"line {line_number}: missing negative_query_ir/query_ir object")
+                    continue
+                rows.append(row)
+    except Exception as exc:
+        issues.append(f"failed to read hard-negative file: {exc}")
+        return [], issues
+    return rows, issues
+
+
+def _dataset_distribution(rows: list[dict[str, Any]]) -> dict[str, int]:
+    return dict(Counter(str(row.get("dataset_name") or row.get("dataset") or "unknown") for row in rows))
 
 
 def _token_sequences(rows: list[dict[str, Any]], max_examples: int | None = None) -> list[list[str]]:

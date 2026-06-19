@@ -8,6 +8,10 @@ datasets:
   names:
     - wikisql
   max_examples: 100
+  max_examples_per_dataset:
+    wikisql: 100
+  min_converted_examples_required:
+    wikisql: 1
 
 paths:
   processed_dir: data/processed

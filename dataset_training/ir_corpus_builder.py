@@ -41,6 +41,8 @@ class GenericIRCorpusBuilder:
         max_examples: int | None,
         output_dir: str,
         artifact_dir: str,
+        max_examples_per_dataset: dict[str, int] | None = None,
+        min_converted_examples_required: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         output = Path(output_dir)
         artifacts = Path(artifact_dir)
@@ -49,7 +51,12 @@ class GenericIRCorpusBuilder:
 
         requested = [normalize_dataset_name(item) for item in datasets]
         registry_report = self.dataset_registry.validate_dataset_presence(requested)
-        examples, schemas = self._load_examples(requested, registry_report, max_examples=max_examples)
+        examples, schemas = self._load_examples(
+            requested,
+            registry_report,
+            max_examples=max_examples,
+            max_examples_per_dataset=max_examples_per_dataset,
+        )
 
         supported_rows: list[dict[str, Any]] = []
         unsupported_rows: list[dict[str, Any]] = []
@@ -97,6 +104,7 @@ class GenericIRCorpusBuilder:
             examples=examples,
             splits=splits,
             leakage_report=leakage_report,
+            min_converted_examples_required=min_converted_examples_required,
         )
         unsupported_report = self._unsupported_sql_report(unsupported_rows)
         save_report_pair(artifacts / "dataset_contribution_report.json", contribution_report, "Dataset Contribution Report")
@@ -121,25 +129,32 @@ class GenericIRCorpusBuilder:
         datasets: list[str],
         registry_report: dict[str, dict[str, Any]],
         max_examples: int | None,
+        max_examples_per_dataset: dict[str, int] | None = None,
     ) -> tuple[list[Text2SQLExample], dict[str, DatabaseSchema]]:
-        if hasattr(self.dataset_registry, "load_examples"):
-            return self.dataset_registry.load_examples(datasets, max_examples=max_examples)  # type: ignore[attr-defined]
-
+        normalized_limits = {
+            normalize_dataset_name(name): int(limit)
+            for name, limit in (max_examples_per_dataset or {}).items()
+            if limit is not None and int(limit) > 0
+        }
         loader = DatasetLoader(raw_root=self.dataset_registry.root_dir)
         all_examples: list[Text2SQLExample] = []
         schemas: dict[str, DatabaseSchema] = {}
         for dataset_name in datasets:
             if not registry_report.get(dataset_name, {}).get("available"):
                 continue
-            remaining = None if max_examples is None else max(max_examples - len(all_examples), 0)
-            if remaining == 0:
-                break
+            dataset_limit = normalized_limits.get(dataset_name, max_examples)
             try:
-                examples, dataset_schemas = loader.load(dataset_name, max_examples=remaining)
+                if hasattr(self.dataset_registry, "load_examples"):
+                    examples, dataset_schemas = self.dataset_registry.load_examples(  # type: ignore[attr-defined]
+                        [dataset_name],
+                        max_examples=dataset_limit,
+                    )
+                else:
+                    examples, dataset_schemas = loader.load(dataset_name, max_examples=dataset_limit)
             except Exception:
                 continue
-            if remaining is not None:
-                examples = examples[:remaining]
+            if dataset_limit is not None:
+                examples = examples[:dataset_limit]
             all_examples.extend(examples)
             schemas.update(dataset_schemas)
         return all_examples, schemas
@@ -209,16 +224,38 @@ class GenericIRCorpusBuilder:
         examples: list[Text2SQLExample],
         splits: dict[str, list[dict[str, Any]]],
         leakage_report: dict[str, Any],
+        min_converted_examples_required: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         by_dataset: dict[str, dict[str, Any]] = {}
         all_names = list(dict.fromkeys([*requested, "wikisql", "spider", "bird-mini", "bird-full"]))
         raw_counts = Counter(example.dataset_name for example in examples)
         loaded_counts = Counter(example.dataset_name for example in examples)
+        minimums = {
+            normalize_dataset_name(name): int(value)
+            for name, value in (min_converted_examples_required or {}).items()
+            if value is not None and int(value) > 0
+        }
+        minimum_failures: list[dict[str, Any]] = []
         for name in all_names:
             split_counts = {
                 split_name: sum(1 for row in splits.get(split_name, []) if row.get("dataset_name") == name)
                 for split_name in ["train", "validation", "test", "unseen_db_test", "unsupported"]
             }
+            converted = int(
+                split_counts["train"]
+                + split_counts["validation"]
+                + split_counts["test"]
+                + split_counts["unseen_db_test"]
+            )
+            minimum_required = int(minimums.get(name, 0))
+            if minimum_required and converted < minimum_required:
+                minimum_failures.append(
+                    {
+                        "dataset": name,
+                        "converted_to_queryir": converted,
+                        "minimum_required": minimum_required,
+                    }
+                )
             unsupported_reasons = Counter(
                 row.get("unsupported_reason") or "unsupported"
                 for row in splits.get("unsupported", [])
@@ -227,18 +264,15 @@ class GenericIRCorpusBuilder:
             by_dataset[name] = {
                 "raw_examples": int(raw_counts.get(name, 0)),
                 "loaded_examples": int(loaded_counts.get(name, 0)),
-                "converted_to_queryir": int(
-                    split_counts["train"]
-                    + split_counts["validation"]
-                    + split_counts["test"]
-                    + split_counts["unseen_db_test"]
-                ),
+                "converted_to_queryir": converted,
                 "used_in_train": int(split_counts["train"]),
                 "used_in_validation": int(split_counts["validation"]),
                 "used_in_test": int(split_counts["test"]),
                 "used_in_unseen_db_test": int(split_counts["unseen_db_test"]),
                 "unsupported": int(split_counts["unsupported"]),
                 "unsupported_reasons": dict(unsupported_reasons),
+                "minimum_required": minimum_required,
+                "minimum_passed": converted >= minimum_required,
             }
         return {
             "datasets_requested": requested,
@@ -249,6 +283,9 @@ class GenericIRCorpusBuilder:
             "leakage_check_passed": bool(
                 leakage_report.get("passed", leakage_report.get("ok", not leakage_report.get("has_leakage", False)))
             ),
+            "minimums": minimums,
+            "minimum_failures": minimum_failures,
+            "full_training_dataset_minimums_passed": not minimum_failures,
         }
 
     @staticmethod

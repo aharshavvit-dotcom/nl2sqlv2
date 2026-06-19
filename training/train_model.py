@@ -119,6 +119,7 @@ def build_pipeline_steps(config: dict[str, Any]) -> list[str]:
 
     # Neural training
     if neural_cfg.get("enabled", True):
+        steps.append("build_hard_negative_corpus")
         steps.append("train_neural_ir")
 
     # Gold evaluation (needed for self-training)
@@ -175,6 +176,8 @@ def config_to_pipeline_config(config: dict[str, Any], steps: list[str]) -> dict[
         "datasets": {
             "names": datasets.get("names", []),
             "max_examples": datasets.get("max_examples", 5000),
+            "max_examples_per_dataset": datasets.get("max_examples_per_dataset", {}),
+            "min_converted_examples_required": datasets.get("min_converted_examples_required", {}),
         },
         "training": {
             "neural_epochs": neural.get("epochs", 5),

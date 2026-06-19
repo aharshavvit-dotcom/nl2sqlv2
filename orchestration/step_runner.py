@@ -73,6 +73,14 @@ class StepRunner:
             ],
         )
 
+    def _contract_build_hard_negative_corpus(self, config: PipelineConfig) -> StepContract:
+        return StepContract(
+            name="build_hard_negative_corpus",
+            required=True,
+            inputs=[str(ROOT / "data/processed/generic_ir_train.jsonl")],
+            outputs=[str(ROOT / "data/processed/generic_ir_hard_negatives.jsonl")],
+        )
+
     def _contract_train_neural_ir(self, config: PipelineConfig) -> StepContract:
         artifacts = _artifacts(config)
         output = Path(artifacts["neural_model_dir"])
@@ -216,6 +224,11 @@ class StepRunner:
         args = argparse.Namespace(
             datasets=",".join(config.datasets.get("names", [])),
             max_examples=config.datasets.get("max_examples"),
+            max_examples_per_dataset=dataset_cfg.get("max_examples_per_dataset") or config.datasets.get("max_examples_per_dataset"),
+            min_converted_examples_required=(
+                dataset_cfg.get("min_converted_examples_required")
+                or config.datasets.get("min_converted_examples_required")
+            ),
             output_dir=ROOT / "data" / "processed",
             artifact_dir=ROOT / "artifacts" / "generic_training",
             seed=config.seed,
@@ -245,6 +258,25 @@ class StepRunner:
         )
         return {"status": "completed", "summary": report}
 
+    def _run_build_hard_negative_corpus(self, config: PipelineConfig) -> dict[str, Any]:
+        from dataset_training.hard_negative_corpus_builder import HardNegativeCorpusBuilder
+        from dataset_training.utils import read_jsonl, write_jsonl
+
+        input_path = ROOT / "data/processed/generic_ir_train.jsonl"
+        output_path = ROOT / "data/processed/generic_ir_hard_negatives.jsonl"
+        examples = read_jsonl(input_path)
+        negatives = HardNegativeCorpusBuilder().build(examples)
+        write_jsonl(output_path, negatives)
+        return {
+            "status": "completed",
+            "summary": {
+                "input": str(input_path),
+                "output": str(output_path),
+                "training_examples": len(examples),
+                "hard_negative_examples": len(negatives),
+            },
+        }
+
     def _run_train_neural_ir(self, config: PipelineConfig) -> dict[str, Any]:
         from neural_optimization.training_config import load_training_config, merge_cli_overrides
         from training.train_neural_ir_optimized import run_optimized_training
@@ -261,6 +293,7 @@ class StepRunner:
                 "epochs": config.training.get("neural_epochs"),
                 "batch_size": config.training.get("batch_size"),
                 "max_examples": config.datasets.get("max_examples"),
+                "hard_negatives": str(ROOT / "data/processed/generic_ir_hard_negatives.jsonl"),
             },
         )
         report = run_optimized_training(training_config, Path(artifacts["neural_model_dir"]))
@@ -454,11 +487,32 @@ class StepRunner:
         eval_report = json.loads(eval_path.read_text(encoding="utf-8"))
         execution_path = Path(artifacts["evaluation_dir"]) / "execution_aware_evaluation_report.json"
         if execution_path.exists():
-            eval_report["execution_aware_evaluation"] = json.loads(execution_path.read_text(encoding="utf-8"))
+            execution_report = json.loads(execution_path.read_text(encoding="utf-8"))
+            execution_summary = execution_report.get("summary") or {}
+            if "execution_match_rate" in execution_summary:
+                eval_report.setdefault("summary", {})["execution_match_rate"] = execution_summary["execution_match_rate"]
+            eval_report["execution_aware_evaluation"] = {
+                **execution_report,
+                "enabled": True,
+                "required": bool(integrated.get("evaluation", {}).get("run_execution_aware", False)),
+            }
+        else:
+            required = bool(integrated.get("evaluation", {}).get("run_execution_aware", False))
+            eval_report["execution_aware_evaluation"] = {
+                "enabled": False,
+                "required": required,
+                "reason": "disabled by config" if not required else f"missing report: {execution_path}",
+            }
         contribution_path = ROOT / "artifacts/generic_training/dataset_contribution_report.json"
         eval_report["dataset_contribution_report_required"] = True
         if contribution_path.exists():
             eval_report["dataset_contribution_report"] = json.loads(contribution_path.read_text(encoding="utf-8"))
+        gold_path = Path(artifacts["self_training_dir"]) / "validation_gold_comparison_report.json"
+        if gold_path.exists():
+            gold_report = json.loads(gold_path.read_text(encoding="utf-8"))
+            gold_summary = gold_report.get("summary") or {}
+            if "gold_comparison_score" in gold_summary:
+                eval_report.setdefault("summary", {})["gold_comparison_score"] = gold_summary["gold_comparison_score"]
 
         report = ModelQualityGate().evaluate(eval_report, thresholds)
         output = Path(artifacts["evaluation_dir"]) / "model_quality_gate_report.json"
@@ -476,11 +530,17 @@ class StepRunner:
         eval_path = Path(artifacts["evaluation_dir"]) / "generic_model_evaluation_report.json"
         qg_path = Path(artifacts["evaluation_dir"]) / "model_quality_gate_report.json"
         pipeline_path = ROOT / "artifacts/pipeline/train_model_report.json"
+        live_pipeline_path = ROOT / "artifacts/pipeline/pipeline_report.json"
+        pipeline_report = {}
+        if pipeline_path.exists():
+            pipeline_report = json.loads(pipeline_path.read_text(encoding="utf-8"))
+        elif live_pipeline_path.exists():
+            pipeline_report = json.loads(live_pipeline_path.read_text(encoding="utf-8"))
         result = ModelBundleBuilder().build_candidate_bundle(
             work_dir=ROOT / "artifacts",
             output_dir=_candidate_bundle_dir(config),
             config=integrated,
-            pipeline_report=json.loads(pipeline_path.read_text(encoding="utf-8")) if pipeline_path.exists() else {},
+            pipeline_report=pipeline_report,
             evaluation_report=json.loads(eval_path.read_text(encoding="utf-8")) if eval_path.exists() else None,
             quality_gate_report=json.loads(qg_path.read_text(encoding="utf-8")) if qg_path.exists() else None,
         )
@@ -535,6 +595,18 @@ def _enforce_dataset_contribution(report: dict[str, Any], config: PipelineConfig
     allow_missing = bool(integrated.get("datasets", {}).get("allow_missing_dataset", False))
     if config.smoke or allow_missing:
         return
+    minimum_failures = contribution.get("minimum_failures") or []
+    if minimum_failures:
+        details = [
+            f"{item.get('dataset')}={item.get('converted_to_queryir', 0)}"
+            f"/{item.get('minimum_required', 0)}"
+            for item in minimum_failures
+        ]
+        raise ValueError(
+            "Requested datasets did not meet minimum QueryIR contribution: "
+            + ", ".join(details)
+            + ". Set lower datasets.min_converted_examples_required values only for explicit dev runs."
+        )
     requested = [str(item) for item in contribution.get("datasets_requested") or config.datasets.get("names", [])]
     blocking = []
     for name in requested:

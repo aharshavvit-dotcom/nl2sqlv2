@@ -68,7 +68,7 @@ class IntegratedQualityGate:
             })
 
         # 4. Unsafe SQL count
-        unsafe_count = summary.get("unsafe_sql_count", metrics.get("unsafe_sql_count_max", 0))
+        unsafe_count = summary.get("unsafe_sql_count", metrics.get("unsafe_sql_count"))
         if isinstance(unsafe_count, (int, float)) and unsafe_count > 0:
             if not any(c.get("metric") == "unsafe_sql_count_max" for c in failed_checks):
                 failed_checks.append({
@@ -102,7 +102,15 @@ class IntegratedQualityGate:
         return {
             "passed": passed,
             "failed_checks": failed_checks,
+            "blocking_failures": failed_checks,
             "warnings": warnings,
+            "missing_metrics": sorted(
+                {
+                    item.get("metric")
+                    for item in failed_checks
+                    if item.get("actual") == "missing" and item.get("metric")
+                }
+            ),
             "metrics": metrics,
         }
 

@@ -64,6 +64,8 @@ class ModelBundleBuilder:
         if neural_src and neural_src.exists():
             self._copy_dir(neural_src, out / "neural_ir")
             paths["neural_ir"] = "neural_ir/"
+        elif config.get("neural", {}).get("enabled", True):
+            paths["neural_ir"] = "neural_ir/"
         if ranker_src and ranker_src.exists():
             self._copy_dir(ranker_src, out / "adaptive_ranker")
             paths["adaptive_ranker"] = "adaptive_ranker/"
@@ -173,22 +175,23 @@ class ModelBundleBuilder:
         evaluation_report: dict[str, Any] | None,
         quality_gate_report: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        metrics: dict[str, Any] = {
-            "query_ir_validity_rate": 0.0,
-            "sql_validation_rate": 0.0,
-            "unnecessary_join_rate": 0.0,
-            "wrong_table_rate": 0.0,
-            "unsafe_sql_count": 0,
-        }
+        metrics: dict[str, Any] = {}
         if evaluation_report:
             summary = evaluation_report.get("summary", evaluation_report.get("test_performance", {}).get("summary", {}))
-            metrics["query_ir_validity_rate"] = summary.get("query_ir_validity_rate", 0.0)
-            metrics["sql_validation_rate"] = summary.get("sql_validation_rate", 0.0)
-            metrics["unnecessary_join_rate"] = summary.get("unnecessary_join_rate", 0.0)
-            metrics["wrong_table_rate"] = summary.get("wrong_table_rate", 0.0)
-            metrics["unsafe_sql_count"] = summary.get("unsafe_sql_count", evaluation_report.get("unsafe_sql_count", 0))
+            for key in [
+                "query_ir_validity_rate",
+                "sql_validation_rate",
+                "unnecessary_join_rate",
+                "wrong_table_rate",
+                "unsafe_sql_count",
+                "simple_query_pass_rate",
+            ]:
+                if key in summary:
+                    metrics[key] = summary[key]
+                elif key in evaluation_report:
+                    metrics[key] = evaluation_report[key]
         if quality_gate_report:
             for key, value in (quality_gate_report.get("metrics", {})).items():
                 if isinstance(value, (int, float)):
-                    metrics.setdefault(key, value)
+                    metrics[key] = value
         return metrics

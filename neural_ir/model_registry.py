@@ -12,13 +12,16 @@ from .model import DEFAULT_CONFIG, OptionAIRModel
 from .vocab import Vocabulary
 
 
+SCHEMA_AWARE_MODEL_VERSIONS = {"option_a_v2", "schema_aware_queryir_v1", "neural_queryir_v1"}
+
+
 def save_model_bundle(model, vocab: Vocabulary, label_encoder: IRLabelEncoder, config: dict, output_dir) -> None:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), output_path / "model.pt")
     vocab.save(str(output_path / "vocab.json"))
     label_encoder.save(str(output_path / "label_maps.json"))
-    defaults = DEFAULT_V2_CONFIG if (config or {}).get("model_version") == "option_a_v2" else DEFAULT_CONFIG
+    defaults = DEFAULT_V2_CONFIG if (config or {}).get("model_version") in SCHEMA_AWARE_MODEL_VERSIONS else DEFAULT_CONFIG
     (output_path / "config.yaml").write_text(yaml.safe_dump({**defaults, **(config or {})}, sort_keys=True), encoding="utf-8")
 
 
@@ -30,7 +33,7 @@ def load_model_bundle(model_dir) -> dict[str, Any]:
     config = {**DEFAULT_CONFIG}
     if config_path.exists():
         config.update(yaml.safe_load(config_path.read_text(encoding="utf-8")) or {})
-    if config.get("model_version") == "option_a_v2":
+    if config.get("model_version") in SCHEMA_AWARE_MODEL_VERSIONS or config.get("architecture") == "schema_aware_queryir":
         config = {**DEFAULT_V2_CONFIG, **config}
         model = SchemaAwareOptionAIRModel(config=config, vocab_size=len(vocab), label_sizes=label_encoder.label_sizes)
     else:

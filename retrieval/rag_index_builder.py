@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 from datetime import datetime, timezone
+from collections import Counter
 
 import joblib
 
@@ -31,16 +32,26 @@ class RAGIndexBuilder:
         example_index.save(str(output / "example_index.pkl"))
         joblib.dump(schema_index, output / "schema_index.pkl")
         joblib.dump(pattern_index, output / "pattern_index.pkl")
-        by_dataset: dict[str, int] = {}
-        for row in examples:
-            name = str(row.get("dataset_name") or row.get("dataset") or "unknown")
-            by_dataset[name] = by_dataset.get(name, 0) + 1
-        metadata = {"example_count": len(examples), "index_version": "local_rag_v1", "by_dataset": by_dataset}
+        by_dataset = Counter(str(row.get("dataset_name") or row.get("dataset") or "unknown") for row in examples)
+        intent_distribution = Counter(str(row.get("intent") or (row.get("query_ir") or {}).get("intent") or "unknown") for row in examples)
+        sql_complexity_distribution = Counter(
+            str(row.get("complexity") or (row.get("sql_features") or {}).get("complexity") or "unknown")
+            for row in examples
+        )
+        metadata = {
+            "example_count": len(examples),
+            "index_version": "local_rag_v1",
+            "by_dataset": dict(by_dataset),
+            "intent_distribution": dict(intent_distribution),
+            "sql_complexity_distribution": dict(sql_complexity_distribution),
+        }
         (output / "rag_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         manifest = {
             "source_train_file": str(source_train_file or ""),
             "total_examples": len(examples),
-            "by_dataset": by_dataset,
+            "by_dataset": dict(by_dataset),
+            "intent_distribution": dict(intent_distribution),
+            "sql_complexity_distribution": dict(sql_complexity_distribution),
             "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             "schema_index_built": (output / "schema_index.pkl").exists(),
             "example_index_built": (output / "example_index.pkl").exists(),
@@ -50,7 +61,7 @@ class RAGIndexBuilder:
         return {
             "output_dir": str(output),
             "example_count": len(examples),
-            "by_dataset": by_dataset,
+            "by_dataset": dict(by_dataset),
             "files": {
                 "example_index": str(output / "example_index.pkl"),
                 "schema_index": str(output / "schema_index.pkl"),

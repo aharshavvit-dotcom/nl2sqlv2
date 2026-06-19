@@ -41,7 +41,12 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--train", type=str, default=str(ROOT / "data" / "processed" / "generic_ir_train.jsonl"), help="Path to generic IR training JSONL")
     parser.add_argument("--validation", type=str, default=str(ROOT / "data" / "processed" / "generic_ir_validation.jsonl"), help="Path to generic IR validation JSONL")
-    parser.add_argument("--hard-negatives", type=str, default=None, help="Path to hard-negative JSONL")
+    parser.add_argument(
+        "--hard-negatives",
+        type=str,
+        default=str(ROOT / "data" / "processed" / "generic_ir_hard_negatives.jsonl"),
+        help="Path to hard-negative JSONL",
+    )
     parser.add_argument("--output-dir", type=str, default=str(ROOT / "artifacts" / "work" / "neural_ir"), help="Artifact output directory")
     parser.add_argument("--artifact-dir", type=str, default=None,
                         help="Artifact output directory")

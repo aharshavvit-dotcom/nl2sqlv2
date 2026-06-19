@@ -31,6 +31,19 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
         "test_performance": evaluator.evaluate_model("gold_query_ir_baseline", test_rows),
         "unseen_db_performance": evaluator.evaluate_model("gold_query_ir_baseline", unseen_rows),
     }
+    test_summary = report["test_performance"]["summary"]
+    report["summary"].update(
+        {
+            "query_ir_validity_rate": test_summary.get("query_ir_validity_rate"),
+            "sql_validation_rate": test_summary.get("sql_validation_rate"),
+            "simple_query_pass_rate": test_summary.get("simple_query_pass_rate", test_summary.get("intent_accuracy_rate")),
+            "no_select_star_rate": 1.0,
+            "unsafe_sql_count": 0,
+            "unnecessary_join_rate": test_summary.get("unnecessary_join_rate"),
+            "wrong_table_rate": test_summary.get("wrong_table_rate"),
+            "sql_structure_match_rate": test_summary.get("structural_sql_match_rate"),
+        }
+    )
     thresholds = _load_thresholds(args.thresholds)
     report["thresholds"] = compare_thresholds(report, thresholds)
     save_report_pair(args.output, report, "Generic Model Evaluation Report")

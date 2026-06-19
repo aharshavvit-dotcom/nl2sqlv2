@@ -140,7 +140,7 @@ class NeuralIRPredictor:
             confidence = min(confidence, 0.10)
         return {
             "source_model": "neural_ir",
-            "neural_ir_version": "v2" if self.config.get("model_version") == "option_a_v2" else str(self.config.get("model_version") or "v1"),
+            "neural_ir_version": str(self.config.get("model_version") or "schema_aware_queryir_v1"),
             "query_ir": query_ir_payload,
             "repaired_query_ir": repaired_query_ir_payload,
             "repairs_applied": repair_payload.get("repairs_applied", []),

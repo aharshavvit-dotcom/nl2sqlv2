@@ -54,11 +54,14 @@ This single command internally runs:
 - Corpus building
 - Dataset contribution and unsupported SQL reporting
 - Retrieval RAG index building
+- Hard-negative corpus generation
 - Neural QueryIR training
 - Gold validation & error mining
 - Adaptive ranker training
 - Evaluation & quality gates
 - Model bundle creation & promotion
+
+Full training builds a dataset-balanced generic QueryIR corpus. WikiSQL, Spider, and BIRD Mini each receive their own sampling cap, and the run fails if any requested full-training dataset does not contribute the configured minimum number of converted QueryIR examples. Unsupported SQL is written to `artifacts/generic_training/unsupported_sql_report.json` so current QueryIR coverage gaps are visible.
 
 For a quick smoke test:
 ```bash
@@ -72,6 +75,7 @@ streamlit run app/streamlit_app.py
 ```
 
 The app loads a validated model bundle from `artifacts/model_bundle/current/`.
+It does not fall back to sample examples in normal runtime. If the bundle is invalid, the app shows the blocking validation issues and asks you to rerun the training command.
 
 ---
 
@@ -127,6 +131,14 @@ pipeline:
 datasets:
   names: [wikisql, spider, bird-mini]
   max_examples: 5000
+  max_examples_per_dataset:
+    wikisql: 5000
+    spider: 5000
+    bird-mini: 5000
+  min_converted_examples_required:
+    wikisql: 100
+    spider: 100
+    bird-mini: 100
 
 neural:
   epochs: 5
@@ -151,6 +163,10 @@ pipeline:
 datasets:
   names: [wikisql]
   max_examples: 100
+  max_examples_per_dataset:
+    wikisql: 100
+  min_converted_examples_required:
+    wikisql: 1
 
 neural:
   epochs: 1
@@ -203,7 +219,8 @@ For detailed internal commands (individual training steps, evaluation suites, ca
 | PostgreSQL connection fails | Bad credentials. | Verify credentials, check `pg_hba.conf`. |
 | No training data | Datasets not downloaded. | `python scripts/download_datasets.py` |
 | "No validated model bundle" | Training not run. | `python training/train_model.py --config configs/training.yaml` |
-| Low training performance | Insufficient examples. | Increase `--max-examples` or use more datasets. |
+| Full training fails dataset minimums | A requested dataset produced too few usable QueryIR rows. | Open `artifacts/generic_training/dataset_contribution_report.json` and `unsupported_sql_report.json`. |
+| Low training performance | Insufficient examples or unsupported SQL coverage. | Increase per-dataset caps or expand QueryIR support based on the unsupported SQL report. |
 
 ---
 

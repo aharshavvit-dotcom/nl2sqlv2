@@ -39,7 +39,7 @@ def _maybe_ffn_head(input_dim: int, output_dim: int, config: dict) -> nn.Module:
 
 
 DEFAULT_V2_CONFIG = {
-    "model_version": "option_a_v2",
+    "model_version": "schema_aware_queryir_v1",
     "embedding_dim": 128,
     "hidden_dim": 192,
     "candidate_hidden_dim": 128,

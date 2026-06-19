@@ -10,6 +10,15 @@ from typing import Any
 from .bundle_manifest import load_manifest
 
 
+REQUIRED_MANIFEST_METRICS = [
+    "query_ir_validity_rate",
+    "sql_validation_rate",
+    "unsafe_sql_count",
+    "unnecessary_join_rate",
+    "wrong_table_rate",
+]
+
+
 class ModelBundleValidator:
     """Validates that a model bundle directory is complete and safe."""
 
@@ -17,6 +26,7 @@ class ModelBundleValidator:
         r"(password|secret|token|api_key|apikey|credential|connection_string|conn_str)",
         re.IGNORECASE,
     )
+    _CREDENTIAL_URL = re.compile(r"[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s:@]+@", re.IGNORECASE)
 
     def validate(self, bundle_dir: str | Path) -> dict[str, Any]:
         path = Path(bundle_dir)
@@ -43,7 +53,8 @@ class ModelBundleValidator:
         _check_no_secrets(manifest_data, issues)
 
         required_dirs = ["retrieval_ir", "evaluation", "generic_training", "configs"]
-        if "neural_ir" in manifest.paths or manifest.artifacts.get("neural_manifest"):
+        neural_enabled = bool(manifest.paths.get("neural_ir"))
+        if neural_enabled:
             required_dirs.append("neural_ir")
         for key in required_dirs:
             rel = manifest.paths.get(key)
@@ -63,10 +74,18 @@ class ModelBundleValidator:
             issues,
             checked,
         )
+        _validate_rag_manifest(retrieval_dir / "manifest.json", manifest.datasets, issues, checked)
 
-        if "neural_ir" in required_dirs:
+        if neural_enabled:
             neural_dir = path / manifest.paths.get("neural_ir", "neural_ir/")
-            _require_files(neural_dir, ["model.pt", "config.yaml", "manifest.json"], "neural", issues, checked)
+            _require_files(
+                neural_dir,
+                ["model.pt", "config.yaml", "manifest.json", "vocab.json", "label_maps.json"],
+                "neural",
+                issues,
+                checked,
+            )
+            _validate_neural_load(neural_dir, issues, warnings)
 
         eval_dir = path / manifest.paths.get("evaluation", "evaluation/")
         _require_files(eval_dir, ["generic_model_evaluation_report.json"], "evaluation", issues, checked)
@@ -98,6 +117,9 @@ class ModelBundleValidator:
                 issues.append("Required quality gate failed")
 
         metrics = manifest.metrics or {}
+        for key in REQUIRED_MANIFEST_METRICS:
+            if key not in metrics:
+                issues.append(f"Required manifest metric missing: {key}")
         if float(metrics.get("unsafe_sql_count", 0) or 0) > 0:
             issues.append(f"Unsafe SQL count is {metrics.get('unsafe_sql_count')}, expected 0")
         if float(metrics.get("unnecessary_join_rate", 0.0) or 0.0) > 0.05:
@@ -105,8 +127,13 @@ class ModelBundleValidator:
         if float(metrics.get("wrong_table_rate", 0.0) or 0.0) > 0.15:
             issues.append(f"Wrong table rate is {metrics.get('wrong_table_rate')}, max 0.15")
         sql_rate = metrics.get("sql_validation_rate")
-        if isinstance(sql_rate, (int, float)) and sql_rate < 0:
-            issues.append(f"SQL validation rate is invalid: {sql_rate}")
+        if isinstance(sql_rate, (int, float)) and sql_rate < 0.90:
+            issues.append(f"SQL validation rate is {sql_rate}, min 0.90")
+        query_ir_rate = metrics.get("query_ir_validity_rate")
+        if isinstance(query_ir_rate, (int, float)) and query_ir_rate < 0.90:
+            issues.append(f"QueryIR validity rate is {query_ir_rate}, min 0.90")
+
+        _validate_retrieval_runtime(retrieval_dir, neural_dir if neural_enabled else None, issues, warnings)
 
         return _result(issues, warnings, checked)
 
@@ -135,11 +162,81 @@ def _require_files(base: Path, names: list[str], label: str, issues: list[str], 
             issues.append(f"Required {label} artifact missing: {target}")
 
 
+def _validate_rag_manifest(path: Path, requested_datasets: list[str], issues: list[str], checked: list[str]) -> None:
+    checked.append(str(path))
+    if not path.exists():
+        return
+    manifest = _read_json(path)
+    for key in ["source_train_file", "total_examples", "by_dataset", "intent_distribution", "sql_complexity_distribution"]:
+        if key not in manifest:
+            issues.append(f"RAG manifest missing field: {key}")
+    by_dataset = manifest.get("by_dataset") or {}
+    for name in ["spider", "bird-mini"]:
+        if name in set(requested_datasets or []) and int(by_dataset.get(name, 0) or 0) <= 0:
+            issues.append(f"RAG manifest shows zero examples for requested dataset: {name}")
+
+
+def _validate_neural_load(neural_dir: Path, issues: list[str], warnings: list[str]) -> None:
+    required = ["model.pt", "config.yaml", "vocab.json", "label_maps.json"]
+    if any(not (neural_dir / name).exists() for name in required):
+        return
+    try:
+        from neural_ir.model_registry import load_model_bundle
+
+        load_model_bundle(neural_dir)
+    except Exception as exc:
+        issues.append(f"Neural model failed load validation: {exc}")
+
+
+def _validate_retrieval_runtime(
+    retrieval_dir: Path,
+    neural_dir: Path | None,
+    issues: list[str],
+    warnings: list[str],
+) -> None:
+    required = ["example_index.pkl", "schema_index.pkl", "pattern_index.pkl", "manifest.json"]
+    if any(not (retrieval_dir / name).exists() for name in required):
+        return
+    try:
+        from nl2sql_v1.schema import ColumnInfo, SchemaGraph, TableInfo
+        from retriever.retrieval_nl2sql_model import RetrievalNL2SQLModel
+
+        neural_ready = neural_dir is not None and (neural_dir / "model.pt").exists()
+        model = RetrievalNL2SQLModel.load(
+            artifact_dir=retrieval_dir,
+            neural_ir_model_dir=neural_dir if neural_ready else None,
+            allow_dev_fallback=False,
+        )
+        schema = SchemaGraph(
+            tables={
+                "users": TableInfo(
+                    name="users",
+                    columns={
+                        "id": ColumnInfo("id", "integer", False, True),
+                        "name": ColumnInfo("name", "text", True, False),
+                        "role": ColumnInfo("role", "text", True, False),
+                        "created_at": ColumnInfo("created_at", "timestamp", True, False),
+                    },
+                )
+            },
+            dialect="sqlite",
+        )
+        result = model.predict("list all users", schema, use_neural_ir_fallback=False)
+        validation = result.validation or {}
+        if validation.get("is_valid") is False or validation.get("ok") is False:
+            issues.append(f"Bundle inference smoke returned invalid SQL: {validation}")
+    except Exception as exc:
+        issues.append(f"Bundle runtime smoke failed: {exc}")
+
+
 def _check_no_secrets(data: Any, issues: list[str]) -> None:
     if isinstance(data, dict):
         for key, value in data.items():
-            if isinstance(value, str) and ModelBundleValidator._SENSITIVE_PATTERNS.search(value):
-                issues.append(f"Manifest contains sensitive-looking value at {key}")
+            if isinstance(value, str):
+                if ModelBundleValidator._SENSITIVE_PATTERNS.search(value):
+                    issues.append(f"Manifest contains sensitive-looking value at {key}")
+                if ModelBundleValidator._CREDENTIAL_URL.search(value):
+                    issues.append(f"Manifest contains credential-bearing URL at {key}")
             _check_no_secrets(value, issues)
     elif isinstance(data, list):
         for item in data:

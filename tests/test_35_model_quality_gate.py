@@ -40,8 +40,28 @@ def test_quality_gate_passes_good_metrics() -> None:
         "no_select_star_rate": 1.0,
         "unsafe_sql_count": 0,
         "feedback_regression_pass_rate": 1.0,
+        "dataset_contribution_report_required": True,
+        "dataset_contribution_report": {
+            "datasets_requested": ["wikisql"],
+            "leakage_check_passed": True,
+            "full_training_dataset_minimums_passed": True,
+            "by_dataset": {"wikisql": {"converted_to_queryir": 10}},
+        },
     }
 
     result = ModelQualityGate().evaluate(report, THRESHOLDS)
 
     assert result["passed"] is True
+
+
+def test_quality_gate_fails_missing_critical_metric() -> None:
+    report = {
+        "test_performance": {"summary": {"query_ir_validity_rate": 0.99, "sql_validation_rate": 0.99}},
+        "no_select_star_rate": 1.0,
+        "feedback_regression_pass_rate": 1.0,
+    }
+
+    result = ModelQualityGate().evaluate(report, THRESHOLDS)
+
+    assert result["passed"] is False
+    assert "unsafe_sql_count" in result["missing_metrics"]

@@ -69,7 +69,7 @@ class OptionAIRTrainer:
         import time
         if output_dir is not None and not isinstance(output_dir, (str, Path)):
             output_dir, label_encoder = label_encoder, output_dir
-        output_path = Path(output_dir or "artifacts/option_a_ir_model")
+        output_path = Path(output_dir or "artifacts/work/neural_ir")
         output_path.mkdir(parents=True, exist_ok=True)
         best_loss = float("inf")
         best_state = None

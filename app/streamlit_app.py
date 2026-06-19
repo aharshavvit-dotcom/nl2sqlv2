@@ -77,14 +77,30 @@ def _schema_fingerprint(schema_payload: dict[str, Any]) -> str:
 
 def _try_load_bundle(bundle_dir: Path) -> dict[str, Any] | None:
     """Try to load a model bundle. Returns bundle info or None."""
+    st.session_state.pop("bundle_load_error", None)
     try:
         from model_bundle.bundle_loader import ModelBundleLoader
         loader = ModelBundleLoader()
         return loader.load(bundle_dir)
-    except (FileNotFoundError, ValueError):
+    except (FileNotFoundError, ValueError) as exc:
+        st.session_state["bundle_load_error"] = _format_bundle_load_error(exc)
         return None
-    except Exception:
+    except Exception as exc:
+        st.session_state["bundle_load_error"] = _format_bundle_load_error(exc)
         return None
+
+
+def _format_bundle_load_error(exc: Exception) -> str:
+    message = str(exc).strip()
+    if message.startswith("Invalid model bundle:"):
+        raw = message.split(":", 1)[1]
+        if "\n-" in raw:
+            issues = [item.strip().lstrip("-").strip() for item in raw.splitlines() if item.strip().startswith("-")]
+        else:
+            issues = [item.strip() for item in raw.split(";") if item.strip()]
+        if issues:
+            return "Bundle invalid:\n" + "\n".join(f"- {issue}" for issue in issues)
+    return f"Bundle invalid:\n- {message or exc.__class__.__name__}"
 
 
 def _artifact_ready() -> bool:
@@ -187,6 +203,8 @@ with st.sidebar:
             "No validated model bundle found.\n\n"
             "Run:\n```\npython training/train_model.py \\\n  --config configs/training.yaml\n```"
         )
+        if st.session_state.get("bundle_load_error"):
+            st.error(st.session_state["bundle_load_error"])
         if ENABLE_DEV_TRAINING_UI:
             st.info("Developer mode: falling back to legacy artifact loading.")
 
@@ -338,6 +356,8 @@ with st.expander("Model Status", expanded=False):
         status_cols[3].metric("SQL Validation Rate", f"{metrics.get('sql_validation_rate', 0):.1%}")
     else:
         st.error("No validated model bundle loaded.")
+        if st.session_state.get("bundle_load_error"):
+            st.error(st.session_state["bundle_load_error"])
         st.code("python training/train_model.py --config configs/training.yaml", language="bash")
 
 # ───────────────────────── Dataset Training (Developer Mode Only) ─────────────────────────
@@ -431,11 +451,8 @@ if generate and question.strip():
             )
             st.stop()
     except (FileNotFoundError, ValueError) as exc:
-        st.error(
-            "Model could not be loaded. Run:\n\n"
-            "```\npython training/train_model.py --config configs/training.yaml\n```"
-        )
-        st.caption(str(exc))
+        st.error(_format_bundle_load_error(exc))
+        st.code("python training/train_model.py --config configs/training.yaml", language="bash")
         st.stop()
     try:
         result = model.predict(question, schema, use_neural_ir_fallback=use_neural_fallback)
