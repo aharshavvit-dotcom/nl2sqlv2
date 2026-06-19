@@ -7,26 +7,47 @@ from typing import Any
 import yaml
 
 
-DEFAULT_STEPS = [
-    "audit_execution_pipeline",
-    "audit_self_training",
-    "build_generic_ir_corpus",
-    "build_retrieval_rag_index",
-    "train_neural_ir_model",
-    "evaluate_against_gold",
-    "mine_validation_errors",
-    "build_corrections_from_gold",
-    "train_ranking_from_gold",
-    "run_self_improvement_loop",
-    "run_execution_aware_evaluation",
-    "evaluate_generic_models",
-    "select_best_model",
-    "promote_model_if_better",
-    "build_semantic_profile",
-    "generate_connected_db_regressions",
-    "run_connected_db_regressions",
-    "run_app_smoke_check",
-]
+def build_pipeline_steps(config: dict[str, Any]) -> list[str]:
+    """Return the sole canonical ordered training-step registry.
+
+    Both public training entry points call this function. Optional components
+    remain represented by contracts that explicitly report disabled steps.
+    """
+    retrieval = config.get("retrieval") or {}
+    neural = config.get("neural") or {}
+    self_training = config.get("self_training") or {}
+    evaluation = config.get("evaluation") or {}
+    bundle = config.get("bundle") or {}
+
+    steps = ["verify_datasets"]
+    if retrieval.get("enabled", True) or neural.get("enabled", True):
+        steps.append("build_generic_ir_corpus")
+    if retrieval.get("enabled", True):
+        steps.append("build_retrieval_rag_index")
+    if neural.get("enabled", True):
+        steps.extend(["build_hard_negative_corpus", "train_neural_ir"])
+    if self_training.get("enabled", False) or evaluation.get("enabled", True):
+        steps.append("evaluate_against_gold")
+    steps.extend(["mine_validation_errors", "build_corrections_from_gold", "train_adaptive_ranker"])
+    if self_training.get("enabled", False):
+        steps.append("run_self_improvement_loop")
+    if evaluation.get("enabled", True):
+        if evaluation.get("run_execution_aware", False):
+            steps.append("run_execution_aware_evaluation")
+        steps.append("evaluate_generic_models")
+    steps.append("run_quality_gate")
+    if bundle.get("build", True):
+        steps.append("build_model_bundle")
+        if bundle.get("validate", True):
+            steps.append("validate_model_bundle")
+        if bundle.get("promote_if_quality_gate_passes", False):
+            steps.append("promote_model_bundle")
+    if config.get("smoke", False):
+        steps.append("run_app_smoke_check")
+    return steps
+
+
+DEFAULT_STEPS = build_pipeline_steps({})
 
 
 @dataclass
@@ -54,7 +75,7 @@ class PipelineConfig:
             datasets=payload.get("datasets") or {},
             training=training,
             artifacts=payload.get("artifacts") or {},
-            steps=payload.get("steps") or list(DEFAULT_STEPS),
+            steps=payload.get("steps") or build_pipeline_steps(integrated_config or payload),
             smoke=bool(payload.get("smoke", False)),
             skip_heavy_steps=bool(payload.get("skip_heavy_steps", False)),
             integrated_config=integrated_config,

@@ -63,6 +63,10 @@ This single command internally runs:
 
 Full training builds a dataset-balanced generic QueryIR corpus. WikiSQL, Spider, and BIRD Mini each receive their own sampling cap, and the run fails if any requested full-training dataset does not contribute the configured minimum number of converted QueryIR examples. Unsupported SQL is written to `artifacts/generic_training/unsupported_sql_report.json` so current QueryIR coverage gaps are visible.
 
+The connected-database runtime is schema-neutral. Bundled `orders` / `customers` / `products` mappings are enabled only when the complete sample-retail schema signature is present. Other databases derive table, metric, dimension, and filter vocabulary from their own schema; simple single-table questions bypass retrieval and neural routing and cannot add joins.
+
+Evaluation is multi-level: intent, base table, slots, join decisions, router decisions, QueryIR validity, SQL validation, structural/execution match, and safety. Reports include accuracy, macro/micro/weighted F1, confusion matrices, p50/p95/p99 loss/confidence/latency/drift statistics, ECE/Brier calibration, and a conformal abstention threshold. Promotion uses paired bootstrap evidence when per-example champion and challenger results are available.
+
 For a quick smoke test:
 ```bash
 python training/train_model.py --config configs/smoke_training.yaml
@@ -104,6 +108,9 @@ The bundle contains:
 - Neural IR model artifacts
 - Adaptive ranker weights (if enabled)
 - Evaluation reports
+- Classification and confusion-matrix reports
+- Calibration, percentile, latency, and schema-drift baselines
+- Champion/challenger statistical comparison
 - Quality gate results
 - Pipeline execution report
 
@@ -115,6 +122,18 @@ Training Pipeline → Candidate Bundle → Quality Gate → Current Bundle
 ```
 
 If the quality gate fails, the candidate bundle is not promoted to current.
+
+Primary governance artifacts are written to:
+
+```text
+artifacts/evaluation/classification_metrics_report.json
+artifacts/evaluation/confusion_matrices/
+artifacts/evaluation/calibration_report.json
+artifacts/evaluation/champion_challenger_statistical_report.json
+artifacts/generic_training/split_distribution_report.json
+```
+
+Raw heuristic confidence and calibrated confidence are stored separately. A calibrated score below the learned conformal threshold produces clarification/abstention metadata instead of being presented as a trustworthy probability.
 
 ---
 

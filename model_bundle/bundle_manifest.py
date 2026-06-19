@@ -42,6 +42,13 @@ class BundleManifest:
         "wrong_table_rate": 0.0,
         "unsafe_sql_count": 0,
     })
+    classification_metrics: dict[str, Any] = field(default_factory=dict)
+    confusion_matrices: dict[str, Any] = field(default_factory=dict)
+    calibration: dict[str, Any] = field(default_factory=dict)
+    percentiles: dict[str, Any] = field(default_factory=dict)
+    latency: dict[str, Any] = field(default_factory=dict)
+    schema_drift_baseline: dict[str, Any] = field(default_factory=dict)
+    statistical_promotion: dict[str, Any] = field(default_factory=dict)
     quality_gate: dict[str, Any] = field(default_factory=lambda: {
         "passed": False,
         "report_path": "evaluation/model_quality_gate_report.json",
@@ -60,6 +67,13 @@ class BundleManifest:
             "paths": self.paths,
             "artifacts": self.artifacts,
             "metrics": self.metrics,
+            "classification_metrics": self.classification_metrics,
+            "confusion_matrices": self.confusion_matrices,
+            "calibration": self.calibration,
+            "percentiles": self.percentiles,
+            "latency": self.latency,
+            "schema_drift_baseline": self.schema_drift_baseline,
+            "statistical_promotion": self.statistical_promotion,
             "quality_gate": self.quality_gate,
             "pipeline_report": self.pipeline_report,
         }
@@ -77,6 +91,13 @@ class BundleManifest:
             paths=data.get("paths", {}),
             artifacts=data.get("artifacts", {}),
             metrics=data.get("metrics", {}),
+            classification_metrics=data.get("classification_metrics", {}),
+            confusion_matrices=data.get("confusion_matrices", {}),
+            calibration=data.get("calibration", {}),
+            percentiles=data.get("percentiles", {}),
+            latency=data.get("latency", {}),
+            schema_drift_baseline=data.get("schema_drift_baseline", {}),
+            statistical_promotion=data.get("statistical_promotion", {}),
             quality_gate=data.get("quality_gate", {}),
             pipeline_report=data.get("pipeline_report", ""),
         )

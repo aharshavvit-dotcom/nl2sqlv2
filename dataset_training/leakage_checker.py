@@ -20,7 +20,7 @@ class DatasetLeakageChecker:
                 overlap[f"{left}__{right}"] = shared
         train_unseen = sorted((dbs.get("train", set()) | dbs.get("validation", set())) & dbs.get("unseen_db_test", set()))
         return {
-            "has_database_leakage": bool(train_unseen),
+            "has_database_leakage": bool(overlap),
             "database_overlap": overlap,
             "train_unseen_overlap": train_unseen,
         }

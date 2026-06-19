@@ -34,6 +34,7 @@ def build_generic_ir_corpus(args: argparse.Namespace) -> dict:
         artifact_dir=str(args.artifact_dir),
         max_examples_per_dataset=_parse_int_map(getattr(args, "max_examples_per_dataset", None)),
         min_converted_examples_required=_parse_int_map(getattr(args, "min_converted_examples_required", None)),
+        schema_renaming=getattr(args, "schema_renaming", None),
     )
 
 

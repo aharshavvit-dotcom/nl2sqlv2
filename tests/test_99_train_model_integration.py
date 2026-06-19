@@ -92,6 +92,16 @@ class TestTrainModelIntegration:
         stdout = smoke_training_result["dry_run_stdout"]
         assert "Dry-run" in stdout or "dry_run" in stdout or "steps" in stdout.lower()
 
+    def test_both_training_commands_share_pipeline_registry(self):
+        from orchestration.pipeline_config import PipelineConfig, build_pipeline_steps
+        from training.train_model import load_training_config
+
+        integrated = load_training_config(ROOT / "configs" / "smoke_training.yaml")
+        assert build_pipeline_steps(integrated) == PipelineConfig.load(
+            ROOT / "configs" / "smoke_training.yaml"
+        ).steps
+        assert "build_hard_negative_corpus" in build_pipeline_steps(integrated)
+
     def test_bundle_manifest_importable(self):
         """14. BundleManifest can be imported."""
         sys.path.insert(0, str(ROOT))

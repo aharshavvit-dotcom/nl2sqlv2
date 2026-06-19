@@ -62,9 +62,6 @@ class RuntimeJoinPlanner:
     def choose_base_table(metric_table: str | None, entity_table: str | None, required_tables: list[str]) -> str:
         if metric_table:
             return metric_table
-        for preferred in ["orders", "sales", "transactions", "invoices", "order_items"]:
-            if preferred in required_tables:
-                return preferred
         return entity_table or required_tables[0]
 
     @staticmethod

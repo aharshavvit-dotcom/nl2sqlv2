@@ -115,6 +115,20 @@ class ModelBundleValidator:
                 issues.append("Required quality gate report missing")
             elif not _read_json(qg_path).get("passed", False):
                 issues.append("Required quality gate failed")
+            _require_files(
+                eval_dir,
+                ["classification_metrics_report.json", "calibration_report.json"],
+                "governance evaluation",
+                issues,
+                checked,
+            )
+            _require_files(
+                eval_dir / "confusion_matrices",
+                ["intent_confusion_matrix.csv", "base_table_confusion_matrix.csv", "join_decision_confusion_matrix.csv", "router_confusion_matrix.csv"],
+                "confusion matrix",
+                issues,
+                checked,
+            )
 
         metrics = manifest.metrics or {}
         for key in REQUIRED_MANIFEST_METRICS:
@@ -207,24 +221,44 @@ def _validate_retrieval_runtime(
             neural_ir_model_dir=neural_dir if neural_ready else None,
             allow_dev_fallback=False,
         )
-        schema = SchemaGraph(
-            tables={
-                "users": TableInfo(
-                    name="users",
-                    columns={
-                        "id": ColumnInfo("id", "integer", False, True),
-                        "name": ColumnInfo("name", "text", True, False),
-                        "role": ColumnInfo("role", "text", True, False),
-                        "created_at": ColumnInfo("created_at", "timestamp", True, False),
-                    },
-                )
-            },
-            dialect="sqlite",
-        )
-        result = model.predict("list all users", schema, use_neural_ir_fallback=False)
-        validation = result.validation or {}
-        if validation.get("is_valid") is False or validation.get("ok") is False:
-            issues.append(f"Bundle inference smoke returned invalid SQL: {validation}")
+        def table(name: str, columns: dict[str, str]) -> TableInfo:
+            return TableInfo(
+                name=name,
+                columns={
+                    column: ColumnInfo(column, typ, True, column == "id")
+                    for column, typ in columns.items()
+                },
+            )
+
+        schema = SchemaGraph(tables={
+            "users": table("users", {"id": "integer", "name": "text", "role": "text", "created_at": "timestamp"}),
+            "berths": table("berths", {"id": "integer", "berth_name": "text", "berth_code": "text"}),
+            "vessels": table("vessels", {"id": "integer", "vessel_name": "text", "vessel_type": "text"}),
+            "terminals": table("terminals", {"id": "integer", "terminal_name": "text"}),
+            "service_orders": table("service_orders", {"id": "integer", "vessel_id": "integer", "terminal_id": "integer", "status": "text", "cost": "numeric", "created_at": "timestamp"}),
+            "assignments": table("assignments", {"id": "integer", "user_id": "integer", "berth_id": "integer", "assigned_date": "date", "status": "text"}),
+        }, dialect="sqlite")
+        smoke_cases = [
+            ("list all users", False),
+            ("count users", False),
+            ("show users where role is admin", False),
+            ("list all berths", False),
+            ("show service orders", False),
+            ("show assignments with user names", True),
+        ]
+        for question, join_allowed in smoke_cases:
+            result = model.predict(question, schema, use_neural_ir_fallback=False)
+            validation = result.validation or {}
+            clarified = bool(getattr(result, "needs_clarification", False) or getattr(result, "clarification_questions", []))
+            if (validation.get("is_valid") is False or validation.get("ok") is False) and not clarified:
+                issues.append(f"Bundle inference smoke returned invalid SQL for {question!r}: {validation}")
+            sql = str(result.sql or "")
+            if not join_allowed and " join " in f" {sql.lower()} ":
+                issues.append(f"Bundle inference smoke added an unnecessary join for {question!r}")
+            if sql and not sql.lstrip().lower().startswith(("select", "with")):
+                issues.append(f"Bundle inference smoke returned unsafe non-SELECT SQL for {question!r}")
+            if not sql and not clarified:
+                issues.append(f"Bundle inference smoke produced neither SQL nor clarification for {question!r}")
     except Exception as exc:
         issues.append(f"Bundle runtime smoke failed: {exc}")
 

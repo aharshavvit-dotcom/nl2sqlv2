@@ -12,3 +12,22 @@ minimums:
   sql_structure_match_rate_min: 0.70
   execution_match_rate_min: 0.60
   model_promotion_min_improvement: 0.01
+
+classification_metrics:
+  intent_macro_f1_min: 0.80
+  intent_accuracy_min: 0.85
+  base_table_accuracy_min: 0.85
+  base_table_macro_f1_min: 0.80
+  join_decision_macro_f1_min: 0.85
+  router_accuracy_min: 0.85
+  router_macro_f1_min: 0.80
+  final_sql_execution_accuracy_min: 0.70
+  sql_validation_rate_min: 0.90
+  query_ir_validity_rate_min: 0.90
+  unsafe_sql_count_max: 0
+  unnecessary_join_rate_max: 0.05
+
+calibration_metrics:
+  calibration_sample_count_min: 1
+  expected_calibration_error_max: 0.15
+  brier_score_max: 0.25

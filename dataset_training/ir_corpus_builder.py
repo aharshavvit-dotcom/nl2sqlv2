@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -17,6 +19,22 @@ from .leakage_checker import DatasetLeakageChecker
 from .reporting import save_report_pair
 from .split_manager import DatasetSplitManager
 from .utils import model_dump, normalize_dataset_name, write_jsonl
+
+
+def _replace_identifiers(value: Any, replacements: dict[str, str]) -> Any:
+    if isinstance(value, dict):
+        return {
+            replacements.get(str(key), str(key)): _replace_identifiers(item, replacements)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_replace_identifiers(item, replacements) for item in value]
+    if isinstance(value, str):
+        updated = value
+        for source, target in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
+            updated = re.sub(rf"\b{re.escape(source)}\b", target, updated, flags=re.IGNORECASE)
+        return updated
+    return value
 
 
 class GenericIRCorpusBuilder:
@@ -43,6 +61,7 @@ class GenericIRCorpusBuilder:
         artifact_dir: str,
         max_examples_per_dataset: dict[str, int] | None = None,
         min_converted_examples_required: dict[str, int] | None = None,
+        schema_renaming: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         output = Path(output_dir)
         artifacts = Path(artifact_dir)
@@ -80,6 +99,20 @@ class GenericIRCorpusBuilder:
             else:
                 unsupported_rows.append(self._unsupported_row(example, result))
 
+        augmentation_report = {"augmented_examples_count": 0, "augmentation_modes_used": [], "by_dataset": {}}
+        if (schema_renaming or {}).get("enabled", False):
+            augmented = self._augment_schema_renaming(
+                supported_rows,
+                multiplier=max(1, int((schema_renaming or {}).get("multiplier", 1))),
+                modes=(schema_renaming or {}).get("modes") or ["neutral_names"],
+            )
+            supported_rows.extend(augmented)
+            augmentation_report = {
+                "augmented_examples_count": len(augmented),
+                "augmentation_modes_used": list((schema_renaming or {}).get("modes") or ["neutral_names"]),
+                "by_dataset": dict(Counter(str(row.get("dataset_name") or "unknown") for row in augmented)),
+            }
+
         splits = self.split_manager.split_by_database([*supported_rows, *unsupported_rows])
         self._write_split_files(output, splits)
 
@@ -93,9 +126,11 @@ class GenericIRCorpusBuilder:
             "dataset_registry": registry_report,
             "split_counts": {name: len(rows) for name, rows in splits.items()},
             "databases": {name: sorted({str(row.get("db_id")) for row in rows if row.get("db_id")}) for name, rows in splits.items()},
+            "augmentation": augmentation_report,
         }
 
         save_report_pair(artifacts / "dataset_split_report.json", split_report, "Dataset Split Report")
+        self.split_manager.save_split_report(splits, str(artifacts / "split_distribution_report.json"))
         save_report_pair(artifacts / "leakage_report.json", leakage_report, "Dataset Leakage Report")
         save_report_pair(artifacts / "corpus_quality_report.json", quality_report, "Corpus Quality Report")
         contribution_report = self._dataset_contribution_report(
@@ -114,6 +149,7 @@ class GenericIRCorpusBuilder:
             "output_dir": str(output),
             "artifact_dir": str(artifacts),
             "split_report": split_report,
+            "augmentation_report": augmentation_report,
             "leakage_report": leakage_report,
             "corpus_quality_report": quality_report,
             "dataset_contribution_report": contribution_report,
@@ -123,6 +159,37 @@ class GenericIRCorpusBuilder:
                 for name in ["train", "validation", "test", "unseen_db_test", "unsupported"]
             },
         }
+
+    @staticmethod
+    def _augment_schema_renaming(
+        rows: list[dict[str, Any]],
+        multiplier: int,
+        modes: list[str],
+    ) -> list[dict[str, Any]]:
+        maps = {
+            "neutral_names": {"orders": "service_records", "customers": "entities", "products": "assets", "order_items": "asset_events"},
+            "domain_shift_names": {"orders": "work_requests", "customers": "accounts", "products": "resources", "order_items": "resource_events"},
+        }
+        augmented = []
+        for repetition in range(multiplier):
+            for mode in modes:
+                replacements = maps.get(str(mode), {})
+                for row in rows:
+                    schema_tables = ((row.get("schema") or {}).get("tables") or {}) if isinstance(row.get("schema"), dict) else {}
+                    active = {source: target for source, target in replacements.items() if source in schema_tables}
+                    if not active:
+                        continue
+                    clone = _replace_identifiers(copy.deepcopy(row), active)
+                    clone["example_id"] = f"{row.get('example_id')}__aug_{mode}_{repetition + 1}"
+                    clone["metadata"] = {
+                        **(clone.get("metadata") or {}),
+                        "augmented": True,
+                        "augmentation_mode": mode,
+                        "schema_renaming": active,
+                        "original_example_id": row.get("example_id"),
+                    }
+                    augmented.append(clone)
+        return augmented
 
     def _load_examples(
         self,
@@ -151,8 +218,8 @@ class GenericIRCorpusBuilder:
                     )
                 else:
                     examples, dataset_schemas = loader.load(dataset_name, max_examples=dataset_limit)
-            except Exception:
-                continue
+            except Exception as exc:
+                raise RuntimeError(f"Requested dataset {dataset_name!r} failed to load: {exc}") from exc
             if dataset_limit is not None:
                 examples = examples[:dataset_limit]
             all_examples.extend(examples)

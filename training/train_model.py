@@ -96,65 +96,7 @@ def verify_datasets(config: dict[str, Any]) -> bool:
         return True
 
 
-def build_pipeline_steps(config: dict[str, Any]) -> list[str]:
-    """Build the ordered list of pipeline steps from config."""
-    steps = ["verify_datasets"]
-
-    # Always start with corpus building if retrieval or neural is enabled
-    retrieval_cfg = config.get("retrieval", {})
-    neural_cfg = config.get("neural", {})
-    self_training_cfg = config.get("self_training", {})
-    ranker_cfg = config.get("ranker", {})
-    eval_cfg = config.get("evaluation", {})
-    qg_cfg = config.get("quality_gate", {})
-    bundle_cfg = config.get("bundle", {})
-
-    # Corpus building (always needed if any training is enabled)
-    if retrieval_cfg.get("enabled", True) or neural_cfg.get("enabled", True):
-        steps.append("build_generic_ir_corpus")
-
-    # Retrieval training
-    if retrieval_cfg.get("enabled", True):
-        steps.append("build_retrieval_rag_index")
-
-    # Neural training
-    if neural_cfg.get("enabled", True):
-        steps.append("build_hard_negative_corpus")
-        steps.append("train_neural_ir")
-
-    # Gold evaluation (needed for self-training)
-    if self_training_cfg.get("enabled", False) or eval_cfg.get("enabled", True):
-        steps.append("evaluate_against_gold")
-
-    # Self-training steps
-    steps.append("mine_validation_errors")
-    steps.append("build_corrections_from_gold")
-
-    # Ranker training
-    steps.append("train_adaptive_ranker")
-
-    # Self-improvement loop
-    if self_training_cfg.get("enabled", False):
-        steps.append("run_self_improvement_loop")
-
-    # Evaluation
-    if eval_cfg.get("enabled", True):
-        if eval_cfg.get("run_execution_aware", False):
-            steps.append("run_execution_aware_evaluation")
-        steps.append("evaluate_generic_models")
-
-    # Quality gate
-    steps.append("run_quality_gate")
-
-    # Bundle
-    if bundle_cfg.get("build", True):
-        steps.append("build_model_bundle")
-        if bundle_cfg.get("validate", True):
-            steps.append("validate_model_bundle")
-        if bundle_cfg.get("promote_if_quality_gate_passes", False):
-            steps.append("promote_model_bundle")
-
-    return steps
+from orchestration.pipeline_config import build_pipeline_steps
 
 
 def config_to_pipeline_config(config: dict[str, Any], steps: list[str]) -> dict[str, Any]:

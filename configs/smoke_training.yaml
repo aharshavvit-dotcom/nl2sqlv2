@@ -37,11 +37,21 @@ self_training:
 ranker:
   enabled: false
 
+augmentation:
+  schema_renaming:
+    enabled: false
+
 evaluation:
   enabled: true
-  output_dir: artifacts/work/evaluation
+  output_dir: artifacts/evaluation
   run_unseen_db: false
   run_execution_aware: false
+
+calibration:
+  enabled: true
+  abstention_coverage_target: 0.95
+  abstain_when_calibrated_confidence_below: null
+  use_conformal_threshold: true
 
 quality_gate:
   thresholds: evaluation/model_quality_thresholds.yaml

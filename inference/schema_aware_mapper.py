@@ -4,7 +4,10 @@ from typing import Any
 
 from rapidfuzz import fuzz
 
-from generic_planner.generic_slot_resolver import filter_sample_retail_physical_mappings
+from generic_planner.generic_slot_resolver import (
+    filter_sample_retail_physical_mappings,
+    is_sample_retail_schema,
+)
 
 from .prediction_models import SchemaMapping
 from .runtime_schema_context import RuntimeSchemaContext
@@ -38,13 +41,16 @@ class SchemaAwareMapper:
         )
         slot_values = {key: value.get("value") if isinstance(value, dict) else value for key, value in slots.items()}
         mapping = SchemaMapping()
+        retail_schema = is_sample_retail_schema(schema_context.get_tables())
+        if retail_schema:
+            mapping.mapping_reasons.append("sample_retail_physical_mappings_allowed:schema_signature_matched")
         dimension = slot_values.get("dimension")
         entity = slot_values.get("entity")
         semantic_mapper = _semantic_mapper(semantic_profile)
 
         entity_match = self._map_entity_semantic(str(entity), semantic_mapper) if entity and semantic_mapper else None
         if not entity_match:
-            entity_match = self._map_entity(str(entity) if entity else None, schema_context)
+            entity_match = self._map_entity(str(entity) if entity else None, schema_context, retail_schema)
         mapping.entity_table = entity_match.get("table")
         mapping.match_scores["entity"] = entity_match.get("score", 0.0)
 
@@ -71,7 +77,7 @@ class SchemaAwareMapper:
             mapping.metric_name = metric
             mapping.metric_table = metric_match.get("table")
             mapping.metric_column = metric_match.get("column")
-            mapping.metric_aggregation = "COUNT" if metric == "order_count" else ("AVG" if metric in {"average", "average_order_value"} else "SUM")
+            mapping.metric_aggregation = "COUNT" if metric in {"record_count", "order_count"} else ("AVG" if metric in {"average", "average_order_value"} else "SUM")
             mapping.match_scores["metric"] = metric_match.get("score", 0.0)
             mapping.warnings.extend(metric_match.get("warnings", []))
 
@@ -157,7 +163,7 @@ class SchemaAwareMapper:
         metric_synonyms: dict[str, list[str]],
         preferred_table: str | None = None,
     ) -> dict[str, Any]:
-        if metric == "order_count":
+        if metric in {"record_count", "order_count"}:
             if preferred_table and schema_context.has_table(preferred_table):
                 pk = self._primary_key_or_id(schema_context, preferred_table)
                 if pk:
@@ -238,10 +244,16 @@ class SchemaAwareMapper:
         return self._map_dimension(filter_name, schema_context, metric_table, dimension_synonyms)
 
     @staticmethod
-    def _map_entity(entity: str | None, schema_context: RuntimeSchemaContext) -> dict[str, Any]:
+    def _map_entity(
+        entity: str | None,
+        schema_context: RuntimeSchemaContext,
+        retail_schema: bool = False,
+    ) -> dict[str, Any]:
         if entity and schema_context.has_table(entity):
             return {"table": entity, "score": 1.0}
-        aliases = ENTITY_TABLES.get(entity or "", [entity] if entity else [])
+        aliases = ENTITY_TABLES.get(entity or "", []) if retail_schema else []
+        if not aliases and entity:
+            aliases = [entity]
         candidates = []
         for table in schema_context.get_tables():
             score = max([fuzz.WRatio(alias, table) for alias in aliases] or [0]) / 100
@@ -281,6 +293,8 @@ class SchemaAwareMapper:
 
     @staticmethod
     def _deterministic_metric(metric: str, schema_context: RuntimeSchemaContext) -> dict[str, Any] | None:
+        if not is_sample_retail_schema(schema_context.get_tables()):
+            return None
         normalized = metric.lower().replace(" ", "_")
         preferred = {
             "sales": ("orders", "amount", 0.98),
@@ -301,6 +315,8 @@ class SchemaAwareMapper:
 
     @staticmethod
     def _deterministic_filter(filter_name: str, schema_context: RuntimeSchemaContext, entity: str | None = None) -> dict[str, Any] | None:
+        if not is_sample_retail_schema(schema_context.get_tables()):
+            return None
         normalized = filter_name.lower().replace(" ", "_")
         entity_name = (entity or "").lower()
         preferred: dict[str, list[tuple[str, str, float]]] = {

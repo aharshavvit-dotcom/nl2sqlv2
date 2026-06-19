@@ -209,6 +209,17 @@ def run_optimized_training(
     if len(train_dataset) == 0:
         return {"error": "No training examples loaded"}
 
+    curriculum_cfg = config.training.get("curriculum") or {}
+    curriculum_enabled = bool(curriculum_cfg.get("enabled", False))
+    curriculum_distribution: dict[str, int] = {}
+    if curriculum_enabled:
+        from dataset_training.curriculum_builder import CurriculumBuilder
+
+        train_dataset.examples, curriculum_distribution = CurriculumBuilder().order_examples(
+            train_dataset.examples,
+            curriculum_cfg.get("phases") or [],
+        )
+
     val_dataset = IRTrainingDataset(
         str(val_path),
         vocab=vocab,
@@ -223,7 +234,7 @@ def run_optimized_training(
 
     batch_size = int(config.training.get("batch_size", 8))
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True,
+        train_dataset, batch_size=batch_size, shuffle=not curriculum_enabled,
         collate_fn=collate_ir_batch,
     )
     val_loader = torch.utils.data.DataLoader(
@@ -415,6 +426,12 @@ def run_optimized_training(
             val_metrics["overall_slot_accuracy"] = (
                 sum(val_correct.get(k, 0) / max(val_total.get(k, 0), 1) for k in vkeys) / max(len(vkeys), 1)
             )
+            composite_parts = [
+                val_metrics.get("intent_accuracy", 0.0),
+                val_metrics.get("base_table_accuracy", 0.0),
+                val_metrics.get("overall_slot_accuracy", 0.0),
+            ]
+            val_metrics["validation_composite_score"] = sum(composite_parts) / len(composite_parts)
 
         epoch_time = time.time() - epoch_start
         current_lr = optimizer.param_groups[0]["lr"]
@@ -502,6 +519,8 @@ def run_optimized_training(
         "validation_examples_count": len(val_dataset) if val_dataset else 0,
         "train_by_dataset": _dataset_distribution(train_dataset.examples),
         "validation_by_dataset": _dataset_distribution(val_dataset.examples if val_dataset else []),
+        "curriculum_enabled": curriculum_enabled,
+        "curriculum_distribution": curriculum_distribution,
         "legacy_mode": legacy_mode,
         "sample_mode": sample_mode,
         "hard_negative_file": str(hard_neg_path) if hard_neg_path else "",
@@ -520,6 +539,7 @@ def run_optimized_training(
         "validation_gold_score_unavailable_reason": (
             None if "validation_gold_score" in final_metrics else "gold comparator not available inside neural training loop"
         ),
+        "validation_composite_score": final_metrics.get("validation_composite_score"),
         "checkpoint_path": str(checkpoint_path),
         "epochs_ran": len(history),
         "early_stopped": early_stopper.counter >= early_stopper.patience,

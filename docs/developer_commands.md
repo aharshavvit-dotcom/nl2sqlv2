@@ -125,6 +125,8 @@ python training/evaluate_generic_models.py \
   --output artifacts/evaluation/generic_model_evaluation_report.json
 ```
 
+This command also writes `classification_metrics_report.{json,md}`, calibration reports, and intent/base-table/join/router/error confusion matrices under `artifacts/evaluation/`. Full quality gates require these reports and use macro F1 for imbalanced decision classes.
+
 ### Execution-Aware Evaluation
 ```bash
 python training/run_execution_aware_evaluation.py \
@@ -172,6 +174,8 @@ python training/promote_model_if_better.py \
   --thresholds evaluation/model_quality_thresholds.yaml \
   --output artifacts/model_registry/promotion_report.json
 ```
+
+When both candidates contain paired per-example results, promotion performs 1,000 deterministic bootstrap resamples and writes `artifacts/evaluation/champion_challenger_statistical_report.{json,md}`. Point estimates are retained only as a compatibility fallback.
 
 ---
 

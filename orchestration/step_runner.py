@@ -237,6 +237,7 @@ class StepRunner:
             test_ratio=float(dataset_cfg.get("test_ratio", 0.1)),
             unseen_db_test_ratio=float(dataset_cfg.get("unseen_db_test_ratio", 0.15)),
             include_unsupported=True,
+            schema_renaming=(integrated.get("augmentation") or {}).get("schema_renaming") or {},
         )
         report = build_generic_ir_corpus(args)
         _enforce_dataset_contribution(report, config)

@@ -10,21 +10,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SYNONYMS_PATH = ROOT / "data" / "synonyms.yaml"
 
 SAFE_DEFAULTS: dict[str, Any] = {
-    "metrics": {
-        "sales": {"synonyms": ["sales", "revenue", "amount"], "candidate_columns": ["amount", "sales", "revenue"], "aggregation": "SUM"},
-        "order_count": {"synonyms": ["orders", "order count", "transactions"], "candidate_columns": ["order_id", "id"], "aggregation": "COUNT"},
-    },
-    "dimensions": {
-        "customer": {"synonyms": ["customer", "customers"], "candidate_columns": ["customer_name", "customer"]},
-        "product": {"synonyms": ["product", "products"], "candidate_columns": ["product_name", "product"]},
-        "status": {"synonyms": ["status", "condition"], "candidate_columns": ["status"]},
-    },
-    "dates": {
-        "order_date": {"synonyms": ["date", "order date"], "candidate_columns": ["order_date", "date"]},
-    },
-    "entities": {
-        "orders": {"synonyms": ["orders", "sales"], "candidate_tables": ["orders", "sales"]},
-    },
+    "metrics": {},
+    "dimensions": {},
+    "dates": {"date": {"synonyms": ["date", "time"], "candidate_columns": ["date", "created_at", "updated_at"]}},
+    "entities": {},
 }
 
 

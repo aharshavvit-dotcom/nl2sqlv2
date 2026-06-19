@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import re
 from typing import Any
@@ -45,6 +46,8 @@ class PredictionOrchestrator:
         neural_ir_model_dir: str | Path | None = None,
         use_neural_ir_fallback: bool = False,
         neural_ir_threshold: float = 0.80,
+        confidence_calibration_path: str | Path | None = None,
+        schema_drift_baseline: dict[str, Any] | None = None,
         # Backward-compatible aliases
         option_a_model_dir: str | Path | None = None,
         use_option_a_fallback: bool | None = None,
@@ -64,6 +67,9 @@ class PredictionOrchestrator:
         self.neural_ir_v1_model_dir = root / "artifacts" / "work" / "neural_ir"
         self.neural_ir_model_dir = Path(_model_dir) if _model_dir else self._default_neural_ir_model_dir()
         self.hybrid_calibration = load_hybrid_calibration(self.neural_ir_model_dir / "hybrid_calibration.json")
+        calibration_path = Path(confidence_calibration_path) if confidence_calibration_path else self.neural_ir_model_dir / "confidence_calibration.json"
+        self.confidence_calibration = json.loads(calibration_path.read_text(encoding="utf-8")) if calibration_path.exists() else {}
+        self.schema_drift_baseline = schema_drift_baseline or {}
         self.use_neural_ir_fallback = _use_fallback
         self.neural_ir_threshold = float(self.hybrid_calibration.get("retrieval_ir_high_confidence_threshold",
                                         self.hybrid_calibration.get("option_c_high_confidence_threshold", _threshold)))
@@ -199,6 +205,8 @@ class PredictionOrchestrator:
                     *ir_validation.errors,
                     *([] if sql_validation.get("is_valid") else sql_validation.get("issues", [])),
                 ],
+                "calibration": self.confidence_calibration,
+                "schema_drift": self._schema_drift(schema_context, question),
             }
         )
         warnings = [
@@ -210,6 +218,8 @@ class PredictionOrchestrator:
             *([] if sql_validation.get("is_valid") else sql_validation.get("issues", [])),
         ]
         clarification = self._clarification_questions(confidence["confidence"], selected_template.get("template_id"), slots)
+        if confidence.get("abstain") and not clarification:
+            clarification = ["I am not confident enough in the schema mapping. Which table or business field should I use?"]
 
         retrieval_ir_result = PredictionResult(
             question=question,
@@ -225,11 +235,15 @@ class PredictionOrchestrator:
             sql=sql,
             validation=sql_validation,
             confidence=confidence["confidence"],
+            raw_confidence=confidence.get("raw_confidence"),
+            calibrated_confidence=confidence.get("calibrated_confidence"),
+            conformal_threshold=confidence.get("conformal_threshold"),
             confidence_tier=confidence["confidence_tier"],
             retrieved_candidates=[candidate.model_dump() for candidate in candidates],
             selected_candidate=candidates[0].model_dump() if candidates else None,
             warnings=list(dict.fromkeys(str(warning) for warning in warnings if warning)),
             clarification_questions=clarification,
+            needs_clarification=bool(clarification),
             router_decision={},
             selected_query_ir=query_ir.model_dump(),
             validation_summary={"ir_validation": ir_validation.model_dump(), "sql_validation": sql_validation},
@@ -733,6 +747,19 @@ class PredictionOrchestrator:
             return "medium"
         return "low"
 
+    def _schema_drift(self, schema_context: RuntimeSchemaContext, question: str) -> dict[str, Any]:
+        current = {
+            "question_token_count": len(question.split()),
+            "schema_table_count": len(schema_context.get_tables()),
+            "schema_column_count": len(schema_context.get_columns()),
+        }
+        flags = []
+        for name, value in current.items():
+            p99 = self.schema_drift_baseline.get(f"{name}_p99")
+            if isinstance(p99, (int, float)) and value > p99:
+                flags.append(f"{name}_above_training_p99")
+        return {"current": current, "flags": flags}
+
 
 def create_orchestrator_from_bundle(bundle_dir: str | Path) -> PredictionOrchestrator:
     """Create a PredictionOrchestrator from a validated model bundle.
@@ -759,7 +786,10 @@ def create_orchestrator_from_bundle(bundle_dir: str | Path) -> PredictionOrchest
     neural_dir = Path(bundle["neural_model_dir"])
     neural_model_dir = neural_dir if (neural_dir / "model.pt").exists() else None
 
+    calibration_path = Path(bundle_dir) / "evaluation" / "calibration_report.json"
     return PredictionOrchestrator(
         neural_ir_model_dir=neural_model_dir,
         use_neural_ir_fallback=neural_model_dir is not None,
+        confidence_calibration_path=calibration_path if calibration_path.exists() else None,
+        schema_drift_baseline=(bundle.get("manifest") or {}).get("schema_drift_baseline") or {},
     )

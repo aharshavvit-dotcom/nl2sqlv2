@@ -63,9 +63,16 @@ class PredictionConfidenceCalculator:
             apply_cap("filter_mapping_missing", 0.69)
         if retrieval_conf < 0.30:
             apply_cap("low_retrieval_similarity", 0.49)
+        schema_drift = result_parts.get("schema_drift") or {}
+        if schema_drift.get("flags"):
+            apply_cap("schema_input_above_training_p99", 0.59)
 
-        tier = "high" if confidence >= 0.80 else "medium" if confidence >= 0.60 else "low"
-        final = round(max(0.0, min(1.0, confidence)), 4)
+        raw = round(max(0.0, min(1.0, confidence)), 4)
+        calibration = result_parts.get("calibration") or {}
+        calibrated = round(self._calibrate(raw, calibration), 4)
+        conformal_threshold = calibration.get("conformal_confidence_threshold")
+        abstain = isinstance(conformal_threshold, (int, float)) and calibrated < float(conformal_threshold)
+        tier = "high" if calibrated >= 0.80 else "medium" if calibrated >= 0.60 else "low"
         breakdown = {
             "retrieval": round(retrieval_conf, 4),
             "template": round(template_conf, 4),
@@ -75,10 +82,18 @@ class PredictionConfidenceCalculator:
             "ir_validation": ir_conf,
             "sql_validation": validation_conf,
             "caps_applied": caps_applied,
-            "final": final,
+            "raw_confidence": raw,
+            "calibrated_confidence": calibrated,
+            "conformal_confidence_threshold": conformal_threshold,
+            "abstain": abstain,
+            "final": calibrated,
         }
         return {
-            "confidence": final,
+            "confidence": calibrated,
+            "raw_confidence": raw,
+            "calibrated_confidence": calibrated,
+            "conformal_threshold": conformal_threshold,
+            "abstain": abstain,
             "confidence_tier": tier,
             "components": breakdown,
             "confidence_breakdown": breakdown,
@@ -122,3 +137,22 @@ class PredictionConfidenceCalculator:
             return False
         has_value = "value" not in slot or slot.get("value") is not None
         return bool(has_value and float(slot.get("confidence", 0.0)) >= 0.55)
+
+    @staticmethod
+    def _calibrate(raw: float, calibration: dict[str, Any]) -> float:
+        """Apply a monotonic piecewise calibration map when one is available."""
+        points = calibration.get("isotonic_points") or calibration.get("calibration_points") or []
+        normalized = sorted(
+            (float(item[0]), float(item[1]))
+            for item in points
+            if isinstance(item, (list, tuple)) and len(item) == 2
+        )
+        if not normalized:
+            return raw
+        if raw <= normalized[0][0]:
+            return max(0.0, min(1.0, normalized[0][1]))
+        for (left_x, left_y), (right_x, right_y) in zip(normalized, normalized[1:]):
+            if left_x <= raw <= right_x:
+                weight = (raw - left_x) / max(right_x - left_x, 1e-12)
+                return max(0.0, min(1.0, left_y + weight * (right_y - left_y)))
+        return max(0.0, min(1.0, normalized[-1][1]))

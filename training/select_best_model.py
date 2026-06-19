@@ -22,7 +22,7 @@ def _read(path: Path) -> dict:
 
 
 def _metrics(evaluation: dict, execution: dict) -> dict:
-    metrics = ModelQualityGate._extract_metrics(evaluation)
+    metrics, _present = ModelQualityGate._extract_metrics(evaluation)
     summary = execution.get("summary") or {}
     metrics.update(
         {
@@ -33,6 +33,7 @@ def _metrics(evaluation: dict, execution: dict) -> dict:
             "unnecessary_join_rate": summary.get("unnecessary_join_rate", metrics.get("unnecessary_join_rate_max", 0.0)),
             "wrong_table_rate": summary.get("wrong_table_rate", metrics.get("wrong_table_rate_max", 0.0)),
             "analytics_query_pass_rate": evaluation.get("summary", {}).get("analytics_query_pass_rate", 1.0),
+            "per_example": evaluation.get("test_performance", {}).get("per_example", []),
         }
     )
     return metrics

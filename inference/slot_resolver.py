@@ -19,7 +19,7 @@ class SlotResolver:
         synonym_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         q = question.lower()
-        synonyms = self._synonym_config(synonym_config)
+        synonyms = self._synonym_config(synonym_config, schema_context)
         slots: dict[str, RuntimeSlot] = {}
         slots["metric"] = self._metric_slot(q, candidates, selected_template, synonyms["metrics"])
         slots["dimension"] = self._dimension_slot(q, candidates, selected_template, synonyms["dimensions"])
@@ -40,7 +40,7 @@ class SlotResolver:
 
         template_id = selected_template.get("template_id")
         if template_id in {"count_records"} and not slots["metric"].value:
-            slots["metric"] = RuntimeSlot(slot_name="metric", value="order_count", source="default", confidence=0.72)
+            slots["metric"] = RuntimeSlot(slot_name="metric", value="record_count", source="default", confidence=0.72)
         if template_id in {"metric_by_dimension", "top_n_metric_by_dimension", "bottom_n_metric_by_dimension"} and not slots["dimension"].value:
             voted = self._candidate_vote(candidates, "dimension")
             if voted:
@@ -70,7 +70,7 @@ class SlotResolver:
         if voted and voted not in {"*", "None"}:
             return RuntimeSlot(slot_name="metric", value=str(voted), source="retrieved_example", confidence=0.45)
         if selected_template.get("template_id") in {"count_records", "count_by_dimension"}:
-            return RuntimeSlot(slot_name="metric", value="order_count", source="default", confidence=0.8)
+            return RuntimeSlot(slot_name="metric", value="record_count", source="default", confidence=0.8)
         return RuntimeSlot(slot_name="metric", value=None, source="default", confidence=0.0)
 
     def _dimension_slot(
@@ -98,9 +98,6 @@ class SlotResolver:
         for table in schema_context.get_tables():
             if table.lower() in q or table.lower().rstrip("s") in q:
                 return RuntimeSlot(slot_name="entity", value=table, source="question", confidence=0.85)
-        for preferred in ["orders", "sales", "transactions", "invoices", "order_items"]:
-            if schema_context.has_table(preferred):
-                return RuntimeSlot(slot_name="entity", value=preferred, source="schema_match", confidence=0.72)
         tables = schema_context.get_tables()
         return RuntimeSlot(slot_name="entity", value=tables[0] if tables else None, source="default", confidence=0.35)
 
@@ -204,14 +201,35 @@ class SlotResolver:
         return [key.replace("_", " "), key, *aliases]
 
     @staticmethod
-    def _synonym_config(synonym_config: dict[str, Any] | None) -> dict[str, dict[str, list[str]]]:
+    def _synonym_config(
+        synonym_config: dict[str, Any] | None,
+        schema_context: RuntimeSchemaContext,
+    ) -> dict[str, dict[str, list[str]]]:
+        from generic_planner.generic_slot_resolver import is_sample_retail_schema
+
         if synonym_config and (synonym_config.get("metrics") or synonym_config.get("dimensions")):
-            return {
+            configured = {
                 "metrics": normalize_section(synonym_config.get("metrics") or {}),
                 "dimensions": normalize_section(synonym_config.get("dimensions") or {}),
             }
-        raw = load_synonym_config()
-        return {
-            "metrics": normalize_section(raw.get("metrics") or {}),
-            "dimensions": normalize_section(raw.get("dimensions") or {}),
-        }
+        elif is_sample_retail_schema(schema_context.get_tables()):
+            raw = load_synonym_config()
+            configured = {
+                "metrics": normalize_section(raw.get("metrics") or {}),
+                "dimensions": normalize_section(raw.get("dimensions") or {}),
+            }
+        else:
+            configured = {"metrics": {}, "dimensions": {}}
+
+        # Connected schemas always contribute their own neutral vocabulary.  This
+        # is the generic fallback; bundled retail terms are never needed for it.
+        for qualified in schema_context.get_columns():
+            table, column = qualified.split(".", 1)
+            info = schema_context.column_info(table, column)
+            if info.get("is_sensitive"):
+                continue
+            aliases = [column, column.replace("_", " "), f"{table} {column.replace('_', ' ')}"]
+            configured["dimensions"].setdefault(column, aliases)
+            if info.get("is_numeric") and not info.get("is_id"):
+                configured["metrics"].setdefault(column, aliases)
+        return configured

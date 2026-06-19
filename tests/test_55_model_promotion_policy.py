@@ -23,3 +23,15 @@ def test_challenger_blocked_when_unsafe_or_simple_regresses() -> None:
 
     assert unsafe["can_promote"] is False
     assert simple_regression["can_promote"] is False
+
+
+def test_bootstrap_report_uses_paired_examples() -> None:
+    challenger = _metrics(per_example=[{"example_id": str(i), "intent_correct": True} for i in range(10)])
+    champion = _metrics(per_example=[{"example_id": str(i), "intent_correct": False} for i in range(10)])
+
+    decision = PromotionPolicy().can_promote(challenger, champion, THRESHOLDS, bootstrap_iterations=100)
+
+    report = decision["statistical_report"]
+    assert report["paired_examples"] == 10
+    assert report["metrics"]["intent_macro_f1"]["delta_p05"] > 0
+    assert decision["can_promote"] is True

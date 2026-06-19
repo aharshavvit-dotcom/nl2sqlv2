@@ -30,7 +30,10 @@ def test_database_level_splits_are_created_without_unseen_leakage() -> None:
     train_dbs = {row["db_id"] for row in splits["train"]}
     validation_dbs = {row["db_id"] for row in splits["validation"]}
     unseen_dbs = {row["db_id"] for row in splits["unseen_db_test"]}
+    test_dbs = {row["db_id"] for row in splits["test"]}
     assert unseen_dbs.isdisjoint(train_dbs | validation_dbs)
+    assert train_dbs.isdisjoint(validation_dbs | test_dbs)
+    assert validation_dbs.isdisjoint(test_dbs)
     assert sum(len(rows) for rows in splits.values()) == len(_rows())
 
 

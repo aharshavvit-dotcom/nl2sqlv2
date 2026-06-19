@@ -6,6 +6,8 @@ but should not be used in the primary workflow.
 
 > **Preferred command:** `python training/train_model.py --config configs/training.yaml`
 
+Both legacy full-pipeline wrappers and the preferred command now resolve their effective steps through `orchestration.pipeline_config.build_pipeline_steps`; no separate default registry is maintained.
+
 ---
 
 ## Deprecated Training Scripts

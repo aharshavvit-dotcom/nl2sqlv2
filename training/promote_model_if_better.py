@@ -13,6 +13,7 @@ from model_selection.champion_challenger import ChampionChallengerRegistry
 from model_selection.promotion_policy import PromotionPolicy
 from quality_gates.thresholds import load_thresholds
 from training.select_best_model import _metrics, _read
+from dataset_training.reporting import save_report_pair
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,6 +40,11 @@ def main() -> int:
     report = {"challenger": challenger, "current_champion_before": champion, "promotion_decision": decision, "promoted": promoted}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    save_report_pair(
+        args.output.parent.parent / "evaluation" / "champion_challenger_statistical_report.json",
+        decision.get("statistical_report") or {},
+        "Champion Challenger Statistical Report",
+    )
     print(json.dumps({"promoted": promoted is not None, "blocking_issues": decision["blocking_issues"]}, indent=2, ensure_ascii=True))
     return 0
 

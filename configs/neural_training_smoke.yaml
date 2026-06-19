@@ -28,6 +28,9 @@ scheduler:
   name: none
 
 training:
+  curriculum:
+    enabled: true
+    phases: [level_1_single_table, level_2_filter_count, level_3_aggregation, level_4_join]
   batch_size: 4
   epochs: 1
   gradient_clipping: 1.0

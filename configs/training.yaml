@@ -46,11 +46,25 @@ ranker:
   enabled: true
   output_dir: artifacts/work/adaptive_ranker
 
+augmentation:
+  schema_renaming:
+    enabled: true
+    multiplier: 1
+    modes:
+      - neutral_names
+      - domain_shift_names
+
 evaluation:
   enabled: true
-  output_dir: artifacts/work/evaluation
+  output_dir: artifacts/evaluation
   run_unseen_db: true
   run_execution_aware: true
+
+calibration:
+  enabled: true
+  abstention_coverage_target: 0.95
+  abstain_when_calibrated_confidence_below: null
+  use_conformal_threshold: true
 
 quality_gate:
   thresholds: evaluation/model_quality_thresholds.yaml

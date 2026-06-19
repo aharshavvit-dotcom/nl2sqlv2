@@ -11,6 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from dataset_training.utils import read_jsonl, write_json, write_jsonl
+from dataset_training.dataset_evaluator import DatasetScaleEvaluator
 from self_training.error_classifier import ErrorClassifier
 from self_training.gold_comparator import GoldComparator
 
@@ -41,6 +42,17 @@ def evaluate_against_gold(args: argparse.Namespace) -> dict[str, Any]:
                 "mismatched_fields": [field for field, matched in comp.field_matches.items() if not matched],
             }
         )
+    evaluation_rows = [
+        {
+            **row,
+            "query_ir": row.get("gold_query_ir") or {},
+            "source_sql": row.get("gold_sql"),
+            "rendered_sql": row.get("predicted_sql"),
+            "prediction_source": row.get("prediction_source"),
+        }
+        for row in output_rows
+    ]
+    multi_level = DatasetScaleEvaluator().evaluate_model("validation_predictions", evaluation_rows)
     report = {
         "summary": {
             "total_examples": comparison.total,
@@ -52,6 +64,10 @@ def evaluate_against_gold(args: argparse.Namespace) -> dict[str, Any]:
             "source": output_rows[0].get("prediction_source") if output_rows else "unknown",
         },
         "field_accuracy": comparison.field_accuracy,
+        "classification_metrics": multi_level.get("classification_metrics", {}),
+        "confusion_matrices": multi_level.get("confusion_matrices", {}),
+        "percentiles": multi_level.get("percentiles", {}),
+        "calibration": multi_level.get("calibration", {}),
         "errors": {
             "total_errors": error_report.total_errors,
             "by_category": error_report.by_category,

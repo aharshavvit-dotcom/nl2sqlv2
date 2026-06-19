@@ -59,7 +59,7 @@ _DEFAULT_TRAINING = {
     "gradient_clipping": 1.0,
     "early_stopping_patience": 3,
     "seed": 42,
-    "save_best_metric": "validation_gold_score",
+    "save_best_metric": "validation_composite_score",
     "save_best_mode": "max",
 }
 

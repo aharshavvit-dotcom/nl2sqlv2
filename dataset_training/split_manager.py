@@ -47,20 +47,18 @@ class DatasetSplitManager:
         unseen_dbs = set(db_ids[:unseen_count])
         regular_dbs = db_ids[unseen_count:]
 
-        regular_rows = [row for db_id in regular_dbs for row in grouped[db_id]]
-        random.Random(self.seed + 1).shuffle(regular_rows)
-        train_end = int(len(regular_rows) * self.train_ratio)
-        validation_end = train_end + int(len(regular_rows) * self.validation_ratio)
+        ordered_dbs = self._stratified_database_order(regular_dbs, grouped)
+        train_count, validation_count = self._database_split_counts(len(ordered_dbs))
+        train_dbs = set(ordered_dbs[:train_count])
+        validation_dbs = set(ordered_dbs[train_count:train_count + validation_count])
+        test_dbs = set(ordered_dbs[train_count + validation_count:])
         splits = {
-            "train": regular_rows[:train_end],
-            "validation": regular_rows[train_end:validation_end],
-            "test": regular_rows[validation_end:],
+            "train": [row for db_id in ordered_dbs if db_id in train_dbs for row in grouped[db_id]],
+            "validation": [row for db_id in ordered_dbs if db_id in validation_dbs for row in grouped[db_id]],
+            "test": [row for db_id in ordered_dbs if db_id in test_dbs for row in grouped[db_id]],
             "unseen_db_test": [row for db_id in unseen_dbs for row in grouped[db_id]],
             "unsupported": unsupported,
         }
-        if not splits["train"] and regular_rows:
-            splits["train"] = regular_rows[:1]
-            splits["test"] = regular_rows[1:]
         for name, rows in splits.items():
             splits[name] = [self._with_split(row, name) for row in rows]
 
@@ -85,8 +83,23 @@ class DatasetSplitManager:
             "split_counts": {name: len(rows) for name, rows in splits.items()},
             "database_counts": {name: len({row.get("db_id") for row in rows}) for name, rows in splits.items()},
             "databases": {name: sorted({str(row.get("db_id")) for row in rows if row.get("db_id")}) for name, rows in splits.items()},
+            **{
+                name: {
+                    "by_dataset": _distribution(rows, lambda row: row.get("dataset_name") or "unknown"),
+                    "by_intent": _distribution(rows, lambda row: row.get("intent") or (row.get("query_ir") or {}).get("intent") or "unknown"),
+                    "by_complexity": _distribution(rows, lambda row: row.get("complexity") or "unknown"),
+                    "by_join_count": _distribution(rows, lambda row: len((row.get("query_ir") or {}).get("joins") or [])),
+                    "by_aggregation_type": _distribution(rows, _aggregation_type),
+                }
+                for name, rows in splits.items()
+            },
         }
         write_json(Path(output_path), report)
+        target = Path(output_path)
+        lines = ["# Split Distribution Report", ""]
+        for name in SPLIT_NAMES:
+            lines.extend([f"## {name}", "", f"- examples: {len(splits.get(name, []))}", f"- databases: {report['database_counts'].get(name, 0)}", f"- intents: {report.get(name, {}).get('by_intent', {})}", f"- complexity: {report.get(name, {}).get('by_complexity', {})}", ""])
+        target.with_suffix(".md").write_text("\n".join(lines), encoding="utf-8")
 
     @staticmethod
     def _with_split(row: dict[str, Any], split: str) -> dict[str, Any]:
@@ -96,3 +109,60 @@ class DatasetSplitManager:
             updated["query_ir"] = dict(updated["query_ir"])
             updated["query_ir"].setdefault("metadata", {})["split"] = split
         return updated
+
+    def _database_split_counts(self, count: int) -> tuple[int, int]:
+        if count <= 1:
+            return count, 0
+        train = max(1, int(round(count * self.train_ratio)))
+        test = max(1, int(round(count * self.test_ratio)))
+        validation = max(1, count - train - test) if count >= 3 else 0
+        while train + validation + test > count and train > 1:
+            train -= 1
+        while train + validation + test > count and validation > 0:
+            validation -= 1
+        return train, validation
+
+    def _stratified_database_order(
+        self,
+        db_ids: list[str],
+        grouped: dict[str, list[dict[str, Any]]],
+    ) -> list[str]:
+        strata: dict[tuple[Any, ...], list[str]] = defaultdict(list)
+        for db_id in db_ids:
+            rows = grouped[db_id]
+            signature = (
+                _dominant(rows, lambda row: row.get("dataset_name") or "unknown"),
+                _dominant(rows, lambda row: row.get("intent") or (row.get("query_ir") or {}).get("intent") or "unknown"),
+                _dominant(rows, lambda row: row.get("complexity") or "unknown"),
+                _dominant(rows, lambda row: len((row.get("query_ir") or {}).get("joins") or [])),
+                _dominant(rows, _aggregation_type),
+            )
+            strata[signature].append(db_id)
+        rng = random.Random(self.seed + 1)
+        for values in strata.values():
+            rng.shuffle(values)
+        ordered: list[str] = []
+        queues = [values for _, values in sorted(strata.items(), key=lambda item: str(item[0]))]
+        while any(queues):
+            for values in queues:
+                if values:
+                    ordered.append(values.pop())
+        return ordered
+
+
+def _distribution(rows: list[dict[str, Any]], key: Any) -> dict[str, int]:
+    counts: dict[str, int] = defaultdict(int)
+    for row in rows:
+        counts[str(key(row))] += 1
+    return dict(sorted(counts.items()))
+
+
+def _dominant(rows: list[dict[str, Any]], key: Any) -> str:
+    counts = _distribution(rows, key)
+    return max(counts, key=counts.get) if counts else "unknown"
+
+
+def _aggregation_type(row: dict[str, Any]) -> str:
+    metrics = (row.get("query_ir") or {}).get("metrics") or []
+    aggregations = sorted({str(item.get("aggregation") or "none") for item in metrics if isinstance(item, dict)})
+    return "+".join(aggregations) if aggregations else "none"

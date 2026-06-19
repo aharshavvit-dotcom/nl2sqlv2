@@ -15,7 +15,11 @@ CRITICAL_METRICS = [
 
 class ModelQualityGate:
     def evaluate(self, evaluation_report: dict[str, Any], thresholds: dict[str, Any]) -> dict[str, Any]:
-        minimums = thresholds.get("minimums") or thresholds
+        minimums = {
+            **(thresholds.get("minimums") or (thresholds if "classification_metrics" not in thresholds else {})),
+            **(thresholds.get("classification_metrics") or {}),
+            **(thresholds.get("calibration_metrics") or {}),
+        }
         metrics, present = self._extract_metrics(evaluation_report)
         failed_checks: list[dict[str, Any]] = []
         warnings: list[str] = []
@@ -114,6 +118,7 @@ class ModelQualityGate:
     @staticmethod
     def _extract_metrics(report: dict[str, Any]) -> tuple[dict[str, Any], set[str]]:
         test_summary = report.get("test_performance", {}).get("summary", {})
+        classification = report.get("test_performance", {}).get("classification_metrics", {})
         unseen_summary = report.get("unseen_db_performance", {}).get("summary", {})
         summary = report.get("summary", {})
         metrics = {
@@ -143,6 +148,30 @@ class ModelQualityGate:
         _copy_metric(metrics, present, "sql_structure_match_rate", summary, report)
         _copy_metric(metrics, present, "execution_match_rate", summary, report)
         _copy_metric(metrics, present, "model_promotion_min_improvement", report)
+        classification_map = {
+            "intent_accuracy": ("intent", "accuracy"),
+            "intent_macro_f1": ("intent", "macro_f1"),
+            "base_table_accuracy": ("base_table", "accuracy"),
+            "base_table_macro_f1": ("base_table", "macro_f1"),
+            "join_decision_macro_f1": ("join_decision", "macro_f1"),
+            "router_accuracy": ("router", "accuracy"),
+            "router_macro_f1": ("router", "macro_f1"),
+        }
+        for metric_name, (section, field) in classification_map.items():
+            value = (classification.get(section) or {}).get(field, test_summary.get(metric_name))
+            if isinstance(value, (int, float)):
+                metrics[metric_name] = value
+                present.add(metric_name)
+        final_execution = test_summary.get("execution_match_rate", test_summary.get("structural_sql_match_rate"))
+        if isinstance(final_execution, (int, float)):
+            metrics["final_sql_execution_accuracy"] = final_execution
+            present.add("final_sql_execution_accuracy")
+        calibration = report.get("test_performance", {}).get("calibration", {})
+        for name in ["expected_calibration_error", "brier_score", "calibration_sample_count"]:
+            source_name = "sample_count" if name == "calibration_sample_count" else name
+            if isinstance(calibration.get(source_name), (int, float)):
+                metrics[name] = calibration[source_name]
+                present.add(name)
         return metrics, present
 
     @staticmethod

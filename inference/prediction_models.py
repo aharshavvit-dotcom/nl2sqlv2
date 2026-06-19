@@ -47,6 +47,7 @@ class SchemaMapping(BaseModel):
     filter_table: str | None = None
     filter_column: str | None = None
     match_scores: dict[str, float] = Field(default_factory=dict)
+    mapping_reasons: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -76,6 +77,9 @@ class PredictionResult(BaseModel):
     sql: str | None = None
     validation: dict[str, Any] = Field(default_factory=dict)
     confidence: float = 0.0
+    raw_confidence: float | None = None
+    calibrated_confidence: float | None = None
+    conformal_threshold: float | None = None
     confidence_tier: str = "low"
     retrieved_candidates: list[dict[str, Any]] = Field(default_factory=list)
     selected_candidate: dict[str, Any] | None = None

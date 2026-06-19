@@ -53,7 +53,7 @@ class ModelBundleBuilder:
         neural_src = self._find_artifact(work, "work/neural_ir", "neural_ir_model", "neural_ir")
         ranker_src = self._find_artifact(work, "work/adaptive_ranker", "adaptive_ranker")
         semantic_src = self._find_artifact(work, "semantic_profiles", "semantic_defaults")
-        eval_src = self._find_artifact(work, "work/evaluation", "evaluation")
+        eval_src = self._find_artifact(work, "evaluation", "work/evaluation")
         generic_training_src = self._find_artifact(work, "generic_training")
 
         # Copy artifacts into bundle structure
@@ -96,6 +96,9 @@ class ModelBundleBuilder:
 
         # Extract metrics
         metrics = self._extract_metrics(evaluation_report, quality_gate_report)
+        test_performance = (evaluation_report or {}).get("test_performance") or {}
+        classification_metrics = test_performance.get("classification_metrics") or {}
+        percentiles = test_performance.get("percentiles") or {}
 
         # Build manifest
         bundle_id = f"nl2sql_bundle_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
@@ -131,6 +134,16 @@ class ModelBundleBuilder:
                 "unsupported_sql_report": "generic_training/unsupported_sql_report.json",
             },
             metrics=metrics,
+            classification_metrics=classification_metrics,
+            confusion_matrices={
+                key: f"evaluation/confusion_matrices/{key}_confusion_matrix.csv"
+                for key in ["intent", "base_table", "join_decision", "router", "error_type"]
+            },
+            calibration=test_performance.get("calibration") or {},
+            percentiles=percentiles,
+            latency={key: value for key, value in percentiles.items() if "latency" in key},
+            schema_drift_baseline={key: value for key, value in percentiles.items() if key.startswith(("schema_", "question_", "candidate_"))},
+            statistical_promotion=(evaluation_report or {}).get("statistical_promotion") or {},
             quality_gate=quality_gate_info,
             pipeline_report="pipeline/train_model_report.json",
         )

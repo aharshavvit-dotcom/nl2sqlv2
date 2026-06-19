@@ -26,3 +26,26 @@ class CurriculumBuilder:
             if not placed:
                 phases["phase_4"].append(row)
         return phases
+
+    def order_examples(
+        self,
+        examples: list[dict[str, Any]],
+        phase_order: list[str] | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        phases = self.build_phases(examples)
+        aliases = {
+            "level_1_single_table": "phase_1",
+            "level_2_filter_count": "phase_1",
+            "level_3_aggregation": "phase_2",
+            "level_4_join": "phase_4",
+            "level_5_advanced_sql": "phase_4",
+        }
+        requested = phase_order or ["phase_1", "phase_2", "phase_3", "phase_4"]
+        canonical = []
+        for name in requested:
+            phase = aliases.get(name, name)
+            if phase not in canonical:
+                canonical.append(phase)
+        canonical.extend(name for name in phases if name not in canonical)
+        ordered = [row for name in canonical for row in phases.get(name, [])]
+        return ordered, {name: len(phases.get(name, [])) for name in phases}
