@@ -16,5 +16,7 @@ def test_unseen_db_metrics_and_report_written(tmp_path: Path) -> None:
 
     assert report["summary"]["wrong_table_rate"] == 1.0
     assert report["summary"]["unnecessary_join_rate"] == 1.0
+    assert report["test_source"] == "real_model_predictions"
+    assert report["is_valid_for_quality_gate"] is True
     assert (tmp_path / "unseen_db_benchmark_report.json").exists()
     assert (tmp_path / "unseen_db_benchmark_report.md").exists()

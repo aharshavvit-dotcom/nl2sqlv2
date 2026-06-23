@@ -41,8 +41,8 @@ def test_training_command_wrappers_with_tiny_files(tmp_path: Path) -> None:
     commands = [
         [sys.executable, "training/build_retrieval_rag_index.py", "--input", str(train), "--output-dir", str(tmp_path / "rag")],
         [sys.executable, "training/build_hard_negative_corpus.py", "--input", str(train), "--output", str(tmp_path / "hard.jsonl"), "--max-negatives-per-example", "2"],
-        [sys.executable, "training/evaluate_generic_models.py", "--test", str(test), "--unseen-db-test", str(unseen), "--output", str(tmp_path / "eval.json")],
-        [sys.executable, "training/run_unseen_db_benchmark.py", "--input", str(unseen), "--output", str(tmp_path / "unseen.json")],
+        [sys.executable, "training/evaluate_generic_models.py", "--test", str(test), "--unseen-db-test", str(unseen), "--output", str(tmp_path / "eval.json"), "--allow-gold-replay-baseline"],
+        [sys.executable, "training/run_unseen_db_benchmark.py", "--input", str(unseen), "--output", str(tmp_path / "unseen.json"), "--allow-gold-replay-baseline"],
         [sys.executable, "training/build_generic_ir_corpus.py", "--datasets", "missing-dataset", "--max-examples", "0", "--output-dir", str(tmp_path / "processed"), "--artifact-dir", str(tmp_path / "generic_artifacts")],
     ]
     for command in commands:

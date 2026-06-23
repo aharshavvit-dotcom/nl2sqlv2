@@ -71,8 +71,12 @@ class PredictionConfidenceCalculator:
         calibration = result_parts.get("calibration") or {}
         calibrated = round(self._calibrate(raw, calibration), 4)
         conformal_threshold = calibration.get("conformal_confidence_threshold")
-        abstain = isinstance(conformal_threshold, (int, float)) and calibrated < float(conformal_threshold)
-        tier = "high" if calibrated >= 0.80 else "medium" if calibrated >= 0.60 else "low"
+        use_conformal = bool(calibration.get("use_conformal_threshold", True))
+        configured_floor = calibration.get("abstain_when_calibrated_confidence_below")
+        threshold = configured_floor if isinstance(configured_floor, (int, float)) else conformal_threshold
+        abstain = use_conformal and isinstance(threshold, (int, float)) and calibrated < float(threshold)
+        reason = "calibrated_confidence_below_conformal_threshold" if abstain else None
+        tier = "needs_clarification" if abstain else "high" if calibrated >= 0.80 else "medium" if calibrated >= 0.60 else "low"
         breakdown = {
             "retrieval": round(retrieval_conf, 4),
             "template": round(template_conf, 4),
@@ -85,7 +89,9 @@ class PredictionConfidenceCalculator:
             "raw_confidence": raw,
             "calibrated_confidence": calibrated,
             "conformal_confidence_threshold": conformal_threshold,
+            "abstention_threshold": threshold,
             "abstain": abstain,
+            "abstention_reason": reason,
             "final": calibrated,
         }
         return {
@@ -94,6 +100,7 @@ class PredictionConfidenceCalculator:
             "calibrated_confidence": calibrated,
             "conformal_threshold": conformal_threshold,
             "abstain": abstain,
+            "abstention_reason": reason,
             "confidence_tier": tier,
             "components": breakdown,
             "confidence_breakdown": breakdown,

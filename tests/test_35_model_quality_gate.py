@@ -65,3 +65,33 @@ def test_quality_gate_fails_missing_critical_metric() -> None:
 
     assert result["passed"] is False
     assert "unsafe_sql_count" in result["missing_metrics"]
+
+
+def test_quality_gate_rejects_gold_replay_report() -> None:
+    report = {
+        "evaluation_mode": "explicit_gold_replay_baseline",
+        "gold_replay_used": True,
+        "is_valid_for_quality_gate": False,
+        "test_performance": {
+            "evaluation_mode": "explicit_gold_replay_baseline",
+            "gold_replay_used": True,
+            "is_valid_for_quality_gate": False,
+            "summary": {
+                "query_ir_validity_rate": 1.0,
+                "sql_validation_rate": 1.0,
+                "intent_accuracy_rate": 1.0,
+                "unnecessary_join_rate": 0.0,
+                "wrong_table_rate": 0.0,
+                "unsafe_sql_count": 0,
+            },
+        },
+        "unseen_db_performance": {"summary": {"sql_validation_rate": 1.0}},
+        "no_select_star_rate": 1.0,
+        "unsafe_sql_count": 0,
+        "feedback_regression_pass_rate": 1.0,
+    }
+
+    result = ModelQualityGate().evaluate(report, THRESHOLDS)
+
+    assert result["passed"] is False
+    assert any(check["metric"].endswith("valid_evaluation_source") for check in result["failed_checks"])

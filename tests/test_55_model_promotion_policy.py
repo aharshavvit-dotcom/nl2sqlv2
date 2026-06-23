@@ -35,3 +35,20 @@ def test_bootstrap_report_uses_paired_examples() -> None:
     assert report["paired_examples"] == 10
     assert report["metrics"]["intent_macro_f1"]["delta_p05"] > 0
     assert decision["can_promote"] is True
+
+
+def test_bootstrap_coverage_does_not_skip_uncovered_point_regression() -> None:
+    challenger = _metrics(
+        unseen_db_sql_validation_rate=0.5,
+        per_example=[{"example_id": str(i), "intent_correct": True} for i in range(10)],
+    )
+    champion = _metrics(
+        unseen_db_sql_validation_rate=0.9,
+        per_example=[{"example_id": str(i), "intent_correct": False} for i in range(10)],
+    )
+
+    decision = PromotionPolicy().can_promote(challenger, champion, THRESHOLDS, bootstrap_iterations=100)
+
+    assert decision["statistical_checks"]["intent_macro_f1"]["statistical_check_available"] is True
+    assert decision["point_estimate_fallback_checks"]["unseen_db_sql_validation_rate"]["regression_detected"] is True
+    assert decision["can_promote"] is False

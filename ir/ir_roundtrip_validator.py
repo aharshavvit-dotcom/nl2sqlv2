@@ -121,7 +121,9 @@ class IRRoundtripValidator:
         for metric, source in zip(query_ir.metrics, source_aggs):
             if metric.aggregation.upper() != str(source.get("function", "")).upper():
                 return False
-            if metric.expression != "*" and normalize_sql_fragment(metric.expression) not in normalize_sql_fragment(str(source.get("argument_sql"))):
+            if metric.expression != "*" and normalize_reference_fragment(metric.expression) != normalize_reference_fragment(
+                str(source.get("argument_sql"))
+            ):
                 return False
         return True
 
@@ -149,16 +151,16 @@ class IRRoundtripValidator:
     @staticmethod
     def _joins_compatible(query_ir: QueryIR, source_features: dict[str, Any], rendered_features: dict[str, Any]) -> bool:
         source_joins = {
-            normalize_sql_fragment(item.get("condition") or "")
+            normalize_reference_fragment(item.get("condition") or "")
             for item in source_features.get("joins") or []
             if item.get("condition")
         }
         rendered_joins = {
-            normalize_sql_fragment(item.get("condition") or "")
+            normalize_reference_fragment(item.get("condition") or "")
             for item in rendered_features.get("joins") or []
             if item.get("condition")
         }
-        ir_joins = {normalize_sql_fragment(join.condition) for join in query_ir.joins}
+        ir_joins = {normalize_reference_fragment(join.condition) for join in query_ir.joins}
         if not source_joins:
             return not ir_joins and not rendered_joins
         return source_joins == ir_joins == rendered_joins
@@ -174,6 +176,24 @@ class IRRoundtripValidator:
 
 def normalize_sql_fragment(value: str) -> str:
     return " ".join(str(value).lower().split())
+
+
+def normalize_reference_fragment(value: str) -> str:
+    """Normalize an expression while ignoring SQL table aliases/qualification.
+
+    SQL-to-IR conversion resolves bare columns and aliases to physical table names.
+    Those references are semantically equivalent during round-trip validation, so
+    comparing their serialized strings produces false negatives.
+    """
+    try:
+        expression = sqlglot.parse_one(str(value), read="sqlite")
+        for column in expression.find_all(sqlglot.exp.Column):
+            column.set("catalog", None)
+            column.set("db", None)
+            column.set("table", None)
+        return normalize_sql_fragment(expression.sql(dialect="sqlite"))
+    except Exception:
+        return normalize_sql_fragment(value)
 
 
 def normalize_group_expression(value: str) -> str:

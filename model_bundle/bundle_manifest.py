@@ -49,6 +49,7 @@ class BundleManifest:
     latency: dict[str, Any] = field(default_factory=dict)
     schema_drift_baseline: dict[str, Any] = field(default_factory=dict)
     statistical_promotion: dict[str, Any] = field(default_factory=dict)
+    lifecycle_proof: dict[str, Any] = field(default_factory=dict)
     quality_gate: dict[str, Any] = field(default_factory=lambda: {
         "passed": False,
         "report_path": "evaluation/model_quality_gate_report.json",
@@ -74,6 +75,7 @@ class BundleManifest:
             "latency": self.latency,
             "schema_drift_baseline": self.schema_drift_baseline,
             "statistical_promotion": self.statistical_promotion,
+            "lifecycle_proof": self.lifecycle_proof,
             "quality_gate": self.quality_gate,
             "pipeline_report": self.pipeline_report,
         }
@@ -98,6 +100,7 @@ class BundleManifest:
             latency=data.get("latency", {}),
             schema_drift_baseline=data.get("schema_drift_baseline", {}),
             statistical_promotion=data.get("statistical_promotion", {}),
+            lifecycle_proof=data.get("lifecycle_proof", {}),
             quality_gate=data.get("quality_gate", {}),
             pipeline_report=data.get("pipeline_report", ""),
         )

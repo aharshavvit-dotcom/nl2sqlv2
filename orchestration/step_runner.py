@@ -400,13 +400,21 @@ class StepRunner:
         from training.evaluate_generic_models import evaluate_generic_models
 
         artifacts = _artifacts(config)
+        integrated = config.training.get("_integrated_config") or {}
+        calibration = integrated.get("calibration") or {}
         args = argparse.Namespace(
             test=ROOT / "data/processed/generic_ir_test.jsonl",
             unseen_db_test=ROOT / "data/processed/generic_ir_unseen_db_test.jsonl",
+            model_bundle_dir=None,
             retrieval_model_dir=Path(artifacts["retrieval_model_dir"]),
             neural_model_dir=Path(artifacts["neural_model_dir"]),
             output=Path(artifacts["evaluation_dir"]) / "generic_model_evaluation_report.json",
             thresholds=ROOT / "evaluation/model_quality_thresholds.yaml",
+            allow_gold_replay_baseline=config.smoke,
+            max_examples=config.datasets.get("max_examples") if config.smoke else None,
+            calibration_coverage_target=float(calibration.get("abstention_coverage_target", 0.95)),
+            use_conformal_threshold=bool(calibration.get("use_conformal_threshold", True)),
+            abstain_when_calibrated_confidence_below=calibration.get("abstain_when_calibrated_confidence_below"),
         )
         report = evaluate_generic_models(args)
         return {"status": "completed", "summary": report.get("summary", {})}
@@ -471,7 +479,76 @@ class StepRunner:
         return {"status": "completed", "summary": report["summary"]}
 
     def _run_run_app_smoke_check(self, config: PipelineConfig) -> dict[str, Any]:
-        return {"status": "completed", "summary": {"streamlit_app": str(ROOT / "app/streamlit_app.py"), "exists": (ROOT / "app/streamlit_app.py").exists()}}
+        if config.skip_heavy_steps:
+            return {"status": "completed", "summary": {"skipped": True, "reason": "skip_heavy_steps enabled"}}
+        from model_bundle.bundle_loader import ModelBundleLoader
+        from nl2sql_v1.schema import ColumnInfo, SchemaGraph, TableInfo
+        from retriever.retrieval_nl2sql_model import RetrievalNL2SQLModel
+
+        integrated = config.training.get("_integrated_config") or {}
+        candidates = [
+            _candidate_bundle_dir(config),
+            ROOT / integrated.get("paths", {}).get("current_bundle_dir", "artifacts/model_bundle/current"),
+        ]
+        bundle_dir = next((path for path in candidates if (path / "bundle_manifest.json").exists()), None)
+        if bundle_dir is None:
+            return {"status": "failed", "error": "No candidate/current model bundle available for app runtime smoke"}
+        bundle = ModelBundleLoader().load(bundle_dir)
+        retrieval_dir = Path(bundle["retrieval_model_dir"])
+        neural_dir = Path(bundle["neural_model_dir"])
+        model = RetrievalNL2SQLModel.load(
+            artifact_dir=retrieval_dir,
+            neural_ir_model_dir=neural_dir if (neural_dir / "model.pt").exists() else None,
+            allow_dev_fallback=False,
+        )
+
+        def table(name: str, columns: dict[str, str]) -> TableInfo:
+            return TableInfo(
+                name=name,
+                columns={
+                    column: ColumnInfo(column, typ, True, column == "id")
+                    for column, typ in columns.items()
+                },
+            )
+
+        schema = SchemaGraph(tables={
+            "users": table("users", {"id": "integer", "name": "text", "role": "text", "created_at": "timestamp"}),
+            "berths": table("berths", {"id": "integer", "berth_name": "text", "berth_code": "text"}),
+            "service_orders": table("service_orders", {"id": "integer", "cost": "numeric", "status": "text", "created_at": "timestamp"}),
+        }, dialect="sqlite")
+        issues = []
+        results = []
+        for question in ["list all users", "show service orders", "show users where role is admin"]:
+            result = model.predict(question, schema)
+            validation = result.validation or {}
+            clarified = bool(result.needs_clarification or result.clarification_questions)
+            if (validation.get("is_valid") is False or validation.get("ok") is False) and not clarified:
+                issues.append(f"invalid prediction for {question!r}: {validation}")
+            if result.raw_confidence is None or result.calibrated_confidence is None:
+                issues.append(f"missing confidence fields for {question!r}")
+            results.append({
+                "question": question,
+                "source_model": result.source_model,
+                "sql_present": bool(result.sql),
+                "clarification": clarified,
+                "raw_confidence": result.raw_confidence,
+                "calibrated_confidence": result.calibrated_confidence,
+                "abstain": result.abstain,
+            })
+        calibration_report = Path(bundle["evaluation_dir"]) / "calibration_report.json"
+        calibration_loaded = bool(model.orchestrator.confidence_calibration)
+        if calibration_report.exists() and not calibration_loaded:
+            issues.append("calibration report exists but runtime did not load it")
+        if model.artifact_dir is None:
+            issues.append("runtime fell back to sample/dev artifacts")
+        summary = {
+            "bundle_dir": str(bundle_dir),
+            "calibration_loaded": calibration_loaded,
+            "predictions": results,
+        }
+        if issues:
+            return {"status": "failed", "error": "; ".join(issues), "summary": summary}
+        return {"status": "completed", "summary": summary}
 
     def _run_run_quality_gate(self, config: PipelineConfig) -> dict[str, Any]:
         from quality_gates.model_quality_gate import ModelQualityGate
@@ -548,11 +625,17 @@ class StepRunner:
         return {"status": "completed", "summary": result}
 
     def _run_validate_model_bundle(self, config: PipelineConfig) -> dict[str, Any]:
+        from model_bundle.bundle_manifest import load_manifest, save_manifest
         from model_bundle.bundle_validator import ModelBundleValidator
 
         candidate = _candidate_bundle_dir(config)
         result = ModelBundleValidator().validate(candidate)
         (candidate / "bundle_validation_report.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+        manifest_path = candidate / "bundle_manifest.json"
+        if manifest_path.exists() and result.get("lifecycle_proof"):
+            manifest = load_manifest(manifest_path)
+            manifest.lifecycle_proof = {**(manifest.lifecycle_proof or {}), **(result.get("lifecycle_proof") or {})}
+            save_manifest(manifest, manifest_path)
         if not result.get("passed"):
             return {"status": "failed", "error": "; ".join(result.get("blocking_issues", [])), "summary": result}
         return {"status": "completed", "summary": result}

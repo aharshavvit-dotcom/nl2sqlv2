@@ -7,6 +7,7 @@ from typing import Any
 
 from clarification import AmbiguityDetector, ClarificationQuestionBuilder
 from generic_planner import SchemaProfile, TableIntentResolver, infer_join_policy
+from generic_planner.generic_slot_resolver import is_sample_retail_schema
 from neural_ir.calibration import choose_route, load_hybrid_calibration
 from ir.ir_to_sql_renderer import IRToSQLRenderer
 from ir.ir_validator import IRValidator
@@ -139,7 +140,7 @@ class PredictionOrchestrator:
                 semantic_profile=semantic_profile,
             )
 
-        metric_synonyms, dimension_synonyms = self._synonym_maps(metric_synonyms, dimension_synonyms)
+        metric_synonyms, dimension_synonyms = self._synonym_maps(metric_synonyms, dimension_synonyms, schema_context)
 
         candidates = self.generator.generate_candidates(
             question,
@@ -188,6 +189,7 @@ class PredictionOrchestrator:
         sql = self.sql_renderer.render(query_ir) if ir_validation.is_valid else None
         sql_validation = self.sql_validator.validate(sql, schema=schema, max_limit=self.max_limit, dialect=schema_context.dialect)
 
+        schema_drift = self._schema_drift(schema_context, question)
         confidence = self.confidence.calculate(
             {
                 "candidates": candidates,
@@ -206,7 +208,7 @@ class PredictionOrchestrator:
                     *([] if sql_validation.get("is_valid") else sql_validation.get("issues", [])),
                 ],
                 "calibration": self.confidence_calibration,
-                "schema_drift": self._schema_drift(schema_context, question),
+                "schema_drift": schema_drift,
             }
         )
         warnings = [
@@ -238,6 +240,9 @@ class PredictionOrchestrator:
             raw_confidence=confidence.get("raw_confidence"),
             calibrated_confidence=confidence.get("calibrated_confidence"),
             conformal_threshold=confidence.get("conformal_threshold"),
+            abstain=bool(confidence.get("abstain", False)),
+            abstention_reason=confidence.get("abstention_reason"),
+            schema_drift_flags=list(schema_drift.get("flags") or []),
             confidence_tier=confidence["confidence_tier"],
             retrieved_candidates=[candidate.model_dump() for candidate in candidates],
             selected_candidate=candidates[0].model_dump() if candidates else None,
@@ -252,6 +257,7 @@ class PredictionOrchestrator:
                 "schema_context": schema_context.serialize_for_debug(),
                 "semantic_profile_summary": self._semantic_summary(semantic_profile),
                 "template_selection": selected_template,
+                "schema_drift": schema_drift,
                 "confidence_breakdown": confidence["confidence_breakdown"],
                 "confidence_components": confidence["confidence_breakdown"],
             },
@@ -290,6 +296,11 @@ class PredictionOrchestrator:
         confidence = float(direct_result.confidence or 0.0)
         if not ir_validation.is_valid or not sql_validation.get("is_valid", sql_validation.get("ok", False)):
             confidence = min(confidence, 0.59)
+        schema_drift = self._schema_drift(schema_context, question)
+        runtime_confidence = self._runtime_confidence(confidence)
+        clarification = [] if sql_validation.get("is_valid", sql_validation.get("ok", False)) else ["Choose specific non-sensitive columns for this table."]
+        if runtime_confidence["abstain"] and not clarification:
+            clarification = ["I am not confident enough in the schema mapping. Which table or business field should I use?"]
         planner_debug = {
             **(direct_result.debug or {}),
             "intent": query_ir.intent,
@@ -330,12 +341,19 @@ class PredictionOrchestrator:
             ir_validation=ir_validation.model_dump(),
             sql=sql,
             validation=sql_validation,
-            confidence=confidence,
-            confidence_tier=self._confidence_tier(confidence),
+            confidence=runtime_confidence["calibrated_confidence"],
+            raw_confidence=runtime_confidence["raw_confidence"],
+            calibrated_confidence=runtime_confidence["calibrated_confidence"],
+            conformal_threshold=runtime_confidence["conformal_threshold"],
+            abstain=runtime_confidence["abstain"],
+            abstention_reason=runtime_confidence["abstention_reason"],
+            schema_drift_flags=list(schema_drift.get("flags") or []),
+            confidence_tier=runtime_confidence["confidence_tier"],
             retrieved_candidates=[],
             selected_candidate=None,
             warnings=list(dict.fromkeys(str(warning) for warning in warnings if warning)),
-            clarification_questions=[] if sql_validation.get("is_valid", sql_validation.get("ok", False)) else ["Choose specific non-sensitive columns for this table."],
+            clarification_questions=clarification,
+            needs_clarification=bool(clarification),
             router_decision={
                 "selected": "generic_direct_planner",
                 "reason": direct_result.reason or "schema-safe direct query",
@@ -345,7 +363,12 @@ class PredictionOrchestrator:
             selected_query_ir=query_ir.model_dump(),
             validation_summary={"ir_validation": ir_validation.model_dump(), "sql_validation": sql_validation},
             confidence_breakdown={
-                "final": confidence,
+                "final": runtime_confidence["calibrated_confidence"],
+                "raw_confidence": runtime_confidence["raw_confidence"],
+                "calibrated_confidence": runtime_confidence["calibrated_confidence"],
+                "conformal_confidence_threshold": runtime_confidence["conformal_threshold"],
+                "abstain": runtime_confidence["abstain"],
+                "abstention_reason": runtime_confidence["abstention_reason"],
                 "generic_direct_planner": float(direct_result.confidence or 0.0),
                 "ir_validation": 1.0 if ir_validation.is_valid else 0.0,
                 "sql_validation": 1.0 if sql_validation.get("is_valid", sql_validation.get("ok", False)) else 0.0,
@@ -354,6 +377,7 @@ class PredictionOrchestrator:
             planner_debug=planner_debug,
             debug={
                 "schema_context": schema_context.serialize_for_debug(),
+                "schema_drift": schema_drift,
                 "semantic_profile_summary": self._semantic_summary(semantic_profile),
                 "generic_planner": planner_debug,
                 "router_decision": {
@@ -570,7 +594,10 @@ class PredictionOrchestrator:
     def _synonym_maps(
         metric_synonyms: dict[str, Any] | None,
         dimension_synonyms: dict[str, Any] | None,
+        schema_context: RuntimeSchemaContext,
     ) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+        if not is_sample_retail_schema(schema_context.get_tables()):
+            return {}, {}
         if metric_synonyms or dimension_synonyms:
             return normalize_section(metric_synonyms or {}), normalize_section(dimension_synonyms or {})
         return load_metric_dimension_maps()
@@ -666,6 +693,11 @@ class PredictionOrchestrator:
             warnings.extend(neural_ir_raw.get("warnings") or [])
             if not neural_ir_validation.get("is_valid", neural_ir_validation.get("ok", False)):
                 warnings.extend(neural_ir_validation.get("issues") or [])
+            runtime_confidence = self._runtime_confidence(neural_ir_confidence)
+            schema_drift = self._schema_drift(RuntimeSchemaContext(schema), question)
+            clarification = []
+            if runtime_confidence["abstain"]:
+                clarification = ["I am not confident enough in the schema mapping. Which table or business field should I use?"]
             result = PredictionResult(
                 question=question,
                 normalized_question=self._normalize_question(question),
@@ -676,9 +708,17 @@ class PredictionOrchestrator:
                 ir_validation=ir_validation,
                 sql=neural_ir_raw.get("sql"),
                 validation=neural_ir_validation,
-                confidence=neural_ir_confidence,
-                confidence_tier=self._confidence_tier(neural_ir_confidence),
+                confidence=runtime_confidence["calibrated_confidence"],
+                raw_confidence=runtime_confidence["raw_confidence"],
+                calibrated_confidence=runtime_confidence["calibrated_confidence"],
+                conformal_threshold=runtime_confidence["conformal_threshold"],
+                abstain=runtime_confidence["abstain"],
+                abstention_reason=runtime_confidence["abstention_reason"],
+                schema_drift_flags=list(schema_drift.get("flags") or []),
+                confidence_tier=runtime_confidence["confidence_tier"],
                 warnings=list(dict.fromkeys(str(warning) for warning in warnings if warning)),
+                clarification_questions=clarification,
+                needs_clarification=bool(clarification),
                 router_decision=decision,
                 neural_ir_version=neural_ir_raw.get("neural_ir_version") or neural_ir_raw.get("option_a_version"),
                 retrieval_ir_result=retrieval_ir_result.model_dump(),
@@ -688,10 +728,19 @@ class PredictionOrchestrator:
                     "ir_validation": ir_validation,
                     "sql_validation": neural_ir_validation,
                 },
-                confidence_breakdown=(neural_ir_raw.get("debug") or {}).get("calibration", {}),
+                confidence_breakdown={
+                    **((neural_ir_raw.get("debug") or {}).get("calibration", {}) or {}),
+                    "raw_confidence": runtime_confidence["raw_confidence"],
+                    "calibrated_confidence": runtime_confidence["calibrated_confidence"],
+                    "conformal_confidence_threshold": runtime_confidence["conformal_threshold"],
+                    "abstain": runtime_confidence["abstain"],
+                    "abstention_reason": runtime_confidence["abstention_reason"],
+                    "final": runtime_confidence["calibrated_confidence"],
+                },
                 debug={
                     "retrieval_ir_result": retrieval_ir_result.model_dump(),
                     "neural_ir_result": neural_ir_raw,
+                    "schema_drift": schema_drift,
                     "router_decision": decision,
                 },
             )
@@ -746,6 +795,24 @@ class PredictionOrchestrator:
         if confidence >= 0.60:
             return "medium"
         return "low"
+
+    def _runtime_confidence(self, raw_confidence: float) -> dict[str, Any]:
+        raw = round(max(0.0, min(1.0, float(raw_confidence or 0.0))), 4)
+        calibrated = round(self.confidence._calibrate(raw, self.confidence_calibration), 4)
+        threshold = self.confidence_calibration.get("conformal_confidence_threshold")
+        configured_floor = self.confidence_calibration.get("abstain_when_calibrated_confidence_below")
+        if isinstance(configured_floor, (int, float)):
+            threshold = configured_floor
+        use_conformal = bool(self.confidence_calibration.get("use_conformal_threshold", True))
+        abstain = use_conformal and isinstance(threshold, (int, float)) and calibrated < float(threshold)
+        return {
+            "raw_confidence": raw,
+            "calibrated_confidence": calibrated,
+            "conformal_threshold": threshold,
+            "abstain": abstain,
+            "abstention_reason": "calibrated_confidence_below_conformal_threshold" if abstain else None,
+            "confidence_tier": "needs_clarification" if abstain else self._confidence_tier(calibrated),
+        }
 
     def _schema_drift(self, schema_context: RuntimeSchemaContext, question: str) -> dict[str, Any]:
         current = {

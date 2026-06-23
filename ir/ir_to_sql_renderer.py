@@ -51,10 +51,14 @@ class IRToSQLRenderer:
         force_quotes = bool(query_ir.metadata.get("force_quoted_identifiers"))
 
         if template_id == "count_records" or (query_ir.select_mode == "count" and not dimension):
-            return "SELECT\n  COUNT(*) AS record_count"
+            count_sql = self._metric_sql(metric) if metric else "COUNT(*)"
+            count_alias = metric.alias if metric else "record_count"
+            return f"SELECT\n  {count_sql} AS {count_alias}"
         if template_id == "count_by_dimension" and dimension:
             dim_expr = self._quote_identifier(dimension.expression)
-            return f"SELECT\n  {dim_expr} AS {dimension.alias},\n  COUNT(*) AS record_count"
+            count_sql = self._metric_sql(metric) if metric else "COUNT(*)"
+            count_alias = metric.alias if metric else "record_count"
+            return f"SELECT\n  {dim_expr} AS {dimension.alias},\n  {count_sql} AS {count_alias}"
         if template_id == "trend_by_date" and metric:
             grain = self._grain_filter(query_ir) or self._first_date_filter(query_ir)
             if grain:

@@ -120,12 +120,15 @@ python training/train_ranking_from_gold.py \
 python training/evaluate_generic_models.py \
   --test data/processed/generic_ir_test.jsonl \
   --unseen-db-test data/processed/generic_ir_unseen_db_test.jsonl \
+  --model-bundle-dir artifacts/model_bundle/current \
   --retrieval-model-dir artifacts/retrieval_ir_model \
   --neural-model-dir artifacts/neural_ir_model \
   --output artifacts/evaluation/generic_model_evaluation_report.json
 ```
 
-This command also writes `classification_metrics_report.{json,md}`, calibration reports, and intent/base-table/join/router/error confusion matrices under `artifacts/evaluation/`. Full quality gates require these reports and use macro F1 for imbalanced decision classes.
+This command must generate real model predictions by loading a bundle or artifact directories. It also writes `classification_metrics_report.{json,md}`, calibration reports, and intent/base-table/join/router/error confusion matrices under `artifacts/evaluation/`. Full quality gates require these reports and use macro F1 for imbalanced decision classes.
+
+For debugging only, pass `--allow-gold-replay-baseline`. Reports created this way are labeled with `evaluation_mode = explicit_gold_replay_baseline` and `is_valid_for_quality_gate = false`; quality gates and promotion must not consume them as model-performance evidence.
 
 ### Execution-Aware Evaluation
 ```bash
@@ -138,10 +141,13 @@ python training/run_execution_aware_evaluation.py \
 ```bash
 python training/run_unseen_db_benchmark.py \
   --input data/processed/generic_ir_unseen_db_test.jsonl \
+  --model-bundle-dir artifacts/model_bundle/current \
   --retrieval-model-dir artifacts/retrieval_ir_model \
   --neural-model-dir artifacts/neural_ir_model \
   --output artifacts/evaluation/unseen_db_benchmark_report.json
 ```
+
+The unseen-DB benchmark fails closed when no runnable model artifacts are available. It may use gold replay only with `--allow-gold-replay-baseline`, and that report is explicitly marked invalid for quality gates.
 
 ---
 
@@ -175,7 +181,7 @@ python training/promote_model_if_better.py \
   --output artifacts/model_registry/promotion_report.json
 ```
 
-When both candidates contain paired per-example results, promotion performs 1,000 deterministic bootstrap resamples and writes `artifacts/evaluation/champion_challenger_statistical_report.{json,md}`. Point estimates are retained only as a compatibility fallback.
+When both candidates contain paired per-example results, promotion performs 1,000 deterministic bootstrap resamples and writes `artifacts/evaluation/champion_challenger_statistical_report.{json,md}`. Bootstrap coverage is checked per metric. Metrics without bootstrap evidence fall back to point-estimate regression checks instead of being globally skipped.
 
 ---
 

@@ -50,6 +50,7 @@ class ModelBundleValidator:
             issues.append("Bundle status is failed")
 
         manifest_data = manifest.to_dict()
+        lifecycle_proof = dict(manifest_data.get("lifecycle_proof") or {})
         _check_no_secrets(manifest_data, issues)
 
         required_dirs = ["retrieval_ir", "evaluation", "generic_training", "configs"]
@@ -87,9 +88,6 @@ class ModelBundleValidator:
             )
             _validate_neural_load(neural_dir, issues, warnings)
 
-        eval_dir = path / manifest.paths.get("evaluation", "evaluation/")
-        _require_files(eval_dir, ["generic_model_evaluation_report.json"], "evaluation", issues, checked)
-
         generic_dir = path / manifest.paths.get("generic_training", "generic_training/")
         contribution_path = generic_dir / "dataset_contribution_report.json"
         unsupported_path = generic_dir / "unsupported_sql_report.json"
@@ -110,6 +108,24 @@ class ModelBundleValidator:
         qg_required = bool(qg.get("required", False))
         qg_path = path / qg.get("report_path", "evaluation/model_quality_gate_report.json")
         checked.append(str(qg_path))
+
+        eval_dir = path / manifest.paths.get("evaluation", "evaluation/")
+        _require_files(eval_dir, ["generic_model_evaluation_report.json"], "evaluation", issues, checked)
+        evaluation_report_path = eval_dir / "generic_model_evaluation_report.json"
+        evaluation_report = _read_json(evaluation_report_path) if evaluation_report_path.exists() else {}
+        if evaluation_report:
+            _validate_evaluation_source(evaluation_report, issues if qg_required else warnings)
+            test_perf = evaluation_report.get("test_performance") or {}
+            unseen_perf = evaluation_report.get("unseen_db_performance") or {}
+            lifecycle_proof["real_predictions_generated"] = bool(
+                (test_perf.get("real_predictions_generated") or evaluation_report.get("real_predictions_generated") or 0) > 0
+            )
+            lifecycle_proof["gold_replay_used"] = bool(evaluation_report.get("gold_replay_used", False))
+            lifecycle_proof["unseen_db_real_prediction_eval"] = bool(
+                unseen_perf.get("evaluation_mode") == "real_model_predictions"
+                and not unseen_perf.get("gold_replay_used", False)
+            )
+
         if qg_required:
             if not qg_path.exists():
                 issues.append("Required quality gate report missing")
@@ -122,6 +138,7 @@ class ModelBundleValidator:
                 issues,
                 checked,
             )
+            lifecycle_proof["calibration_report_available"] = (eval_dir / "calibration_report.json").exists()
             _require_files(
                 eval_dir / "confusion_matrices",
                 ["intent_confusion_matrix.csv", "base_table_confusion_matrix.csv", "join_decision_confusion_matrix.csv", "router_confusion_matrix.csv"],
@@ -134,30 +151,43 @@ class ModelBundleValidator:
         for key in REQUIRED_MANIFEST_METRICS:
             if key not in metrics:
                 issues.append(f"Required manifest metric missing: {key}")
+        metric_issues = issues if qg_required else warnings
         if float(metrics.get("unsafe_sql_count", 0) or 0) > 0:
-            issues.append(f"Unsafe SQL count is {metrics.get('unsafe_sql_count')}, expected 0")
+            metric_issues.append(f"Unsafe SQL count is {metrics.get('unsafe_sql_count')}, expected 0")
         if float(metrics.get("unnecessary_join_rate", 0.0) or 0.0) > 0.05:
-            issues.append(f"Unnecessary join rate is {metrics.get('unnecessary_join_rate')}, max 0.05")
+            metric_issues.append(f"Unnecessary join rate is {metrics.get('unnecessary_join_rate')}, max 0.05")
         if float(metrics.get("wrong_table_rate", 0.0) or 0.0) > 0.15:
-            issues.append(f"Wrong table rate is {metrics.get('wrong_table_rate')}, max 0.15")
+            metric_issues.append(f"Wrong table rate is {metrics.get('wrong_table_rate')}, max 0.15")
         sql_rate = metrics.get("sql_validation_rate")
         if isinstance(sql_rate, (int, float)) and sql_rate < 0.90:
-            issues.append(f"SQL validation rate is {sql_rate}, min 0.90")
+            metric_issues.append(f"SQL validation rate is {sql_rate}, min 0.90")
         query_ir_rate = metrics.get("query_ir_validity_rate")
         if isinstance(query_ir_rate, (int, float)) and query_ir_rate < 0.90:
-            issues.append(f"QueryIR validity rate is {query_ir_rate}, min 0.90")
+            metric_issues.append(f"QueryIR validity rate is {query_ir_rate}, min 0.90")
 
-        _validate_retrieval_runtime(retrieval_dir, neural_dir if neural_enabled else None, issues, warnings)
+        smoke = _validate_retrieval_runtime(retrieval_dir, neural_dir if neural_enabled else None, eval_dir, issues, warnings)
+        lifecycle_proof["bundle_runtime_smoke_passed"] = bool(smoke.get("passed", False))
+        lifecycle_proof["calibration_loaded_in_runtime_smoke"] = bool(smoke.get("calibration_loaded", False))
+        if qg_required:
+            if lifecycle_proof.get("gold_replay_used"):
+                issues.append("Lifecycle proof shows gold replay was used")
+            if not lifecycle_proof.get("real_predictions_generated"):
+                issues.append("Lifecycle proof shows no real model predictions were generated")
+            if not lifecycle_proof.get("calibration_report_available"):
+                issues.append("Lifecycle proof missing required calibration report")
+            if not lifecycle_proof.get("calibration_loaded_in_runtime_smoke"):
+                issues.append("Lifecycle proof shows calibration was not loaded in runtime smoke")
 
-        return _result(issues, warnings, checked)
+        return _result(issues, warnings, checked, lifecycle_proof)
 
 
-def _result(issues: list[str], warnings: list[str], checked: list[str]) -> dict[str, Any]:
+def _result(issues: list[str], warnings: list[str], checked: list[str], lifecycle_proof: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "passed": len(issues) == 0,
         "blocking_issues": issues,
         "warnings": warnings,
         "checked_files": checked,
+        "lifecycle_proof": lifecycle_proof or {},
     }
 
 
@@ -202,25 +232,47 @@ def _validate_neural_load(neural_dir: Path, issues: list[str], warnings: list[st
         issues.append(f"Neural model failed load validation: {exc}")
 
 
+def _validate_evaluation_source(report: dict[str, Any], issues: list[str]) -> None:
+    sections = [("generic_model_evaluation_report", report)]
+    if isinstance(report.get("test_performance"), dict):
+        sections.append(("test_performance", report["test_performance"]))
+    if isinstance(report.get("unseen_db_performance"), dict):
+        sections.append(("unseen_db_performance", report["unseen_db_performance"]))
+    for name, section in sections:
+        mode = section.get("evaluation_mode")
+        if section.get("gold_replay_used") or section.get("gold_replay_baseline"):
+            issues.append(f"{name} was generated from gold replay and is not valid for bundle validation")
+        if section.get("is_valid_for_quality_gate") is False:
+            issues.append(f"{name} is marked not valid for quality gate")
+        if mode in {"explicit_gold_replay_baseline", "explicit_oracle_upper_bound"}:
+            issues.append(f"{name} uses non-production evaluation mode: {mode}")
+
+
 def _validate_retrieval_runtime(
     retrieval_dir: Path,
     neural_dir: Path | None,
+    eval_dir: Path,
     issues: list[str],
     warnings: list[str],
-) -> None:
+) -> dict[str, Any]:
+    summary = {"passed": False, "calibration_loaded": False}
+    issue_count_before = len(issues)
     required = ["example_index.pkl", "schema_index.pkl", "pattern_index.pkl", "manifest.json"]
     if any(not (retrieval_dir / name).exists() for name in required):
-        return
+        return summary
     try:
         from nl2sql_v1.schema import ColumnInfo, SchemaGraph, TableInfo
         from retriever.retrieval_nl2sql_model import RetrievalNL2SQLModel
 
         neural_ready = neural_dir is not None and (neural_dir / "model.pt").exists()
+        calibration_path = eval_dir / "calibration_report.json"
         model = RetrievalNL2SQLModel.load(
             artifact_dir=retrieval_dir,
             neural_ir_model_dir=neural_dir if neural_ready else None,
+            confidence_calibration_path=calibration_path if calibration_path.exists() else None,
             allow_dev_fallback=False,
         )
+        summary["calibration_loaded"] = bool(model.orchestrator.confidence_calibration)
         def table(name: str, columns: dict[str, str]) -> TableInfo:
             return TableInfo(
                 name=name,
@@ -259,8 +311,16 @@ def _validate_retrieval_runtime(
                 issues.append(f"Bundle inference smoke returned unsafe non-SELECT SQL for {question!r}")
             if not sql and not clarified:
                 issues.append(f"Bundle inference smoke produced neither SQL nor clarification for {question!r}")
+        if neural_ready:
+            result = model.predict("list all users", schema, use_neural_ir_fallback=True)
+            validation = result.validation or {}
+            clarified = bool(getattr(result, "needs_clarification", False) or getattr(result, "clarification_questions", []))
+            if (validation.get("is_valid") is False or validation.get("ok") is False) and not clarified:
+                issues.append(f"Neural-enabled bundle smoke returned invalid SQL: {validation}")
+        summary["passed"] = len(issues) == issue_count_before
     except Exception as exc:
         issues.append(f"Bundle runtime smoke failed: {exc}")
+    return summary
 
 
 def _check_no_secrets(data: Any, issues: list[str]) -> None:

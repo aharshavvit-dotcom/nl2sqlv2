@@ -80,6 +80,9 @@ class PredictionResult(BaseModel):
     raw_confidence: float | None = None
     calibrated_confidence: float | None = None
     conformal_threshold: float | None = None
+    abstain: bool = False
+    abstention_reason: str | None = None
+    schema_drift_flags: list[str] = Field(default_factory=list)
     confidence_tier: str = "low"
     retrieved_candidates: list[dict[str, Any]] = Field(default_factory=list)
     selected_candidate: dict[str, Any] | None = None

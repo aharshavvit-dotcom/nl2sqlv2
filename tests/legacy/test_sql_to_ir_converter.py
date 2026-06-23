@@ -78,6 +78,41 @@ def test_sql_to_ir_converter_product_revenue_expression(sample_schema) -> None:
     assert query_ir["metrics"][0]["expression"] == "order_items.quantity * order_items.price"
 
 
+def test_sql_to_ir_converter_accepts_bare_metric_column(sample_schema) -> None:
+    result = SQLToIRConverter().convert(
+        "Total order amount",
+        "SELECT SUM(amount) FROM orders WHERE status = 'completed'",
+        sample_schema,
+    )
+
+    assert result["success"], result
+    assert result["query_ir"]["metrics"][0]["expression"] == "orders.amount"
+
+
+def test_sql_to_ir_converter_accepts_table_aliases_in_join(sample_schema) -> None:
+    sql = (
+        "SELECT T2.region FROM orders AS T1 INNER JOIN customers AS T2 "
+        "ON T1.customer_id = T2.customer_id WHERE T1.status = 'completed'"
+    )
+
+    result = SQLToIRConverter().convert("Regions with completed orders", sql, sample_schema)
+
+    assert result["success"], result
+    assert result["roundtrip_validation"]["checks"]["joins_compatible"]
+
+
+def test_sql_to_ir_converter_preserves_count_column(sample_schema) -> None:
+    result = SQLToIRConverter().convert(
+        "Count orders with an amount",
+        "SELECT COUNT(amount) FROM orders",
+        sample_schema,
+    )
+
+    assert result["success"], result
+    assert "COUNT(orders.amount)" in result["roundtrip_sql"]
+    assert "COUNT(*)" not in result["roundtrip_sql"]
+
+
 def test_sql_to_ir_converter_date_range_filter(sample_schema) -> None:
     sql = (
         "SELECT SUM(orders.amount) AS revenue FROM orders "

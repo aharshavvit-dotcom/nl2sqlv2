@@ -17,7 +17,13 @@ class DatasetScaleEvaluator:
         examples: list[dict[str, Any]],
         schema_mode: str = "gold",
         max_examples: int | None = None,
+        evaluation_mode: str = "real_model_predictions",
+        model_artifact_source: str = "none",
+        predictor_used: bool | None = None,
+        calibration_coverage_target: float = 0.95,
+        calibration_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        mode = _normalize_evaluation_mode(evaluation_mode)
         rows = examples[:max_examples] if max_examples is not None else examples
         failures: list[dict[str, Any]] = []
         metrics = Counter()
@@ -30,10 +36,16 @@ class DatasetScaleEvaluator:
         confidence_outcomes: list[tuple[float, bool]] = []
         distributions: dict[str, list[float]] = defaultdict(list)
         per_example: list[dict[str, Any]] = []
+        real_predictions_generated = 0
+        prediction_failures = 0
 
         for row in rows:
             gold = row.get("query_ir") or {}
-            pred = self._predict(row, schema_mode=schema_mode)
+            pred, prediction_failed = self._predict(row, schema_mode=schema_mode, evaluation_mode=mode)
+            if prediction_failed:
+                prediction_failures += 1
+            elif mode == "real_model_predictions":
+                real_predictions_generated += 1
             item_metrics = self._metrics(gold, pred, row)
             pairs = self._label_pairs(gold, pred, row)
             for level, pair in pairs.items():
@@ -68,6 +80,10 @@ class DatasetScaleEvaluator:
                 "join_correct": item_metrics.get("join_accuracy", False),
                 "final_correct": correct,
                 "confidence": confidence,
+                "sql_valid": item_metrics.get("sql_validation", False),
+                "execution_match": bool(row.get("execution_match", False)),
+                "unnecessary_join": bool((pred.get("joins") or []) and not (gold.get("joins") or [])),
+                "wrong_table": gold.get("base_table") != pred.get("base_table"),
             })
 
         summary = {f"{key}_rate": metrics[key] / totals[key] if totals[key] else 0.0 for key in totals}
@@ -78,7 +94,11 @@ class DatasetScaleEvaluator:
             level: classification_metrics(pairs)
             for level, pairs in sorted(label_pairs.items())
         }
-        calibration = calibration_metrics(confidence_outcomes)
+        calibration = calibration_metrics(
+            confidence_outcomes,
+            coverage_target=calibration_coverage_target,
+            config=calibration_config,
+        )
         percentiles = percentile_report(distributions)
         summary.update({
             "intent_macro_f1": classification.get("intent", {}).get("macro_f1", 0.0),
@@ -89,9 +109,25 @@ class DatasetScaleEvaluator:
             "unsafe_sql_count": sum(1 for row in rows if not _is_select_safe(row)),
             "execution_match_rate": _optional_rate(rows, "execution_match"),
         })
+        gold_replay_used = mode in {"explicit_gold_replay_baseline", "explicit_oracle_upper_bound"}
+        inferred_predictor_used = self.predictor is not None or (
+            mode == "real_model_predictions" and bool(rows) and real_predictions_generated > 0
+        )
+        predictor_used = inferred_predictor_used if predictor_used is None else bool(predictor_used)
+        is_valid_for_quality_gate = mode == "real_model_predictions" and not gold_replay_used
         return {
             "model_name": model_name,
             "schema_mode": schema_mode,
+            "evaluation_mode": mode,
+            "test_source": "real_model_predictions" if mode == "real_model_predictions" else mode.replace("explicit_", ""),
+            "gold_replay_used": gold_replay_used,
+            "gold_replay_baseline": mode == "explicit_gold_replay_baseline",
+            "predictor_used": predictor_used,
+            "model_artifact_source": model_artifact_source,
+            "is_valid_for_quality_gate": is_valid_for_quality_gate,
+            "rows_evaluated": len(rows),
+            "real_predictions_generated": real_predictions_generated,
+            "prediction_failures": prediction_failures,
             "summary": summary,
             "by_dataset": self._bucket_rates(by_dataset),
             "by_intent": self._bucket_rates(by_intent),
@@ -105,10 +141,22 @@ class DatasetScaleEvaluator:
             "failure_examples": failures[:50],
         }
 
-    def _predict(self, row: dict[str, Any], schema_mode: str) -> dict[str, Any]:
-        if self.predictor is None:
-            return row.get("predicted_query_ir") or row.get("query_ir") or {}
-        return self.predictor(row, schema_mode=schema_mode)
+    def _predict(self, row: dict[str, Any], schema_mode: str, evaluation_mode: str) -> tuple[dict[str, Any], bool]:
+        if evaluation_mode in {"explicit_gold_replay_baseline", "explicit_oracle_upper_bound"}:
+            return row.get("query_ir") or {}, False
+        if self.predictor is not None:
+            try:
+                prediction = self.predictor(row, schema_mode=schema_mode)
+                return prediction or {}, False
+            except Exception as exc:
+                row["prediction_error"] = str(exc)
+                return {}, True
+        if "predicted_query_ir" in row and row.get("predicted_query_ir") is not None:
+            return row.get("predicted_query_ir") or {}, bool(row.get("prediction_failed", False))
+        raise ValueError(
+            "DatasetScaleEvaluator requires real predicted_query_ir rows or a predictor. "
+            "Use evaluation_mode='explicit_gold_replay_baseline' only for debug baselines."
+        )
 
     @staticmethod
     def _metrics(gold: dict[str, Any], pred: dict[str, Any], row: dict[str, Any]) -> dict[str, bool]:
@@ -244,10 +292,28 @@ def percentile_report(distributions: dict[str, list[float]]) -> dict[str, float]
     return result
 
 
-def calibration_metrics(outcomes: list[tuple[float, bool]], buckets: int = 10) -> dict[str, Any]:
+def calibration_metrics(
+    outcomes: list[tuple[float, bool]],
+    buckets: int = 10,
+    coverage_target: float = 0.95,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     reliability = []
+    cfg = config or {}
+    target = max(0.0, min(1.0, float(cfg.get("abstention_coverage_target", coverage_target))))
+    use_conformal = bool(cfg.get("use_conformal_threshold", True))
     if not outcomes:
-        return {"sample_count": 0, "expected_calibration_error": 0.0, "brier_score": 0.0, "buckets": reliability, "conformal_confidence_threshold": None, "isotonic_points": []}
+        return {
+            "sample_count": 0,
+            "expected_calibration_error": 0.0,
+            "brier_score": 0.0,
+            "buckets": reliability,
+            "coverage_target": target,
+            "abstention_coverage_target": target,
+            "use_conformal_threshold": use_conformal,
+            "conformal_confidence_threshold": None,
+            "isotonic_points": [],
+        }
     brier = sum((confidence - float(correct)) ** 2 for confidence, correct in outcomes) / len(outcomes)
     ece = 0.0
     for index in range(buckets):
@@ -266,7 +332,14 @@ def calibration_metrics(outcomes: list[tuple[float, bool]], buckets: int = 10) -
             "avg_correctness": avg_correctness,
         })
     nonconformity = [1.0 - confidence for confidence, _ in outcomes]
-    conformal_score = _percentile(nonconformity, 95)
+    conformal_score = _percentile(nonconformity, int(round(target * 100)))
+    configured_threshold = cfg.get("abstain_when_calibrated_confidence_below")
+    if isinstance(configured_threshold, (int, float)):
+        conformal_confidence_threshold = float(configured_threshold)
+    elif use_conformal:
+        conformal_confidence_threshold = max(0.0, min(1.0, 1.0 - conformal_score))
+    else:
+        conformal_confidence_threshold = None
     points = []
     monotonic = 0.0
     for bucket in reliability:
@@ -278,9 +351,11 @@ def calibration_metrics(outcomes: list[tuple[float, bool]], buckets: int = 10) -
         "expected_calibration_error": ece,
         "brier_score": brier,
         "buckets": reliability,
-        "coverage_target": 0.95,
+        "coverage_target": target,
+        "abstention_coverage_target": target,
+        "use_conformal_threshold": use_conformal,
         "conformal_nonconformity_threshold": conformal_score,
-        "conformal_confidence_threshold": max(0.0, min(1.0, 1.0 - conformal_score)),
+        "conformal_confidence_threshold": conformal_confidence_threshold,
         "isotonic_points": points,
     }
 
@@ -424,3 +499,20 @@ def _projection(ir: dict[str, Any], section: str, keys: list[str]) -> list[tuple
 
 def normalize_sql(value: str | None) -> str:
     return " ".join(str(value or "").lower().split())
+
+
+def _normalize_evaluation_mode(value: str) -> str:
+    normalized = str(value or "real_model_predictions").strip().lower()
+    aliases = {
+        "real": "real_model_predictions",
+        "model": "real_model_predictions",
+        "gold_replay": "explicit_gold_replay_baseline",
+        "gold_replay_baseline": "explicit_gold_replay_baseline",
+        "oracle": "explicit_oracle_upper_bound",
+        "oracle_upper_bound": "explicit_oracle_upper_bound",
+    }
+    normalized = aliases.get(normalized, normalized)
+    allowed = {"real_model_predictions", "explicit_gold_replay_baseline", "explicit_oracle_upper_bound"}
+    if normalized not in allowed:
+        raise ValueError(f"Unsupported evaluation_mode {value!r}; expected one of {sorted(allowed)}")
+    return normalized

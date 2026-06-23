@@ -97,8 +97,30 @@ class ModelBundleBuilder:
         # Extract metrics
         metrics = self._extract_metrics(evaluation_report, quality_gate_report)
         test_performance = (evaluation_report or {}).get("test_performance") or {}
+        unseen_performance = (evaluation_report or {}).get("unseen_db_performance") or {}
         classification_metrics = test_performance.get("classification_metrics") or {}
         percentiles = test_performance.get("percentiles") or {}
+        lifecycle_proof = {
+            "trained_from_generic_corpus": bool(generic_training_src and generic_training_src.exists()),
+            "real_predictions_generated": bool(
+                (test_performance.get("real_predictions_generated") or 0) > 0
+                or (evaluation_report or {}).get("real_predictions_generated", 0) > 0
+            ),
+            "gold_replay_used": bool((evaluation_report or {}).get("gold_replay_used", False)),
+            "calibration_report_available": bool(test_performance.get("calibration")),
+            "calibration_loaded_in_runtime_smoke": False,
+            "unseen_db_real_prediction_eval": bool(
+                unseen_performance.get("evaluation_mode") == "real_model_predictions"
+                and not unseen_performance.get("gold_replay_used", False)
+            ),
+            "quality_gate_passed": bool((quality_gate_report or {}).get("passed", False)),
+            "bundle_runtime_smoke_passed": False,
+            "app_runtime_smoke_passed": any(
+                step.get("step") == "run_app_smoke_check" and step.get("status") == "completed"
+                for step in (pipeline_report or {}).get("steps", [])
+                if isinstance(step, dict)
+            ),
+        }
 
         # Build manifest
         bundle_id = f"nl2sql_bundle_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
@@ -144,6 +166,7 @@ class ModelBundleBuilder:
             latency={key: value for key, value in percentiles.items() if "latency" in key},
             schema_drift_baseline={key: value for key, value in percentiles.items() if key.startswith(("schema_", "question_", "candidate_"))},
             statistical_promotion=(evaluation_report or {}).get("statistical_promotion") or {},
+            lifecycle_proof=lifecycle_proof,
             quality_gate=quality_gate_info,
             pipeline_report="pipeline/train_model_report.json",
         )

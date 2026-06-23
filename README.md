@@ -65,7 +65,7 @@ Full training builds a dataset-balanced generic QueryIR corpus. WikiSQL, Spider,
 
 The connected-database runtime is schema-neutral. Bundled `orders` / `customers` / `products` mappings are enabled only when the complete sample-retail schema signature is present. Other databases derive table, metric, dimension, and filter vocabulary from their own schema; simple single-table questions bypass retrieval and neural routing and cannot add joins.
 
-Evaluation is multi-level: intent, base table, slots, join decisions, router decisions, QueryIR validity, SQL validation, structural/execution match, and safety. Reports include accuracy, macro/micro/weighted F1, confusion matrices, p50/p95/p99 loss/confidence/latency/drift statistics, ECE/Brier calibration, and a conformal abstention threshold. Promotion uses paired bootstrap evidence when per-example champion and challenger results are available.
+Evaluation is multi-level: intent, base table, slots, join decisions, router decisions, QueryIR validity, SQL validation, structural/execution match, and safety. Reports include accuracy, macro/micro/weighted F1, confusion matrices, p50/p95/p99 loss/confidence/latency/drift statistics, ECE/Brier calibration, and a conformal abstention threshold. Evaluation reports are valid for quality gates only when `evaluation_mode = real_model_predictions`, `gold_replay_used = false`, and `is_valid_for_quality_gate = true`. Gold replay is a debug baseline only and cannot be promoted.
 
 For a quick smoke test:
 ```bash
@@ -134,6 +134,8 @@ artifacts/generic_training/split_distribution_report.json
 ```
 
 Raw heuristic confidence and calibrated confidence are stored separately. A calibrated score below the learned conformal threshold produces clarification/abstention metadata instead of being presented as a trustworthy probability.
+
+Calibration is computed from evaluation outputs, copied into the bundle, and loaded by the same runtime path used by Streamlit. Runtime prediction results expose `raw_confidence`, `calibrated_confidence`, abstention metadata, and schema drift flags. Promotion uses statistical checks per metric when bootstrap evidence exists and falls back to point-estimate regression checks only for metrics without bootstrap coverage.
 
 ---
 

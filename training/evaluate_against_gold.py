@@ -52,8 +52,21 @@ def evaluate_against_gold(args: argparse.Namespace) -> dict[str, Any]:
         }
         for row in output_rows
     ]
-    multi_level = DatasetScaleEvaluator().evaluate_model("validation_predictions", evaluation_rows)
+    source = output_rows[0].get("prediction_source") if output_rows else "unknown"
+    mode = "explicit_gold_replay_baseline" if source == "gold_replay_baseline" else "real_model_predictions"
+    multi_level = DatasetScaleEvaluator().evaluate_model(
+        "validation_predictions",
+        evaluation_rows,
+        evaluation_mode=mode,
+        model_artifact_source="artifact_dirs" if mode == "real_model_predictions" else "none",
+        predictor_used=mode == "real_model_predictions",
+    )
     report = {
+        "evaluation_mode": multi_level.get("evaluation_mode"),
+        "gold_replay_used": multi_level.get("gold_replay_used", False),
+        "predictor_used": multi_level.get("predictor_used", False),
+        "model_artifact_source": multi_level.get("model_artifact_source", "none"),
+        "is_valid_for_quality_gate": multi_level.get("is_valid_for_quality_gate", False),
         "summary": {
             "total_examples": comparison.total,
             "exact_matches": comparison.exact_matches,
@@ -61,7 +74,7 @@ def evaluate_against_gold(args: argparse.Namespace) -> dict[str, Any]:
             "failures": comparison.failures,
             "gold_comparison_score": sum(row["gold_comparison_score"] for row in output_rows) / max(len(output_rows), 1),
             "exact_match_rate": comparison.exact_matches / max(comparison.total, 1),
-            "source": output_rows[0].get("prediction_source") if output_rows else "unknown",
+            "source": source,
         },
         "field_accuracy": comparison.field_accuracy,
         "classification_metrics": multi_level.get("classification_metrics", {}),

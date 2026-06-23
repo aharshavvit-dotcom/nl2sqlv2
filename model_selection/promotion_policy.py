@@ -6,6 +6,22 @@ from typing import Any
 from .model_selector import _hard_blockers
 
 
+PROMOTION_CRITICAL_METRICS = {
+    "intent_macro_f1": True,
+    "base_table_accuracy": True,
+    "join_decision_macro_f1": True,
+    "router_macro_f1": True,
+    "sql_validation_rate": True,
+    "execution_match_rate": True,
+    "simple_query_pass_rate": True,
+    "gold_comparison_score": True,
+    "unseen_db_sql_validation_rate": True,
+    "unnecessary_join_rate": False,
+    "wrong_table_rate": False,
+    "unsafe_sql_count": False,
+}
+
+
 class PromotionPolicy:
     def can_promote(
         self,
@@ -23,23 +39,72 @@ class PromotionPolicy:
             champion_metrics.get("per_example") or [],
             iterations=bootstrap_iterations,
         ) if champion_metrics else {"bootstrap_iterations": bootstrap_iterations, "metrics": {}, "paired_examples": 0}
+        point_fallback_checks: dict[str, Any] = {}
+        statistical_checks: dict[str, Any] = {}
+        warnings: list[str] = []
         if champion_metrics:
-            statistically_checked = bool(statistical_report.get("metrics"))
-            regressions = [name for name, item in statistical_report.get("metrics", {}).items() if item.get("regression_detected")]
-            blocking.extend(f"{name}_statistical_regression" for name in regressions)
-            if not statistically_checked and challenger_metrics.get("simple_query_pass_rate", 0.0) < champion_metrics.get("simple_query_pass_rate", 0.0):
-                blocking.append("simple_query_pass_rate_regression")
-            if not statistically_checked and challenger_metrics.get("unnecessary_join_rate", 0.0) > champion_metrics.get("unnecessary_join_rate", 0.0):
-                blocking.append("unnecessary_join_regression")
-            if not statistically_checked and challenger_metrics.get("gold_comparison_score", 0.0) + min_improvement < champion_metrics.get("gold_comparison_score", 0.0):
-                blocking.append("gold_comparison_regression")
-            if not statistically_checked and challenger_metrics.get("unseen_db_sql_validation_rate", 0.0) + min_improvement < champion_metrics.get("unseen_db_sql_validation_rate", 0.0):
-                blocking.append("unseen_db_regression")
+            bootstrap_metrics = statistical_report.get("metrics", {})
+            for metric_name, higher_is_better in PROMOTION_CRITICAL_METRICS.items():
+                if metric_name in bootstrap_metrics:
+                    check = {
+                        **bootstrap_metrics[metric_name],
+                        "metric_name": metric_name,
+                        "statistical_check_available": True,
+                    }
+                    statistical_checks[metric_name] = check
+                    if check.get("regression_detected"):
+                        blocking.append(f"{metric_name}_statistical_regression")
+                    continue
+                fallback = self._point_estimate_check(
+                    metric_name,
+                    challenger_metrics,
+                    champion_metrics,
+                    higher_is_better=higher_is_better,
+                    min_improvement=min_improvement,
+                )
+                if fallback is None:
+                    warnings.append(f"No promotion regression check available for {metric_name}")
+                    continue
+                point_fallback_checks[metric_name] = fallback
+                if fallback["regression_detected"]:
+                    blocking.append(f"{metric_name}_regression")
+        else:
+            warnings.append("No current champion; challenger may become initial champion if hard gates pass.")
         return {
             "can_promote": not blocking,
             "blocking_issues": list(dict.fromkeys(blocking)),
-            "warnings": [] if champion_metrics else ["No current champion; challenger may become initial champion if hard gates pass."],
+            "warnings": warnings,
             "statistical_report": statistical_report,
+            "statistical_checks": statistical_checks,
+            "point_estimate_fallback_checks": point_fallback_checks,
+            "blocking_regressions": [item for item in list(dict.fromkeys(blocking)) if item.endswith("_regression")],
+        }
+
+    @staticmethod
+    def _point_estimate_check(
+        metric_name: str,
+        challenger_metrics: dict[str, Any],
+        champion_metrics: dict[str, Any],
+        higher_is_better: bool,
+        min_improvement: float,
+    ) -> dict[str, Any] | None:
+        if metric_name not in challenger_metrics or metric_name not in champion_metrics:
+            return None
+        challenger = float(challenger_metrics.get(metric_name) or 0.0)
+        champion = float(champion_metrics.get(metric_name) or 0.0)
+        point_delta = challenger - champion if higher_is_better else champion - challenger
+        if higher_is_better:
+            regression = challenger + min_improvement < champion
+        else:
+            regression = challenger > champion
+        return {
+            "metric_name": metric_name,
+            "statistical_check_available": False,
+            "challenger": challenger,
+            "champion": champion,
+            "higher_is_better": higher_is_better,
+            "point_delta": point_delta,
+            "regression_detected": regression,
         }
 
     @staticmethod
@@ -59,10 +124,15 @@ class PromotionPolicy:
             "intent_macro_f1": ("intent_correct", True),
             "base_table_accuracy": ("base_table_correct", True),
             "join_decision_macro_f1": ("join_correct", True),
+            "router_macro_f1": ("router_correct", True),
             "sql_validation_rate": ("sql_valid", True),
             "execution_match_rate": ("execution_match", True),
+            "simple_query_pass_rate": ("simple_query_pass", True),
+            "gold_comparison_score": ("gold_comparison_score", True),
+            "unseen_db_sql_validation_rate": ("unseen_db_sql_valid", True),
             "unnecessary_join_rate": ("unnecessary_join", False),
             "wrong_table_rate": ("wrong_table", False),
+            "unsafe_sql_count": ("unsafe_sql", False),
         }
         rng = random.Random(seed)
         for metric, (field, higher_is_better) in metric_fields.items():
@@ -77,6 +147,8 @@ class PromotionPolicy:
             deltas = sorted(delta([rng.choice(available) for _ in available]) for _ in range(max(1, iterations)))
             p05 = _percentile(deltas, 5)
             report["metrics"][metric] = {
+                "metric_name": metric,
+                "statistical_check_available": True,
                 "point_delta": point,
                 "delta_p05": p05,
                 "delta_p50": _percentile(deltas, 50),

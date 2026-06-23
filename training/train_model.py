@@ -96,6 +96,16 @@ def verify_datasets(config: dict[str, Any]) -> bool:
         return True
 
 
+def allow_missing_datasets(config: dict[str, Any]) -> bool:
+    datasets = config.get("datasets", {}) or {}
+    pipeline = config.get("pipeline", {}) or {}
+    if bool(datasets.get("allow_missing_dataset", False)):
+        return True
+    if str(pipeline.get("name", "")).lower().startswith("smoke"):
+        return True
+    return int(datasets.get("max_examples", 5000) or 5000) <= 200
+
+
 from orchestration.pipeline_config import build_pipeline_steps
 
 
@@ -232,7 +242,11 @@ def main() -> int:
     # 3. Verify datasets
     datasets_ok = verify_datasets(config)
     if not datasets_ok:
-        print("Warning: Some datasets are not ready. Pipeline may skip data-dependent steps.")
+        if not allow_missing_datasets(config):
+            print("Error: Required datasets are not ready for full training.")
+            print("Full training will not continue with missing required datasets.")
+            return 1
+        print("Warning: Some datasets are not ready. Continuing because this is an explicit smoke/dev run.")
 
     # 4. Show plan in dry-run mode
     if args.dry_run:

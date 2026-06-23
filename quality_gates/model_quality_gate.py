@@ -26,6 +26,9 @@ class ModelQualityGate:
         missing_metrics: list[str] = []
 
         execution_status = self._execution_status(evaluation_report)
+        source_failures, source_warnings = self._evaluation_source_checks(evaluation_report)
+        failed_checks.extend(source_failures)
+        warnings.extend(source_warnings)
 
         for key, expected in minimums.items():
             metric_key = _threshold_metric_name(key)
@@ -173,6 +176,46 @@ class ModelQualityGate:
                 metrics[name] = calibration[source_name]
                 present.add(name)
         return metrics, present
+
+    @staticmethod
+    def _evaluation_source_checks(report: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
+        failed: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        sections = [("generic_model_evaluation_report", report)]
+        if isinstance(report.get("test_performance"), dict):
+            sections.append(("test_performance", report["test_performance"]))
+        if isinstance(report.get("unseen_db_performance"), dict):
+            sections.append(("unseen_db_performance", report["unseen_db_performance"]))
+        for name, section in sections:
+            mode = section.get("evaluation_mode")
+            gold_replay = bool(section.get("gold_replay_used", False) or section.get("gold_replay_baseline", False))
+            valid = section.get("is_valid_for_quality_gate")
+            predictor_used = section.get("predictor_used")
+            if mode in {"explicit_gold_replay_baseline", "explicit_oracle_upper_bound"} or gold_replay or valid is False:
+                failed.append({
+                    "metric": f"{name}_valid_evaluation_source",
+                    "actual": {
+                        "evaluation_mode": mode,
+                        "gold_replay_used": gold_replay,
+                        "is_valid_for_quality_gate": valid,
+                    },
+                    "expected": {
+                        "evaluation_mode": "real_model_predictions",
+                        "gold_replay_used": False,
+                        "is_valid_for_quality_gate": True,
+                    },
+                    "comparison": "==",
+                })
+            elif mode is None and section is not report:
+                warnings.append(f"{name} does not declare evaluation_mode; future gates will require real_model_predictions metadata.")
+            if mode == "real_model_predictions" and predictor_used is False:
+                failed.append({
+                    "metric": f"{name}_predictor_used",
+                    "actual": False,
+                    "expected": True,
+                    "comparison": "==",
+                })
+        return failed, warnings
 
     @staticmethod
     def _execution_status(report: dict[str, Any]) -> dict[str, Any]:

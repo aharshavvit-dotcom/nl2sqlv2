@@ -48,6 +48,7 @@ class RetrievalNL2SQLModel:
         neural_ir_model_dir: str | Path | None = None,
         use_neural_ir_fallback: bool = False,
         allow_dev_fallback: bool | None = None,
+        confidence_calibration_path: str | Path | None = None,
         # Backward-compatible aliases
         option_a_model_dir: str | Path | None = None,
         use_option_a_fallback: bool | None = None,
@@ -55,6 +56,14 @@ class RetrievalNL2SQLModel:
         artifact_path = Path(artifact_dir)
         templates = Path(templates_path)
         synonyms = Path(synonyms_path)
+        bundle_context = cls._bundle_context(artifact_path)
+        bundle_manifest = bundle_context.get("manifest") or {}
+        if bundle_context:
+            artifact_path = Path(bundle_context["retrieval_model_dir"])
+            if neural_ir_model_dir is None and bundle_context.get("neural_model_dir"):
+                neural_ir_model_dir = Path(bundle_context["neural_model_dir"])
+            if confidence_calibration_path is None and bundle_context.get("calibration_path"):
+                confidence_calibration_path = Path(bundle_context["calibration_path"])
 
         # Accept old param names
         _model_dir = neural_ir_model_dir or option_a_model_dir
@@ -64,6 +73,8 @@ class RetrievalNL2SQLModel:
         orchestrator = PredictionOrchestrator(
             neural_ir_model_dir=neural_ir_path if _model_dir is not None else None,
             use_neural_ir_fallback=_fallback,
+            confidence_calibration_path=confidence_calibration_path,
+            schema_drift_baseline=bundle_manifest.get("schema_drift_baseline") or {},
         )
         metric_synonyms, dimension_synonyms = cls._load_synonyms(synonyms)
         if cls.rag_artifact_ready(artifact_path):
@@ -71,6 +82,9 @@ class RetrievalNL2SQLModel:
 
             metadata = cls._load_metadata(artifact_path)
             metadata["retrieval_backend"] = "local_rag"
+            if bundle_context:
+                metadata["model_bundle"] = bundle_manifest
+                metadata["calibration_loaded"] = bool(confidence_calibration_path and Path(confidence_calibration_path).exists())
             return cls(
                 retriever=RAGRetrieverAdapter.load(artifact_path),
                 templates_path=templates,
@@ -84,12 +98,16 @@ class RetrievalNL2SQLModel:
                 use_neural_ir_fallback=_fallback,
             )
         if cls.artifact_ready(artifact_path):
+            metadata = cls._load_metadata(artifact_path)
+            if bundle_context:
+                metadata["model_bundle"] = bundle_manifest
+                metadata["calibration_loaded"] = bool(confidence_calibration_path and Path(confidence_calibration_path).exists())
             return cls(
                 retriever=TfidfRetriever.load(artifact_path),
                 templates_path=templates,
                 synonyms_path=synonyms,
                 artifact_dir=artifact_path,
-                metadata=cls._load_metadata(artifact_path),
+                metadata=metadata,
                 orchestrator=orchestrator,
                 metric_synonyms=metric_synonyms,
                 dimension_synonyms=dimension_synonyms,
@@ -137,6 +155,32 @@ class RetrievalNL2SQLModel:
     @staticmethod
     def _default_neural_ir_dir() -> Path:
         return DEFAULT_NEURAL_IR_V2_ARTIFACT_DIR if (DEFAULT_NEURAL_IR_V2_ARTIFACT_DIR / "model.pt").exists() else DEFAULT_NEURAL_IR_ARTIFACT_DIR
+
+    @staticmethod
+    def _bundle_context(path: Path) -> dict[str, Any]:
+        bundle_dir: Path | None = None
+        if (path / "bundle_manifest.json").exists():
+            bundle_dir = path
+        elif (path.parent / "bundle_manifest.json").exists():
+            bundle_dir = path.parent
+        if bundle_dir is None:
+            return {}
+        manifest_path = bundle_dir / "bundle_manifest.json"
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        paths = manifest.get("paths") or {}
+        evaluation_dir = bundle_dir / paths.get("evaluation", "evaluation/")
+        calibration_path = evaluation_dir / "calibration_report.json"
+        return {
+            "bundle_dir": str(bundle_dir),
+            "manifest": manifest,
+            "retrieval_model_dir": str(bundle_dir / paths.get("retrieval_ir", "retrieval_ir/")),
+            "neural_model_dir": str(bundle_dir / paths.get("neural_ir", "neural_ir/")),
+            "evaluation_dir": str(evaluation_dir),
+            "calibration_path": str(calibration_path) if calibration_path.exists() else None,
+        }
 
     @staticmethod
     def _dev_fallbacks_enabled() -> bool:

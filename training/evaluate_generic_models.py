@@ -20,19 +20,69 @@ from dataset_training.utils import read_jsonl
 def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
     test_rows = read_jsonl(args.test)
     unseen_rows = read_jsonl(args.unseen_db_test)
-    test_evaluation_rows, test_source = _evaluation_rows(test_rows, args.retrieval_model_dir, args.neural_model_dir)
-    unseen_evaluation_rows, unseen_source = _evaluation_rows(unseen_rows, args.retrieval_model_dir, args.neural_model_dir)
+    max_examples = getattr(args, "max_examples", None)
+    if max_examples is not None:
+        test_rows = test_rows[:max_examples]
+        unseen_rows = unseen_rows[:max_examples]
+    test_evaluation_rows, test_source, test_artifact_source = _evaluation_rows(
+        test_rows,
+        args.retrieval_model_dir,
+        args.neural_model_dir,
+        model_bundle_dir=getattr(args, "model_bundle_dir", None),
+        allow_gold_replay_baseline=bool(getattr(args, "allow_gold_replay_baseline", False)),
+    )
+    unseen_evaluation_rows, unseen_source, unseen_artifact_source = _evaluation_rows(
+        unseen_rows,
+        args.retrieval_model_dir,
+        args.neural_model_dir,
+        model_bundle_dir=getattr(args, "model_bundle_dir", None),
+        allow_gold_replay_baseline=bool(getattr(args, "allow_gold_replay_baseline", False)),
+    )
     evaluator = DatasetScaleEvaluator()
+    test_mode = "explicit_gold_replay_baseline" if test_source == "gold_replay_baseline" else "real_model_predictions"
+    unseen_mode = "explicit_gold_replay_baseline" if unseen_source == "gold_replay_baseline" else "real_model_predictions"
+    calibration_config = {
+        "abstention_coverage_target": float(getattr(args, "calibration_coverage_target", 0.95)),
+        "use_conformal_threshold": bool(getattr(args, "use_conformal_threshold", True)),
+        "abstain_when_calibrated_confidence_below": getattr(args, "abstain_when_calibrated_confidence_below", None),
+    }
     report = {
+        "evaluation_mode": test_mode,
+        "test_source": "real_model_predictions" if test_mode == "real_model_predictions" else "gold_replay_baseline",
+        "gold_replay_used": test_mode != "real_model_predictions" or unseen_mode != "real_model_predictions",
+        "predictor_used": test_mode == "real_model_predictions",
+        "model_artifact_source": test_artifact_source,
+        "is_valid_for_quality_gate": test_mode == "real_model_predictions" and unseen_mode == "real_model_predictions",
         "summary": {
             "test_examples": len(test_rows),
             "unseen_db_test_examples": len(unseen_rows),
+            "model_bundle_dir": str(getattr(args, "model_bundle_dir", "") or ""),
             "retrieval_model_dir": str(args.retrieval_model_dir),
             "neural_model_dir": str(args.neural_model_dir),
             "prediction_source": test_source,
+            "test_source": "real_model_predictions" if test_mode == "real_model_predictions" else "gold_replay_baseline",
+            "gold_replay_used": test_mode != "real_model_predictions" or unseen_mode != "real_model_predictions",
+            "is_valid_for_quality_gate": test_mode == "real_model_predictions" and unseen_mode == "real_model_predictions",
         },
-        "test_performance": evaluator.evaluate_model(test_source, test_evaluation_rows),
-        "unseen_db_performance": evaluator.evaluate_model(unseen_source, unseen_evaluation_rows),
+        "test_performance": evaluator.evaluate_model(
+            test_source,
+            test_evaluation_rows,
+            evaluation_mode=test_mode,
+            model_artifact_source=test_artifact_source,
+            predictor_used=test_mode == "real_model_predictions",
+            calibration_coverage_target=float(getattr(args, "calibration_coverage_target", 0.95)),
+            calibration_config=calibration_config,
+        ),
+        "unseen_db_performance": evaluator.evaluate_model(
+            unseen_source,
+            unseen_evaluation_rows,
+            schema_mode="unseen_db",
+            evaluation_mode=unseen_mode,
+            model_artifact_source=unseen_artifact_source,
+            predictor_used=unseen_mode == "real_model_predictions",
+            calibration_coverage_target=float(getattr(args, "calibration_coverage_target", 0.95)),
+            calibration_config=calibration_config,
+        ),
     }
     test_summary = report["test_performance"]["summary"]
     report["summary"].update(
@@ -65,44 +115,20 @@ def _evaluation_rows(
     rows: list[dict[str, Any]],
     retrieval_model_dir: Path,
     neural_model_dir: Path,
-) -> tuple[list[dict[str, Any]], str]:
-    retrieval_ready = all((retrieval_model_dir / name).exists() for name in ["example_index.pkl", "schema_index.pkl", "pattern_index.pkl", "manifest.json"])
-    if rows and retrieval_ready:
-        import time
-        from retriever.retrieval_nl2sql_model import RetrievalNL2SQLModel
+    model_bundle_dir: Path | None = None,
+    allow_gold_replay_baseline: bool = False,
+) -> tuple[list[dict[str, Any]], str, str]:
+    if not rows:
+        return [], "adaptive_router", "none"
+    bundle_path = Path(model_bundle_dir) if model_bundle_dir else None
+    if bundle_path and (bundle_path / "bundle_manifest.json").exists():
+        return _predict_with_retrieval_model(rows, bundle_path, neural_model_dir=None, artifact_source="model_bundle")
 
+    retrieval_ready = all((retrieval_model_dir / name).exists() for name in ["example_index.pkl", "schema_index.pkl", "pattern_index.pkl", "manifest.json"])
+    if retrieval_ready:
         neural = neural_model_dir if (neural_model_dir / "model.pt").exists() else None
-        model = RetrievalNL2SQLModel.load(
-            artifact_dir=retrieval_model_dir,
-            neural_ir_model_dir=neural,
-            allow_dev_fallback=False,
-        )
-        merged = []
-        for row in rows:
-            started = time.perf_counter()
-            result = model.predict(row.get("question", ""), _schema_graph(row.get("schema") or {}), use_neural_ir_fallback=neural is not None)
-            elapsed = (time.perf_counter() - started) * 1000.0
-            merged.append({
-                **row,
-                "predicted_query_ir": result.query_ir or {},
-                "predicted_sql": result.sql,
-                "rendered_sql": result.sql,
-                "confidence": result.calibrated_confidence if result.calibrated_confidence is not None else result.confidence,
-                "raw_confidence": result.raw_confidence if result.raw_confidence is not None else result.confidence,
-                "prediction_latency_ms": elapsed,
-                "ir_validation": result.ir_validation or row.get("ir_validation") or {},
-                "sql_validation": result.validation or row.get("sql_validation") or {},
-                "prediction_source": result.source_model,
-                "predicted_route": (
-                    "generic_direct_planner"
-                    if result.source_model == "generic_direct_planner"
-                    else "clarification"
-                    if result.needs_clarification and not result.sql
-                    else "adaptive_router"
-                ),
-            })
-        return merged, "adaptive_router"
-    if rows and (neural_model_dir / "model.pt").exists():
+        return _predict_with_retrieval_model(rows, retrieval_model_dir, neural_model_dir=neural, artifact_source="artifact_dirs")
+    if (neural_model_dir / "model.pt").exists():
         from self_training.prediction_runner import PredictionRunner
 
         predictions = PredictionRunner(neural_model_dir).predict_batch(rows)
@@ -123,8 +149,76 @@ def _evaluation_rows(
                 "prediction_source": "neural_queryir",
                 "predicted_route": "neural_queryir",
             })
-        return merged, "neural_queryir"
-    return [{**row, "prediction_source": "gold_replay_baseline"} for row in rows], "gold_replay_baseline"
+        return merged, "neural_queryir", "artifact_dirs"
+    if allow_gold_replay_baseline:
+        return [{**row, "prediction_source": "gold_replay_baseline"} for row in rows], "gold_replay_baseline", "none"
+    raise RuntimeError(
+        "No model artifacts were available for real model evaluation. "
+        "Pass --model-bundle-dir or valid --retrieval-model-dir/--neural-model-dir. "
+        "Use --allow-gold-replay-baseline only for debug baselines."
+    )
+
+
+def _predict_with_retrieval_model(
+    rows: list[dict[str, Any]],
+    artifact_dir: Path,
+    neural_model_dir: Path | None,
+    artifact_source: str,
+) -> tuple[list[dict[str, Any]], str, str]:
+    import time
+    from retriever.retrieval_nl2sql_model import RetrievalNL2SQLModel
+
+    model = RetrievalNL2SQLModel.load(
+        artifact_dir=artifact_dir,
+        neural_ir_model_dir=neural_model_dir,
+        allow_dev_fallback=False,
+    )
+    merged = []
+    for row in rows:
+        started = time.perf_counter()
+        try:
+            result = model.predict(row.get("question", ""), _schema_graph(row.get("schema") or {}), use_neural_ir_fallback=neural_model_dir is not None)
+            elapsed = (time.perf_counter() - started) * 1000.0
+            merged.append({
+                **row,
+                "predicted_query_ir": result.query_ir or {},
+                "predicted_sql": result.sql,
+                "rendered_sql": result.sql,
+                "confidence": result.calibrated_confidence if result.calibrated_confidence is not None else result.confidence,
+                "raw_confidence": result.raw_confidence if result.raw_confidence is not None else result.confidence,
+                "calibrated_confidence": result.calibrated_confidence,
+                "prediction_latency_ms": elapsed,
+                "ir_validation": result.ir_validation or row.get("ir_validation") or {},
+                "sql_validation": result.validation or row.get("sql_validation") or {},
+                "prediction_source": result.source_model,
+                "predicted_route": (
+                    "generic_direct_planner"
+                    if result.source_model == "generic_direct_planner"
+                    else "clarification"
+                    if result.needs_clarification and not result.sql
+                    else "adaptive_router"
+                ),
+                "prediction_failed": False,
+            })
+        except Exception as exc:
+            elapsed = (time.perf_counter() - started) * 1000.0
+            merged.append({
+                **row,
+                "predicted_query_ir": {},
+                "predicted_sql": None,
+                "rendered_sql": None,
+                "confidence": 0.0,
+                "raw_confidence": 0.0,
+                "calibrated_confidence": 0.0,
+                "prediction_latency_ms": elapsed,
+                "prediction_source": "prediction_failed",
+                "predicted_route": "prediction_failed",
+                "prediction_failed": True,
+                "prediction_error": str(exc),
+                "ir_validation": {"is_valid": False, "errors": [str(exc)]},
+                "sql_validation": {"is_valid": False, "issues": [str(exc)]},
+            })
+    return merged, "adaptive_router", artifact_source
 
 
 def _schema_graph(schema: dict[str, Any]) -> Any:
@@ -301,11 +395,19 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate generic QueryIR models on held-out dataset splits.")
     parser.add_argument("--test", type=Path, default=ROOT / "data" / "processed" / "generic_ir_test.jsonl")
     parser.add_argument("--unseen-db-test", type=Path, default=ROOT / "data" / "processed" / "generic_ir_unseen_db_test.jsonl")
+    parser.add_argument("--model-bundle-dir", type=Path, default=None)
     parser.add_argument("--retrieval-model-dir", type=Path, default=ROOT / "artifacts" / "retrieval_ir_model")
     parser.add_argument("--neural-model-dir", type=Path, default=ROOT / "artifacts" / "neural_ir_model")
     parser.add_argument("--output", type=Path, default=ROOT / "artifacts" / "evaluation" / "generic_model_evaluation_report.json")
     parser.add_argument("--thresholds", type=Path, default=ROOT / "evaluation" / "model_quality_thresholds.yaml")
-    return parser.parse_args()
+    parser.add_argument("--allow-gold-replay-baseline", action="store_true")
+    parser.add_argument("--max-examples", type=int, default=None)
+    parser.add_argument("--calibration-coverage-target", type=float, default=0.95)
+    parser.add_argument("--disable-conformal-threshold", action="store_true")
+    parser.add_argument("--abstain-when-calibrated-confidence-below", type=float, default=None)
+    args = parser.parse_args()
+    args.use_conformal_threshold = not args.disable_conformal_threshold
+    return args
 
 
 def main() -> int:

@@ -8,6 +8,8 @@ but should not be used in the primary workflow.
 
 Both legacy full-pipeline wrappers and the preferred command now resolve their effective steps through `orchestration.pipeline_config.build_pipeline_steps`; no separate default registry is maintained.
 
+Legacy gold-replay and comparison commands are debugging tools only. Any report that replays `query_ir` labels as predictions must be labeled as `explicit_gold_replay_baseline` and is not valid for quality gates, model promotion, or bundle validation.
+
 ---
 
 ## Deprecated Training Scripts
