@@ -73,6 +73,24 @@ class DatasetScaleEvaluator:
                 distributions["confidence"].append(confidence)
                 distributions["wrong_prediction_confidence" if not correct else "correct_prediction_confidence"].append(confidence)
             self._collect_distributions(row, distributions)
+            # Behavior-derived simple_query_pass for bootstrap promotion
+            _SIMPLE_INTENTS = {"show_records", "count_records", "simple_filter"}
+            _gold_joins = gold.get("joins") or []
+            _pred_joins = pred.get("joins") or []
+            _is_simple_gold = (
+                gold.get("intent") in _SIMPLE_INTENTS
+                and not _gold_joins
+            )
+            _simple_query_pass: bool | None
+            if _is_simple_gold:
+                _simple_query_pass = bool(
+                    gold.get("intent") == pred.get("intent")
+                    and gold.get("base_table") == pred.get("base_table")
+                    and not _pred_joins
+                    and item_metrics.get("sql_validation", False)
+                )
+            else:
+                _simple_query_pass = None  # Non-simple queries excluded from simple_query_pass_rate
             per_example.append({
                 "example_id": row.get("example_id"),
                 "intent_correct": item_metrics.get("intent_accuracy", False),
@@ -82,10 +100,10 @@ class DatasetScaleEvaluator:
                 "confidence": confidence,
                 "sql_valid": item_metrics.get("sql_validation", False),
                 "execution_match": bool(row.get("execution_match", False)),
-                "unnecessary_join": bool((pred.get("joins") or []) and not (gold.get("joins") or [])),
+                "unnecessary_join": bool(_pred_joins and not _gold_joins),
                 "wrong_table": gold.get("base_table") != pred.get("base_table"),
                 # Bootstrap promotion fields (required by promotion_policy.py)
-                "simple_query_pass": bool(item_metrics.get("simple_query_match", False)),
+                "simple_query_pass": _simple_query_pass,
                 "gold_comparison_score": float(
                     row.get("gold_comparison_score")
                     or item_metrics.get("gold_comparison_score")

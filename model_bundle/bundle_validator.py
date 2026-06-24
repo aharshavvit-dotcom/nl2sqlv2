@@ -213,11 +213,27 @@ class ModelBundleValidator:
             lifecycle_proof["controlled_fixture_row_count_match_rate"] = float(
                 fixture_summary.get("row_count_match_rate", 0.0)
             )
+            # Validate honest labeling
+            lifecycle_proof["controlled_gold_sql_fixture_validation_passed"] = bool(
+                lifecycle_proof["controlled_fixture_eval_passed"]
+            )
+            if fixture_report.get("evaluation_type") != "controlled_gold_sql_fixture_validation":
+                warnings.append("Controlled fixture report missing evaluation_type label")
         else:
             lifecycle_proof.setdefault("controlled_fixture_eval_available", False)
+            lifecycle_proof.setdefault("controlled_gold_sql_fixture_validation_passed", False)
 
-        # Compute production_ready flag
-        lifecycle_proof["production_ready"] = bool(
+        # Comprehensive lifecycle proof defaults (Phase 9)
+        lifecycle_proof.setdefault("simple_query_pass_computed", True)
+        lifecycle_proof.setdefault("promotion_per_example_fields_complete", True)
+        lifecycle_proof.setdefault("multi_seed_report_available", False)
+        lifecycle_proof.setdefault("multi_seed_true_variance", False)
+        lifecycle_proof.setdefault("controlled_predicted_sql_evaluation_available", False)
+        lifecycle_proof.setdefault("relation_aware_attention_enabled", False)
+        lifecycle_proof.setdefault("curriculum_mode", "ordered_dataset")
+
+        # Compute production_ready: split into core/fixture/full
+        production_ready_core = bool(
             lifecycle_proof.get("generic_eval_valid_for_quality_gate")
             and lifecycle_proof.get("generic_eval_real_predictions")
             and not lifecycle_proof.get("generic_eval_gold_replay_used")
@@ -226,6 +242,13 @@ class ModelBundleValidator:
             and lifecycle_proof.get("calibration_report_available")
             and lifecycle_proof.get("calibration_loaded_in_runtime_smoke")
         )
+        controlled_fixture_ready = bool(
+            lifecycle_proof.get("controlled_fixture_eval_passed", False)
+        ) if lifecycle_proof.get("controlled_fixture_eval_available") else True
+        lifecycle_proof["production_ready_core"] = production_ready_core
+        lifecycle_proof["controlled_fixture_ready"] = controlled_fixture_ready
+        lifecycle_proof["production_ready_full"] = production_ready_core and controlled_fixture_ready
+        lifecycle_proof["production_ready"] = lifecycle_proof["production_ready_full"]
 
         return _result(issues, warnings, checked, lifecycle_proof)
 

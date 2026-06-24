@@ -48,4 +48,9 @@ class CurriculumBuilder:
                 canonical.append(phase)
         canonical.extend(name for name in phases if name not in canonical)
         ordered = [row for name in canonical for row in phases.get(name, [])]
-        return ordered, {name: len(phases.get(name, [])) for name in phases}
+        distribution = {name: len(phases.get(name, [])) for name in phases}
+        # Honest curriculum mode reporting
+        distribution["_curriculum_mode"] = "ordered_dataset"  # type: ignore[assignment]
+        distribution["_phased_epochs"] = False  # type: ignore[assignment]
+        distribution["_active"] = True  # type: ignore[assignment]
+        return ordered, distribution

@@ -214,7 +214,10 @@ class RetrievalNL2SQLModel:
         # Additional runtime provenance for the Streamlit UI
         result.debug["calibration_loaded"] = bool(self.orchestrator.confidence_calibration)
         result.debug["schema_drift_baseline_loaded"] = bool(self.orchestrator.schema_drift_baseline)
-        result.debug["bundle_dir"] = bundle_meta.get("bundle_id", "")
+        result.debug["bundle_id"] = bundle_meta.get("bundle_id", "")
+        result.debug["bundle_dir"] = str(self.artifact_dir) if self.artifact_dir else ""
+        result.debug["bundle_status"] = bundle_meta.get("status", "")
+        result.debug["artifact_dir"] = str(self.artifact_dir) if self.artifact_dir else ""
         return result
 
     @staticmethod

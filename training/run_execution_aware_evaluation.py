@@ -112,6 +112,8 @@ def evaluate_controlled_fixtures(
 
     return {
         "controlled_fixture_evaluation": True,
+        "evaluation_type": "controlled_gold_sql_fixture_validation",
+        "measures_model_predictions": False,
         "fixture_sql": str(sql_path),
         "fixture_cases": str(cases_path),
         "total_cases": total,
@@ -120,6 +122,170 @@ def evaluate_controlled_fixtures(
             "row_count_match_rate": row_match / total if total else 0.0,
             "select_only_rate": select_only / total if total else 0.0,
         },
+        "cases": results,
+    }
+
+
+def evaluate_controlled_predicted_sql(
+    model_artifact_dir: Path | None = None,
+    fixture_sql_path: Path | None = None,
+    fixture_cases_path: Path | None = None,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run predicted-SQL controlled execution evaluation.
+
+    Unlike evaluate_controlled_fixtures (which validates gold SQL),
+    this function loads the trained model, generates predictions for each
+    fixture question, and evaluates whether the predicted SQL executes
+    correctly against the controlled fixture database.
+
+    This is the stronger model metric: it measures actual model prediction accuracy.
+    """
+    fixture_dir = ROOT / "evaluation" / "fixtures"
+    sql_path = fixture_sql_path or fixture_dir / "controlled_evaluation.sql"
+    cases_path = fixture_cases_path or fixture_dir / "controlled_evaluation_cases.jsonl"
+
+    if not sql_path.exists():
+        return {"error": f"Fixture SQL not found: {sql_path}", "evaluation_type": "controlled_predicted_sql_execution"}
+    if not cases_path.exists():
+        return {"error": f"Fixture cases not found: {cases_path}", "evaluation_type": "controlled_predicted_sql_execution"}
+
+    # Resolve model artifact directory
+    artifact_dir = model_artifact_dir
+    if artifact_dir is None:
+        # Try candidate bundle, then current bundle, then raw artifacts
+        for candidate_path in [
+            ROOT / "artifacts" / "model_bundle" / "candidate",
+            ROOT / "artifacts" / "model_bundle" / "current",
+        ]:
+            if (candidate_path / "retrieval_ir").exists():
+                artifact_dir = candidate_path
+                break
+    if artifact_dir is None or not artifact_dir.exists():
+        return {
+            "error": "No model artifact directory found for predicted-SQL evaluation",
+            "evaluation_type": "controlled_predicted_sql_execution",
+            "measures_model_predictions": True,
+        }
+
+    sql_seed = sql_path.read_text(encoding="utf-8")
+    cases = read_jsonl(cases_path)
+
+    # Load model
+    try:
+        from retriever.retrieval_nl2sql_model import RetrievalNL2SQLModel
+        model = RetrievalNL2SQLModel.load(str(artifact_dir))
+    except Exception as exc:
+        return {
+            "error": f"Failed to load model from {artifact_dir}: {exc}",
+            "evaluation_type": "controlled_predicted_sql_execution",
+            "measures_model_predictions": True,
+        }
+
+    results: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = Path(tmp) / "controlled_predicted.db"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executescript(sql_seed)
+
+            # Execute gold SQL first to get expected results
+            gold_results: dict[str, list[tuple]] = {}
+            for case in cases:
+                gold_sql = case.get("gold_sql", "")
+                example_id = case.get("example_id", "")
+                try:
+                    cursor = conn.execute(gold_sql)
+                    gold_results[example_id] = cursor.fetchall()
+                except Exception:
+                    gold_results[example_id] = []
+
+            for case in cases:
+                example_id = case.get("example_id", "")
+                question = case.get("question", "")
+                gold_sql = case.get("gold_sql", "")
+                expected_rows = case.get("expected_row_count")
+
+                entry: dict[str, Any] = {
+                    "example_id": example_id,
+                    "question": question,
+                    "gold_sql": gold_sql,
+                    "expected_row_count": expected_rows,
+                    "predicted_sql": None,
+                    "prediction_generated": False,
+                    "predicted_sql_valid": False,
+                    "predicted_sql_is_select_only": False,
+                    "predicted_execution_success": False,
+                    "predicted_actual_row_count": None,
+                    "predicted_row_count_match": False,
+                    "predicted_result_value_match": False,
+                    "error": None,
+                }
+
+                # Generate prediction
+                try:
+                    from schema_tools.schema_graph import SchemaGraph
+                    # Build minimal schema from fixture
+                    schema = SchemaGraph(tables={}, relationships=[])
+                    result = model.predict(question, schema)
+                    predicted_sql = result.sql or ""
+                    entry["predicted_sql"] = predicted_sql
+                    entry["prediction_generated"] = bool(predicted_sql.strip())
+
+                    if predicted_sql.strip():
+                        # Validate safety
+                        sql_upper = predicted_sql.strip().upper()
+                        entry["predicted_sql_is_select_only"] = sql_upper.startswith("SELECT")
+                        entry["predicted_sql_valid"] = (
+                            entry["predicted_sql_is_select_only"]
+                            and not any(kw in sql_upper for kw in ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE"])
+                        )
+
+                        if entry["predicted_sql_valid"]:
+                            try:
+                                cursor = conn.execute(predicted_sql)
+                                pred_rows = cursor.fetchall()
+                                entry["predicted_execution_success"] = True
+                                entry["predicted_actual_row_count"] = len(pred_rows)
+                                if expected_rows is not None:
+                                    entry["predicted_row_count_match"] = len(pred_rows) == expected_rows
+                                # Compare with gold results
+                                gold_rows = gold_results.get(example_id, [])
+                                entry["predicted_result_value_match"] = (pred_rows == gold_rows)
+                            except Exception as exc:
+                                entry["error"] = f"Execution error: {exc}"
+                except Exception as exc:
+                    entry["error"] = f"Prediction error: {exc}"
+
+                results.append(entry)
+        finally:
+            conn.close()
+
+    total = len(results)
+    predictions_generated = sum(1 for r in results if r["prediction_generated"])
+    valid_count = sum(1 for r in results if r["predicted_sql_valid"])
+    exec_success = sum(1 for r in results if r["predicted_execution_success"])
+    exec_match = sum(1 for r in results if r["predicted_result_value_match"])
+    row_match = sum(1 for r in results if r["predicted_row_count_match"])
+    unsafe = sum(1 for r in results if r["prediction_generated"] and not r["predicted_sql_is_select_only"])
+
+    return {
+        "evaluation_type": "controlled_predicted_sql_execution",
+        "measures_model_predictions": True,
+        "model_artifact_dir": str(artifact_dir),
+        "fixture_sql": str(sql_path),
+        "fixture_cases": str(cases_path),
+        "cases_total": total,
+        "predictions_generated": predictions_generated,
+        "predicted_sql_valid_count": valid_count,
+        "predicted_execution_success_count": exec_success,
+        "predicted_execution_match_count": exec_match,
+        "predicted_execution_match_rate": exec_match / total if total else 0.0,
+        "predicted_execution_error_rate": (total - exec_success) / total if total else 0.0,
+        "predicted_row_count_match_rate": row_match / total if total else 0.0,
+        "predicted_result_value_match_rate": exec_match / total if total else 0.0,
+        "unsafe_sql_count": unsafe,
+        "passed": unsafe == 0 and (exec_match / total if total else 0.0) >= (config or {}).get("min_execution_match_rate", 0.0),
         "cases": results,
     }
 

@@ -34,6 +34,7 @@ class TrainingDiagnostics:
             "validation_path": config.get("data", {}).get("validation_path"),
             "hard_negatives_path": config.get("data", {}).get("hard_negatives_path"),
             "curriculum": config.get("training", {}).get("curriculum", {}),
+            "relation_aware_attention": config.get("model", {}).get("relation_aware_attention", {}),
         }
 
     def start_training(self) -> None:

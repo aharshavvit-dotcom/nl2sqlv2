@@ -521,6 +521,7 @@ def run_optimized_training(
         "validation_by_dataset": _dataset_distribution(val_dataset.examples if val_dataset else []),
         "curriculum_enabled": curriculum_enabled,
         "curriculum_distribution": curriculum_distribution,
+        "curriculum_mode": curriculum_distribution.get("_curriculum_mode", "ordered_dataset") if curriculum_enabled else "disabled",
         "legacy_mode": legacy_mode,
         "sample_mode": sample_mode,
         "hard_negative_file": str(hard_neg_path) if hard_neg_path else "",

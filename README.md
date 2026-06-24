@@ -288,6 +288,63 @@ For detailed internal commands (individual training steps, evaluation suites, ca
 
 ---
 
+## Evaluation & Lifecycle Details
+
+### simple_query_pass
+
+The `simple_query_pass` metric is **behavior-derived** — it is computed from the actual gold and predicted QueryIR structures, not from a magic metric key. A query qualifies as "simple" if the gold intent is one of `{show_records, count_records, simple_filter}` with no joins. The pass condition checks: intent match, base_table match, no predicted joins, and SQL validation. Non-simple queries receive `None` and are excluded from rate calculations.
+
+### Multi-Seed Evaluation
+
+Two modes exist:
+
+| Mode | `mode` value | `is_valid_for_training_variance_governance` | Description |
+|:---|:---|:---|:---|
+| Single-seed baseline | `single_seed_baseline` | `false` | Only primary run metrics; no variance computed |
+| Evaluation-only stability | `evaluation_only_stability` | `false` | Re-runs evaluation step with different seeds; measures prediction stability, **not** training variance |
+
+True training variance (`is_valid_for_training_variance_governance=true`) requires full re-training per seed, which is optional and disabled by default.
+
+### Controlled Fixture Evaluation
+
+Two types:
+
+| Type | `evaluation_type` | `measures_model_predictions` | Description |
+|:---|:---|:---|:---|
+| Gold SQL validation | `controlled_gold_sql_fixture_validation` | `false` | Validates gold SQL executes correctly on fixture DB |
+| Predicted SQL execution | `controlled_predicted_sql_execution` | `true` | Loads model, generates predictions, compares with gold results |
+
+### Relation-Aware Schema Attention
+
+Experimental RAT-SQL-style learnable bias per relation type. Disabled by default (`relation_aware_attention.enabled: false`). Ten relation types: `same_table`, `table_has_column`, `column_belongs_to_table`, `fk_to_pk`, `pk_to_fk`, `primary_key`, `foreign_key_column`, `same_column_name`, `same_data_type`, `unrelated`. Not used for production behavior unless explicitly enabled and validated.
+
+### Curriculum Modes
+
+| Mode | Description |
+|:---|:---|
+| `ordered_dataset` | Current default: examples ordered by curriculum phase within a single pass |
+| `phased_epochs` | Future: per-epoch phase gating (not implemented in this pass) |
+
+### Runtime Debug Fields
+
+| Field | Description |
+|:---|:---|
+| `runtime_source` | Where prediction came from: `dev_fallback`, `model_bundle_candidate`, `model_bundle_current`, `artifact_dirs` |
+| `bundle_id` | Unique bundle identifier |
+| `bundle_dir` | Filesystem path to the loaded artifact directory |
+| `bundle_status` | Bundle status: `candidate`, `validated`, `current` |
+| `calibration_loaded` | Whether confidence calibration was loaded |
+| `schema_drift_baseline_loaded` | Whether drift baseline was loaded |
+
+### production_ready Split
+
+`production_ready` is now decomposed into three levels:
+- **`production_ready_core`**: All critical lifecycle checks (quality gate, evaluation truthfulness, calibration, runtime smoke)
+- **`controlled_fixture_ready`**: Controlled fixture evaluation passed (when required)
+- **`production_ready_full`**: `production_ready_core AND controlled_fixture_ready`
+
+---
+
 ## Development Guidelines
 
 1. **No Raw-SQL Rendering**: SQL generation must go through [ir/ir_to_sql_renderer.py](ir/ir_to_sql_renderer.py).

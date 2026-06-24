@@ -528,7 +528,9 @@ if generate and question.strip():
 
         if bundle_info:
             cal_path = bundle_info.get("calibration_report_path")
-            st.caption(f"Bundle: {bundle_info.get('bundle_dir', 'N/A')}")
+            st.caption(f"Bundle ID: {result.debug.get('bundle_id') or bundle_info.get('bundle_id', 'N/A')}")
+            st.caption(f"Bundle dir: {result.debug.get('bundle_dir') or bundle_info.get('bundle_dir', 'N/A')}")
+            st.caption(f"Bundle status: {result.debug.get('bundle_status') or bundle_info.get('status', 'N/A')}")
             st.caption(f"Calibration report: {'loaded' if cal_path else 'not available'}")
         if dev_fallback:
             st.warning("⚠️ Development fallback is active. This is not production-safe. "

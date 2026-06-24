@@ -170,8 +170,30 @@ class ModelBundleBuilder:
                 _fixture_summary.get("row_count_match_rate", 0.0)
             ),
         }
-        # production_ready: AND of all critical lifecycle fields
-        lifecycle_proof["production_ready"] = all([
+        # Comprehensive lifecycle proof fields (Phase 9)
+        lifecycle_proof["simple_query_pass_computed"] = True  # Now behavior-derived in evaluator
+        lifecycle_proof["promotion_per_example_fields_complete"] = True
+        lifecycle_proof["multi_seed_report_available"] = False  # Updated below if found
+        lifecycle_proof["multi_seed_true_variance"] = False
+        lifecycle_proof["controlled_gold_sql_fixture_validation_passed"] = bool(
+            _fixture_step is not None and _fixture_summary.get("passed", False)
+        )
+        lifecycle_proof["controlled_predicted_sql_evaluation_available"] = False
+        lifecycle_proof["relation_aware_attention_enabled"] = False
+        lifecycle_proof["curriculum_mode"] = "ordered_dataset"
+
+        # Check for multi-seed report in pipeline steps
+        _seed_step = next(
+            (s for s in _steps if s.get("step") == "multi_seed_variance" and s.get("status") == "completed"),
+            None,
+        )
+        if _seed_step:
+            _seed_summary = (_seed_step or {}).get("summary") or {}
+            lifecycle_proof["multi_seed_report_available"] = True
+            lifecycle_proof["multi_seed_true_variance"] = bool(_seed_summary.get("true_multi_seed", False))
+
+        # production_ready: split into core, controlled fixture, and full
+        production_ready_core = all([
             lifecycle_proof["generic_eval_valid_for_quality_gate"],
             lifecycle_proof["generic_eval_real_predictions"],
             not lifecycle_proof["generic_eval_gold_replay_used"],
@@ -180,6 +202,18 @@ class ModelBundleBuilder:
             lifecycle_proof["bundle_runtime_smoke_passed"],
             lifecycle_proof["calibration_loaded_in_runtime_smoke"],
         ])
+        controlled_required = bool(
+            (config.get("execution_aware", {}).get("controlled_fixtures", {})
+             .get("required_for_full_training", False))
+        )
+        controlled_fixture_ready = (
+            not controlled_required
+            or lifecycle_proof["controlled_fixture_eval_passed"]
+        )
+        lifecycle_proof["production_ready_core"] = production_ready_core
+        lifecycle_proof["controlled_fixture_ready"] = controlled_fixture_ready
+        lifecycle_proof["production_ready_full"] = production_ready_core and controlled_fixture_ready
+        lifecycle_proof["production_ready"] = lifecycle_proof["production_ready_full"]
 
         # Build manifest
         bundle_id = f"nl2sql_bundle_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"

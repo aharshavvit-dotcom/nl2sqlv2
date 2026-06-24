@@ -440,6 +440,60 @@ class StepRunner:
             },
         }
 
+    def _contract_run_controlled_predicted_sql_evaluation(self, config: PipelineConfig) -> StepContract:
+        integrated = config.training.get("_integrated_config") or {}
+        controlled_predicted = (integrated.get("execution_aware") or {}).get("controlled_predicted_sql") or {}
+        if controlled_predicted.get("enabled", False):
+            return StepContract(
+                name="run_controlled_predicted_sql_evaluation", required=False,
+                outputs=[str(ROOT / "artifacts/evaluation/controlled_predicted_sql_execution_report.json")],
+            )
+        return StepContract(
+            name="run_controlled_predicted_sql_evaluation",
+            required=False,
+        )
+
+    def _run_run_controlled_predicted_sql_evaluation(self, config: PipelineConfig) -> dict[str, Any]:
+        from dataset_training.utils import write_json
+        from training.run_execution_aware_evaluation import evaluate_controlled_predicted_sql
+
+        integrated = config.training.get("_integrated_config") or {}
+        controlled_predicted = (integrated.get("execution_aware") or {}).get("controlled_predicted_sql") or {}
+        bundle_dir = ROOT / (integrated.get("paths", {}).get("candidate_bundle_dir", "artifacts/model_bundle/candidate"))
+
+        report = evaluate_controlled_predicted_sql(
+            model_artifact_dir=bundle_dir,
+            config=controlled_predicted,
+        )
+        output = ROOT / "artifacts/evaluation/controlled_predicted_sql_execution_report.json"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        write_json(output, report)
+
+        if report.get("error"):
+            return {
+                "status": "completed",
+                "summary": {
+                    "controlled_predicted_sql_eval": True,
+                    "error": report["error"],
+                    "measures_model_predictions": True,
+                    "passed": False,
+                },
+            }
+
+        return {
+            "status": "completed",
+            "summary": {
+                "controlled_predicted_sql_eval": True,
+                "measures_model_predictions": True,
+                "cases_total": report.get("cases_total", 0),
+                "predictions_generated": report.get("predictions_generated", 0),
+                "predicted_execution_match_rate": report.get("predicted_execution_match_rate", 0.0),
+                "predicted_row_count_match_rate": report.get("predicted_row_count_match_rate", 0.0),
+                "unsafe_sql_count": report.get("unsafe_sql_count", 0),
+                "passed": report.get("passed", False),
+            },
+        }
+
     def _run_evaluate_generic_models(self, config: PipelineConfig) -> dict[str, Any]:
         from training.evaluate_generic_models import evaluate_generic_models
 

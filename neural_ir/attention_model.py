@@ -11,6 +11,37 @@ from neural_optimization.activation_factory import get_activation
 from .model import masked_logits
 from .pointer_network import SchemaPointerNetwork
 
+# Relation types for relation-aware schema attention (RAT-SQL-style bias)
+RELATION_TYPES = [
+    "same_table", "table_has_column", "column_belongs_to_table",
+    "fk_to_pk", "pk_to_fk", "primary_key", "foreign_key_column",
+    "same_column_name", "same_data_type", "unrelated",
+]
+
+
+class RelationBiasModule(nn.Module):
+    """Learnable scalar bias per schema relation type.
+
+    Adds relation-dependent bias to schema attention logits before softmax.
+    This is a lightweight RAT-SQL-style relation-aware attention mechanism.
+    """
+
+    def __init__(self, num_types: int = len(RELATION_TYPES), bias_init: float = 0.0):
+        super().__init__()
+        self.num_types = num_types
+        self.bias = nn.Parameter(torch.full((num_types,), bias_init))
+
+    def forward(self, relation_type_ids: torch.Tensor) -> torch.Tensor:
+        """Return bias values for given relation type IDs.
+
+        Args:
+            relation_type_ids: [batch, query_len, schema_len] of int type indices.
+
+        Returns:
+            [batch, query_len, schema_len] bias to add to attention scores.
+        """
+        return self.bias[relation_type_ids.clamp(0, self.num_types - 1)]
+
 
 def _maybe_ffn_head(input_dim: int, output_dim: int, config: dict) -> nn.Module:
     """Return an FFN-wrapped head or a plain Linear, depending on config."""
@@ -70,6 +101,18 @@ class SchemaAwareOptionAIRModel(nn.Module):
         self.max_tables = int(merged["max_tables"])
         self.max_columns = int(merged["max_columns"])
         self.max_candidate_tokens = int(merged.get("max_candidate_tokens", 16))
+
+        # Relation-aware schema attention (experimental, disabled by default)
+        rat_config = merged.get("relation_aware_attention") or {}
+        self.relation_aware_enabled = bool(rat_config.get("enabled", False))
+        if self.relation_aware_enabled:
+            relation_types = rat_config.get("relation_types", RELATION_TYPES)
+            bias_init = float(rat_config.get("bias_init", 0.0))
+            self.relation_bias = RelationBiasModule(
+                num_types=len(relation_types), bias_init=bias_init,
+            )
+        else:
+            self.relation_bias = None
 
         self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
         self.question_encoder = nn.GRU(
@@ -131,6 +174,7 @@ class SchemaAwareOptionAIRModel(nn.Module):
         schema_link_scores=None,
         table_candidate_token_ids=None,
         column_candidate_token_ids=None,
+        relation_type_ids=None,
     ) -> dict:
         question_emb = self.embedding(question_ids)
         schema_emb = self.embedding(schema_ids)
@@ -144,6 +188,7 @@ class SchemaAwareOptionAIRModel(nn.Module):
             schema_out,
             question_mask=question_mask,
             schema_mask=schema_mask,
+            relation_type_ids=relation_type_ids,
         )
         fused = self.fusion(torch.cat([question_vec, schema_vec, attended_schema, question_vec * attended_schema], dim=-1))
 
@@ -209,9 +254,14 @@ class SchemaAwareOptionAIRModel(nn.Module):
         schema_out: torch.Tensor,
         question_mask: torch.Tensor | None,
         schema_mask: torch.Tensor | None,
+        relation_type_ids: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         scale = math.sqrt(max(question_out.size(-1), 1))
         scores = torch.matmul(question_out, schema_out.transpose(1, 2)) / scale
+        # Relation-aware bias: add learned per-relation-type scalar bias
+        if self.relation_bias is not None and relation_type_ids is not None:
+            relation_bias = self.relation_bias(relation_type_ids.to(scores.device))
+            scores = scores + relation_bias
         if schema_mask is not None:
             scores = scores.masked_fill(~schema_mask.to(scores.device).bool().unsqueeze(1), -1e9)
         weights = torch.softmax(scores, dim=-1)

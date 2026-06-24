@@ -23,17 +23,34 @@ class ModelSelector:
             return {"selected_model": None, "rejected_models": rejected, "selection_reason": "all_candidates_rejected", "blocking_issues": blocking_issues, "warnings": []}
         selected = sorted(accepted, key=lambda item: _selection_score(item.metrics), reverse=True)[0]
         warnings: list[str] = []
-        # Multi-seed variance check (when available)
+        # Multi-seed variance check (when available and valid for governance)
         multi_seed_report = selected.metadata.get("multi_seed_report") if selected.metadata else None
         if multi_seed_report and isinstance(multi_seed_report, dict):
-            variance = multi_seed_report.get("metric_std", {})
-            high_variance = [
-                f"{metric}: std={std:.4f}" for metric, std in variance.items()
-                if isinstance(std, (int, float)) and std > 0.05
-            ]
-            if high_variance:
+            is_valid_governance = multi_seed_report.get("is_valid_for_variance_governance", False)
+            # Support both flat metric_std and nested metrics.*.std shapes
+            variance = multi_seed_report.get("metric_std")
+            if variance is None:
+                variance = {
+                    name: values.get("std")
+                    for name, values in multi_seed_report.get("metrics", {}).items()
+                    if isinstance(values, dict) and "std" in values
+                }
+            if is_valid_governance:
+                high_variance = [
+                    f"{metric}: std={std:.4f}" for metric, std in variance.items()
+                    if isinstance(std, (int, float)) and std > 0.05
+                ]
+                if high_variance:
+                    warnings.append(
+                        "High metric variance across seeds: " + ", ".join(high_variance)
+                    )
+            else:
+                mode = multi_seed_report.get("mode", "unknown")
+                seeds_evaluated = multi_seed_report.get("seeds_evaluated", 0)
                 warnings.append(
-                    "High metric variance across seeds: " + ", ".join(high_variance)
+                    f"multi_seed_variance_not_available: mode={mode}, "
+                    f"seeds_evaluated={seeds_evaluated}, "
+                    f"is_valid_for_variance_governance=false"
                 )
         return {
             "selected_model": asdict(selected),

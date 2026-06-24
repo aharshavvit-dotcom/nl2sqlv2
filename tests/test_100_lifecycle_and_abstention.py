@@ -318,3 +318,222 @@ class TestAbstentionReasonAndDrift:
         serialized = json.dumps(data)
         assert "conformal threshold" in serialized
         assert "high_complexity" in serialized
+
+
+class TestRelationAwareSchemaAttention:
+    """Phase 6: Relation-aware schema attention smoke tests."""
+
+    def test_disabled_mode_preserves_old_forward_path(self) -> None:
+        """With relation_aware_attention.enabled=false, forward pass succeeds and
+        produces the same outputs as before."""
+        import torch
+        from neural_ir.attention_model import SchemaAwareOptionAIRModel
+
+        config = {"relation_aware_attention": {"enabled": False}}
+        label_sizes = {
+            "intent": 5, "metric_aggregation": 4, "metric_expression_type": 3,
+            "date_grain": 3, "date_filter_type": 3, "filter_operator": 4,
+            "order_direction": 3, "limit_bucket": 3,
+        }
+        model = SchemaAwareOptionAIRModel(config, vocab_size=100, label_sizes=label_sizes)
+        assert model.relation_bias is None
+        question_ids = torch.randint(0, 100, (2, 10))
+        schema_ids = torch.randint(0, 100, (2, 20))
+        outputs = model(question_ids, schema_ids)
+        assert "intent_logits" in outputs
+        assert "attention_weights" in outputs
+
+    def test_enabled_mode_forward_pass_succeeds(self) -> None:
+        """With relation_aware_attention.enabled=true, forward pass succeeds
+        and relation_bias module exists."""
+        import torch
+        from neural_ir.attention_model import SchemaAwareOptionAIRModel
+
+        config = {"relation_aware_attention": {"enabled": True, "bias_init": 0.0}}
+        label_sizes = {
+            "intent": 5, "metric_aggregation": 4, "metric_expression_type": 3,
+            "date_grain": 3, "date_filter_type": 3, "filter_operator": 4,
+            "order_direction": 3, "limit_bucket": 3,
+        }
+        model = SchemaAwareOptionAIRModel(config, vocab_size=100, label_sizes=label_sizes)
+        assert model.relation_bias is not None
+        assert model.relation_aware_enabled is True
+
+        question_ids = torch.randint(0, 100, (2, 10))
+        schema_ids = torch.randint(0, 100, (2, 20))
+        # Provide relation_type_ids matching [batch, question_len, schema_len]
+        relation_type_ids = torch.randint(0, 10, (2, 10, 20))
+        outputs = model(question_ids, schema_ids, relation_type_ids=relation_type_ids)
+        assert "intent_logits" in outputs
+        assert "attention_weights" in outputs
+
+    def test_relation_type_ids_shape(self) -> None:
+        """RelationBiasModule output has expected shape."""
+        import torch
+        from neural_ir.attention_model import RelationBiasModule
+
+        module = RelationBiasModule(num_types=10, bias_init=0.0)
+        ids = torch.randint(0, 10, (2, 8, 16))
+        bias = module(ids)
+        assert bias.shape == (2, 8, 16)
+
+    def test_relation_types_list_correct(self) -> None:
+        """RELATION_TYPES list includes all 10 approved types."""
+        from neural_ir.attention_model import RELATION_TYPES
+
+        expected = {
+            "same_table", "table_has_column", "column_belongs_to_table",
+            "fk_to_pk", "pk_to_fk", "primary_key", "foreign_key_column",
+            "same_column_name", "same_data_type", "unrelated",
+        }
+        assert set(RELATION_TYPES) == expected
+        assert len(RELATION_TYPES) == 10
+
+    def test_config_preserves_relation_aware_setting(self) -> None:
+        """Model config stores relation_aware_attention setting."""
+        from neural_ir.attention_model import SchemaAwareOptionAIRModel
+
+        config = {"relation_aware_attention": {"enabled": True, "bias_init": 0.1}}
+        label_sizes = {
+            "intent": 5, "metric_aggregation": 4, "metric_expression_type": 3,
+            "date_grain": 3, "date_filter_type": 3, "filter_operator": 4,
+            "order_direction": 3, "limit_bucket": 3,
+        }
+        model = SchemaAwareOptionAIRModel(config, vocab_size=100, label_sizes=label_sizes)
+        assert model.config["relation_aware_attention"]["enabled"] is True
+        assert model.config["relation_aware_attention"]["bias_init"] == 0.1
+
+
+class TestMultiSeedGovernanceLabels:
+    """Phase 2: Multi-seed report shape and governance labels."""
+
+    def test_model_selector_informational_warning_for_single_seed(self) -> None:
+        """ModelSelector emits multi_seed_variance_not_available for single-seed baseline."""
+        from model_selection.model_selector import ModelSelector
+        from model_selection.model_candidate import ModelCandidate
+
+        candidate = ModelCandidate(
+            name="test",
+            artifact_dir="test_dir",
+            model_type="retrieval",
+            metrics={"sql_validation_rate": 0.95, "query_ir_validity_rate": 0.92},
+            created_at="2026-01-01",
+            metadata={"multi_seed_report": {
+                "enabled": True,
+                "mode": "single_seed_baseline",
+                "true_multi_seed": False,
+                "is_valid_for_variance_governance": False,
+                "seeds_evaluated": 1,
+                "metric_std": {"intent_macro_f1": 0.0},
+            }},
+        )
+        result = ModelSelector().select_best([candidate], {"minimums": {}})
+        warnings = result.get("warnings", [])
+        assert any("multi_seed_variance_not_available" in w for w in warnings)
+
+    def test_model_selector_reads_nested_metrics_shape(self) -> None:
+        """ModelSelector reads std from nested metrics.*.std when metric_std is missing."""
+        from model_selection.model_selector import ModelSelector
+        from model_selection.model_candidate import ModelCandidate
+
+        candidate = ModelCandidate(
+            name="test",
+            artifact_dir="test_dir",
+            model_type="retrieval",
+            metrics={"sql_validation_rate": 0.95, "query_ir_validity_rate": 0.92},
+            created_at="2026-01-01",
+            metadata={"multi_seed_report": {
+                "enabled": True, "mode": "evaluation_only_stability",
+                "true_multi_seed": True,
+                "is_valid_for_variance_governance": True,
+                "seeds_evaluated": 3,
+                "metrics": {
+                    "intent_macro_f1": {"std": 0.08, "mean": 0.80},
+                },
+            }},
+        )
+        result = ModelSelector().select_best([candidate], {"minimums": {}})
+        warnings = result.get("warnings", [])
+        assert any("High metric variance" in w and "intent_macro_f1" in w for w in warnings)
+
+
+class TestControlledFixtureLabeling:
+    """Phase 4: Controlled fixture honest labeling."""
+
+    def test_gold_sql_fixture_report_has_evaluation_type(self) -> None:
+        """evaluate_controlled_fixtures report includes evaluation_type and measures_model_predictions."""
+        from training.run_execution_aware_evaluation import evaluate_controlled_fixtures
+        fixture_dir = ROOT / "evaluation" / "fixtures"
+        if not (fixture_dir / "controlled_evaluation.sql").exists():
+            pytest.skip("Fixture SQL not available")
+        report = evaluate_controlled_fixtures()
+        assert report["evaluation_type"] == "controlled_gold_sql_fixture_validation"
+        assert report["measures_model_predictions"] is False
+
+
+class TestRuntimeDebugMetadata:
+    """Phase 8: Runtime debug bundle_id/bundle_dir/bundle_status separation."""
+
+    def test_predict_code_has_separate_bundle_fields(self) -> None:
+        """retrieval_nl2sql_model.py sets bundle_id, bundle_dir, bundle_status separately."""
+        source = (ROOT / "retriever" / "retrieval_nl2sql_model.py").read_text(encoding="utf-8")
+        assert 'result.debug["bundle_id"]' in source
+        assert 'result.debug["bundle_dir"]' in source
+        assert 'result.debug["bundle_status"]' in source
+        # bundle_dir should use self.artifact_dir, not bundle_id
+        assert 'result.debug["bundle_dir"] = str(self.artifact_dir)' in source
+
+
+class TestProductionReadySplit:
+    """Phase 4+9: production_ready split into core/fixture/full."""
+
+    def test_lifecycle_proof_has_split_production_ready(self) -> None:
+        """Bundle builder produces production_ready_core, controlled_fixture_ready, production_ready_full."""
+        from model_bundle.bundle_builder import ModelBundleBuilder
+
+        builder = ModelBundleBuilder()
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            result = builder.build_candidate_bundle(
+                work_dir=td, output_dir=Path(td) / "out",
+                config={"execution_aware": {"controlled_fixtures": {"required_for_full_training": True}}},
+                pipeline_report={"steps": []},
+            )
+            # lifecycle_proof is in the manifest
+            manifest_path = Path(result.get("manifest_path", ""))
+            if manifest_path.exists():
+                import json as json_mod
+                manifest = json_mod.loads(manifest_path.read_text(encoding="utf-8"))
+                lp = manifest.get("lifecycle_proof", {})
+            else:
+                lp = result.get("lifecycle_proof", {})
+            assert "production_ready_core" in lp
+            assert "controlled_fixture_ready" in lp
+            assert "production_ready_full" in lp
+            assert "simple_query_pass_computed" in lp
+            assert "promotion_per_example_fields_complete" in lp
+            assert "curriculum_mode" in lp
+
+    def test_production_ready_full_false_when_fixture_required_but_missing(self) -> None:
+        """production_ready_full is False when controlled fixture is required but not passed."""
+        from model_bundle.bundle_builder import ModelBundleBuilder
+
+        builder = ModelBundleBuilder()
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            result = builder.build_candidate_bundle(
+                work_dir=td, output_dir=Path(td) / "out",
+                config={"execution_aware": {"controlled_fixtures": {"required_for_full_training": True}}},
+                pipeline_report={"steps": []},
+            )
+            manifest_path = Path(result.get("manifest_path", ""))
+            if manifest_path.exists():
+                import json as json_mod
+                manifest = json_mod.loads(manifest_path.read_text(encoding="utf-8"))
+                lp = manifest.get("lifecycle_proof", {})
+            else:
+                lp = result.get("lifecycle_proof", {})
+            # No fixture step means controlled_fixture_eval_passed = False
+            assert lp.get("controlled_fixture_ready") is False
+            assert lp.get("production_ready_full") is False
+

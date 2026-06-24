@@ -78,7 +78,12 @@ bundle:
 execution_aware:
   controlled_fixtures:
     enabled: true
+    required_for_full_training: true
     output: artifacts/evaluation/controlled_fixture_evaluation_report.json
+  controlled_predicted_sql:
+    enabled: false
+    required_for_full_training: false
+    min_execution_match_rate: 0.70
 
 # Multi-seed training variance (disabled by default).
 # When enabled, repeats evaluation over multiple seeds and reports metric variance.

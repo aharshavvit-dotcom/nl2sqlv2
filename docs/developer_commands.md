@@ -291,3 +291,44 @@ python training/run_connected_db_regressions.py \
 python training_ir/calibrate_option_a_confidence.py
 python training_ir/calibrate_hybrid_router.py
 ```
+
+---
+
+## Multi-Seed Evaluation
+
+Enable evaluation-only stability analysis in `configs/training.yaml`:
+
+```yaml
+seeds:
+  enabled: true
+  values: [42, 123, 456]
+  metrics: [intent_macro_f1, base_table_accuracy, sql_validation_rate]
+```
+
+This re-runs the evaluation step per seed and computes metric variance. It measures **prediction stability**, not training variance. The report field `is_valid_for_training_variance_governance` will be `false`. Full per-seed re-training is a future enhancement.
+
+---
+
+## Controlled Fixture Evaluation
+
+### Gold SQL Fixture Validation (default)
+Validates gold SQL executes correctly on a deterministic in-memory SQLite database. Configured via `execution_aware.controlled_fixtures.enabled: true`.
+
+### Predicted SQL Execution (experimental)
+Loads the candidate model bundle and runs predictions against fixture questions. Configured via `execution_aware.controlled_predicted_sql.enabled: true`. Non-blocking by default.
+
+---
+
+## Relation-Aware Schema Attention
+
+Enable in `configs/neural_training_default.yaml`:
+
+```yaml
+model:
+  relation_aware_attention:
+    enabled: true
+    bias_init: 0.0
+```
+
+This adds a lightweight RAT-SQL-style learnable bias per relation type to schema attention. **Not production behavior** unless explicitly enabled and validated via controlled experiments.
+

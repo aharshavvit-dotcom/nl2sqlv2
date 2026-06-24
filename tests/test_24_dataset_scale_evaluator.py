@@ -153,9 +153,91 @@ def test_per_example_contains_bootstrap_promotion_fields() -> None:
     assert "gold_comparison_score" in pe
     assert "unseen_db_sql_valid" in pe
     assert pe["unseen_db_sql_valid"] is None  # Not unseen_db mode
+    # simple_query_pass should be True for a correct simple query
+    assert pe["simple_query_pass"] is True
 
     # Unseen-DB schema mode → unseen_db_sql_valid should be bool
     report_unseen = DatasetScaleEvaluator().evaluate_model("mock_model", [row], schema_mode="unseen_db")
     pe_unseen = report_unseen["per_example"][0]
     assert isinstance(pe_unseen["unseen_db_sql_valid"], bool)
     assert pe_unseen["gold_comparison_score"] >= 0.0
+
+
+def test_simple_query_pass_show_records_correct() -> None:
+    """show_records with correct table and no joins → simple_query_pass = True."""
+    gold = {"intent": "show_records", "base_table": "users", "joins": []}
+    row = {
+        "example_id": "sq1", "question": "list users",
+        "query_ir": gold, "predicted_query_ir": gold,
+        "ir_validation": {"is_valid": True}, "sql_validation": {"is_valid": True},
+        "confidence": 0.9, "prediction_latency_ms": 5.0,
+    }
+    report = DatasetScaleEvaluator().evaluate_model("m", [row])
+    assert report["per_example"][0]["simple_query_pass"] is True
+
+
+def test_simple_query_pass_count_records_correct() -> None:
+    """count_records with correct table and no joins → simple_query_pass = True."""
+    gold = {"intent": "count_records", "base_table": "orders", "joins": []}
+    row = {
+        "example_id": "sq2", "question": "count orders",
+        "query_ir": gold, "predicted_query_ir": gold,
+        "ir_validation": {"is_valid": True}, "sql_validation": {"is_valid": True},
+        "confidence": 0.9, "prediction_latency_ms": 5.0,
+    }
+    report = DatasetScaleEvaluator().evaluate_model("m", [row])
+    assert report["per_example"][0]["simple_query_pass"] is True
+
+
+def test_simple_query_pass_false_with_unnecessary_join() -> None:
+    """Simple gold query but prediction adds an unnecessary join → simple_query_pass = False."""
+    gold = {"intent": "show_records", "base_table": "users", "joins": []}
+    pred = {"intent": "show_records", "base_table": "users", "joins": [{"condition": "a.id=b.id"}]}
+    row = {
+        "example_id": "sq3", "question": "list users",
+        "query_ir": gold, "predicted_query_ir": pred,
+        "ir_validation": {"is_valid": True}, "sql_validation": {"is_valid": True},
+        "confidence": 0.9, "prediction_latency_ms": 5.0,
+    }
+    report = DatasetScaleEvaluator().evaluate_model("m", [row])
+    assert report["per_example"][0]["simple_query_pass"] is False
+
+
+def test_simple_query_pass_false_with_wrong_table() -> None:
+    """Simple gold query but prediction has wrong base_table → simple_query_pass = False."""
+    gold = {"intent": "show_records", "base_table": "users", "joins": []}
+    pred = {"intent": "show_records", "base_table": "orders", "joins": []}
+    row = {
+        "example_id": "sq4", "question": "list users",
+        "query_ir": gold, "predicted_query_ir": pred,
+        "ir_validation": {"is_valid": True}, "sql_validation": {"is_valid": True},
+        "confidence": 0.9, "prediction_latency_ms": 5.0,
+    }
+    report = DatasetScaleEvaluator().evaluate_model("m", [row])
+    assert report["per_example"][0]["simple_query_pass"] is False
+
+
+def test_simple_query_pass_none_for_non_simple_query() -> None:
+    """Non-simple gold query (has joins) → simple_query_pass = None (excluded from rate)."""
+    gold = {"intent": "joined_records", "base_table": "users", "joins": [{"condition": "a.id=b.uid"}]}
+    row = {
+        "example_id": "sq5", "question": "users with orders",
+        "query_ir": gold, "predicted_query_ir": gold,
+        "ir_validation": {"is_valid": True}, "sql_validation": {"is_valid": True},
+        "confidence": 0.9, "prediction_latency_ms": 5.0,
+    }
+    report = DatasetScaleEvaluator().evaluate_model("m", [row])
+    assert report["per_example"][0]["simple_query_pass"] is None
+
+
+def test_simple_query_pass_none_for_aggregation_intent() -> None:
+    """Aggregation intent (not in simple set) → simple_query_pass = None."""
+    gold = {"intent": "metric_summary", "base_table": "sales", "joins": []}
+    row = {
+        "example_id": "sq6", "question": "total sales",
+        "query_ir": gold, "predicted_query_ir": gold,
+        "ir_validation": {"is_valid": True}, "sql_validation": {"is_valid": True},
+        "confidence": 0.9, "prediction_latency_ms": 5.0,
+    }
+    report = DatasetScaleEvaluator().evaluate_model("m", [row])
+    assert report["per_example"][0]["simple_query_pass"] is None

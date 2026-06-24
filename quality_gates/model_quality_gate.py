@@ -108,6 +108,17 @@ class ModelQualityGate:
 
         missing_metrics = sorted(set(missing_metrics))
 
+        # Controlled fixture validation check
+        controlled_fixture = evaluation_report.get("controlled_fixture_evaluation") or {}
+        if isinstance(controlled_fixture, dict) and controlled_fixture:
+            fixture_summary = controlled_fixture.get("summary") or {}
+            if not fixture_summary.get("execution_success_rate", 0.0) == 1.0:
+                warnings.append("Controlled gold-SQL fixture validation did not achieve 100% execution success")
+            if controlled_fixture.get("measures_model_predictions", True) is False:
+                warnings.append("Controlled fixture evaluation validates gold SQL, not model-predicted SQL")
+        elif evaluation_report.get("controlled_fixture_required", False):
+            warnings.append("Controlled fixture evaluation is required but no report was found")
+
         return {
             "passed": not failed_checks,
             "failed_checks": failed_checks,

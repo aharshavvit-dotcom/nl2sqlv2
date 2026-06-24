@@ -323,17 +323,21 @@ def _run_multi_seed_variance(
     tracked_metrics: list[str],
     report_output: Path,
 ) -> dict[str, Any] | None:
-    """Run multi-seed evaluation variance analysis.
+    """Run multi-seed evaluation-only stability analysis.
 
-    Extracts metrics from the primary run's evaluation report for the first seed,
-    then re-runs the evaluation step with different seeds to collect variance.
+    For each configured seed:
+      1. Sets deterministic random seed (Python, NumPy, torch)
+      2. Re-runs evaluation step only (not full training) via StepRunner
+      3. Collects per-seed evaluation metrics
 
-    Note: This currently re-uses the primary run's metrics as the baseline,
-    and for additional seeds it re-runs only the evaluation step (not full training).
-    Full per-seed re-training is a future enhancement — the training pipeline is expensive,
-    and evaluation-level variance captures the main stochastic component (neural inference).
+    This is evaluation-only stability, NOT true training variance.
+    Full per-seed re-training is a future enhancement.
     """
+    import copy
+    import random
     import statistics
+
+    import numpy as np
 
     # Extract primary run's metrics from evaluation step result
     primary_metrics = _extract_eval_metrics(primary_report, tracked_metrics)
@@ -347,17 +351,45 @@ def _run_multi_seed_variance(
         if value is not None:
             per_seed_metrics[metric_name].append(value)
 
-    # For additional seeds: re-use primary metrics with a note.
-    # Full per-seed re-evaluation requires re-running the pipeline with different seeds,
-    # which is expensive. We note this as a future enhancement.
-    # For now, if the primary run metrics exist, we report them as a single-seed baseline.
-    # TODO: When multi-seed is a priority, spawn per-seed child runs with:
-    #   config["seeds"]["enabled"] = False  # prevent recursion
-    #   config["pipeline"]["seed"] = seed
-    #   run_pipeline(config, args)
+    # Run evaluation-only re-runs for additional seeds
+    additional_seeds = [s for s in seed_values if s != config.get("pipeline", {}).get("seed", 42)]
+    if additional_seeds:
+        try:
+            from orchestration.step_runner import StepRunner
+            for seed_val in additional_seeds:
+                print(f"  Re-evaluating with seed {seed_val}...")
+                # Set deterministic seeds
+                random.seed(seed_val)
+                np.random.seed(seed_val)
+                try:
+                    import torch
+                    torch.manual_seed(seed_val)
+                except ImportError:
+                    pass
+                # Create child config with seeds disabled to prevent recursion
+                child_config = copy.deepcopy(config)
+                child_config["pipeline"]["seed"] = seed_val
+                if "seeds" in child_config:
+                    child_config["seeds"]["enabled"] = False  # Anti-recursion
+                runner = StepRunner(child_config)
+                try:
+                    result = runner.run_step("evaluate_generic_models")
+                    if result.get("status") == "completed":
+                        child_summary = result.get("summary") or {}
+                        for metric_name in tracked_metrics:
+                            val = child_summary.get(metric_name)
+                            if val is not None:
+                                per_seed_metrics[metric_name].append(float(val))
+                    else:
+                        print(f"    Seed {seed_val} evaluation did not complete: {result.get('status')}")
+                except Exception as exc:
+                    print(f"    Seed {seed_val} evaluation failed: {exc}")
+        except ImportError:
+            print("  [Note] StepRunner not available — falling back to single-seed baseline")
 
     metrics_report: dict[str, dict[str, Any]] = {}
     high_variance: list[str] = []
+    metric_std_flat: dict[str, float] = {}
     for metric in tracked_metrics:
         values = per_seed_metrics.get(metric, [])
         if not values:
@@ -371,15 +403,29 @@ def _run_multi_seed_variance(
             "min": round(min(values), 6),
             "max": round(max(values), 6),
         }
+        metric_std_flat[metric] = round(std_val, 6)
         if std_val > 0.05:
             high_variance.append(metric)
 
+    seeds_evaluated = len(next(iter(per_seed_metrics.values()), []))
+    is_true_multi_seed = seeds_evaluated >= 2
     variance_report = {
         "enabled": True,
+        "mode": "evaluation_only_stability" if is_true_multi_seed else "single_seed_baseline",
+        "true_multi_seed": is_true_multi_seed,
         "seeds_requested": seed_values,
-        "seeds_evaluated": 1,  # Only primary run for now
-        "note": "Single-seed baseline. Full multi-seed re-evaluation is a future enhancement.",
+        "seeds_evaluated": seeds_evaluated,
+        "is_valid_for_variance_governance": is_true_multi_seed,
+        "is_valid_for_training_variance_governance": False,  # Evaluation-only, not full re-training
+        "note": (
+            "Evaluation-only stability analysis across seeds. "
+            "This measures prediction stability, not training variance. "
+            "Full per-seed re-training is a future enhancement."
+        ) if is_true_multi_seed else (
+            "Single-seed baseline. Enable multi-seed and run full pipeline for stability analysis."
+        ),
         "metrics": metrics_report,
+        "metric_std": metric_std_flat,  # Flat dict for backward compat with ModelSelector
         "high_variance_metrics": high_variance,
         "passed": len(high_variance) == 0,
     }
