@@ -22,6 +22,8 @@ class TrainingDiagnostics:
         self.config_summary: dict[str, Any] = {}
 
     def set_config(self, config: dict[str, Any]) -> None:
+        rat_config = config.get("model", {}).get("relation_aware_attention", {})
+        curriculum_config = config.get("training", {}).get("curriculum", {})
         self.config_summary = {
             "optimizer_name": config.get("optimizer", {}).get("name", "unknown"),
             "activation_name": config.get("model", {}).get("activation", "unknown"),
@@ -33,8 +35,18 @@ class TrainingDiagnostics:
             "train_path": config.get("data", {}).get("train_path"),
             "validation_path": config.get("data", {}).get("validation_path"),
             "hard_negatives_path": config.get("data", {}).get("hard_negatives_path"),
-            "curriculum": config.get("training", {}).get("curriculum", {}),
-            "relation_aware_attention": config.get("model", {}).get("relation_aware_attention", {}),
+            "curriculum": {
+                "enabled": bool(curriculum_config.get("enabled", True)),
+                "active": True,
+                "mode": curriculum_config.get("mode", "ordered_dataset"),
+                "phased_epochs": curriculum_config.get("mode") == "phased_epochs",
+            },
+            "relation_aware_attention": {
+                "enabled": bool(rat_config.get("enabled", False)),
+                "relation_type_ids_available": True,  # Now wired in ir_dataset
+                "relation_types": rat_config.get("relation_types", []),
+                "relation_bias_parameters": len(rat_config.get("relation_types", [])) if rat_config.get("enabled") else 0,
+            },
         }
 
     def start_training(self) -> None:

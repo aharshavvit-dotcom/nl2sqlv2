@@ -49,6 +49,7 @@ MODEL_INPUT_KEYS = [
     "date_column_mask",
     "filter_column_mask",
     "schema_link_scores",
+    "relation_type_ids",
 ]
 
 

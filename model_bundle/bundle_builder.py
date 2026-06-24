@@ -174,7 +174,10 @@ class ModelBundleBuilder:
         lifecycle_proof["simple_query_pass_computed"] = True  # Now behavior-derived in evaluator
         lifecycle_proof["promotion_per_example_fields_complete"] = True
         lifecycle_proof["multi_seed_report_available"] = False  # Updated below if found
-        lifecycle_proof["multi_seed_true_variance"] = False
+        lifecycle_proof["multi_seed_mode"] = "unknown"
+        lifecycle_proof["multi_seed_evaluation_stability_available"] = False
+        lifecycle_proof["multi_seed_true_training_variance"] = False
+        lifecycle_proof["multi_seed_valid_for_training_variance_governance"] = False
         lifecycle_proof["controlled_gold_sql_fixture_validation_passed"] = bool(
             _fixture_step is not None and _fixture_summary.get("passed", False)
         )
@@ -182,15 +185,71 @@ class ModelBundleBuilder:
         lifecycle_proof["relation_aware_attention_enabled"] = False
         lifecycle_proof["curriculum_mode"] = "ordered_dataset"
 
-        # Check for multi-seed report in pipeline steps
+        # Check for multi-seed report: first in pipeline steps, then artifact file
         _seed_step = next(
             (s for s in _steps if s.get("step") == "multi_seed_variance" and s.get("status") == "completed"),
             None,
         )
+        _seed_report: dict[str, Any] | None = None
         if _seed_step:
-            _seed_summary = (_seed_step or {}).get("summary") or {}
+            _seed_report = (_seed_step or {}).get("summary") or {}
+        else:
+            # Artifact-based fallback: read from evaluation output
+            _seed_report_path = ROOT / "artifacts" / "evaluation" / "multi_seed_variance_report.json"
+            if _seed_report_path.exists():
+                try:
+                    _seed_report = json.loads(_seed_report_path.read_text(encoding="utf-8"))
+                except Exception:
+                    _seed_report = None
+        if _seed_report and _seed_report.get("enabled"):
             lifecycle_proof["multi_seed_report_available"] = True
-            lifecycle_proof["multi_seed_true_variance"] = bool(_seed_summary.get("true_multi_seed", False))
+            lifecycle_proof["multi_seed_mode"] = _seed_report.get("mode", "unknown")
+            lifecycle_proof["multi_seed_evaluation_stability_available"] = bool(
+                _seed_report.get("evaluation_stability_available", False)
+            )
+            lifecycle_proof["multi_seed_true_training_variance"] = bool(
+                _seed_report.get("is_valid_for_training_variance_governance", False)
+            )
+            lifecycle_proof["multi_seed_valid_for_training_variance_governance"] = bool(
+                _seed_report.get("is_valid_for_training_variance_governance", False)
+            )
+
+        # Check for predicted-SQL report: first in pipeline steps, then artifact file
+        _predicted_sql_step = next(
+            (s for s in _steps if s.get("step") == "run_controlled_predicted_sql_evaluation" and s.get("status") == "completed"),
+            None,
+        )
+        _predicted_sql_report: dict[str, Any] | None = None
+        if _predicted_sql_step:
+            _predicted_sql_report = (_predicted_sql_step or {}).get("summary") or {}
+        else:
+            _predicted_sql_path = ROOT / "artifacts" / "evaluation" / "controlled_predicted_sql_execution_report.json"
+            if _predicted_sql_path.exists():
+                try:
+                    _predicted_sql_report = json.loads(_predicted_sql_path.read_text(encoding="utf-8"))
+                except Exception:
+                    _predicted_sql_report = None
+        if _predicted_sql_report and not _predicted_sql_report.get("error"):
+            lifecycle_proof["controlled_predicted_sql_evaluation_available"] = True
+            lifecycle_proof["controlled_predicted_sql_measures_model_predictions"] = bool(
+                _predicted_sql_report.get("measures_model_predictions", True)
+            )
+            lifecycle_proof["controlled_predicted_sql_schema_graph_empty"] = bool(
+                _predicted_sql_report.get("schema_graph_empty", True)
+            )
+            lifecycle_proof["controlled_predicted_sql_cases_total"] = int(
+                _predicted_sql_report.get("cases_total", 0)
+            )
+            lifecycle_proof["controlled_predicted_sql_execution_match_rate"] = float(
+                _predicted_sql_report.get("predicted_execution_match_rate",
+                    _predicted_sql_report.get("predicted_result_value_match_rate", 0.0))
+            )
+            lifecycle_proof["controlled_predicted_sql_unsafe_sql_count"] = int(
+                _predicted_sql_report.get("unsafe_sql_count", 0)
+            )
+            lifecycle_proof["controlled_predicted_sql_passed"] = bool(
+                _predicted_sql_report.get("passed", False)
+            )
 
         # production_ready: split into core, controlled fixture, and full
         production_ready_core = all([

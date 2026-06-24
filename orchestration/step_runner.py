@@ -592,11 +592,9 @@ class StepRunner:
         if bundle_dir is None:
             return {"status": "failed", "error": "No candidate/current model bundle available for app runtime smoke"}
         bundle = ModelBundleLoader().load(bundle_dir)
-        retrieval_dir = Path(bundle["retrieval_model_dir"])
-        neural_dir = Path(bundle["neural_model_dir"])
+        # Load model from bundle directory (not separate retrieval/neural dirs)
         model = RetrievalNL2SQLModel.load(
-            artifact_dir=retrieval_dir,
-            neural_ir_model_dir=neural_dir if (neural_dir / "model.pt").exists() else None,
+            artifact_dir=str(bundle_dir),
             allow_dev_fallback=False,
         )
 
@@ -662,8 +660,20 @@ class StepRunner:
                 else:
                     model.orchestrator.confidence_calibration.pop("conformal_confidence_threshold", None)
 
+        # Bundle metadata assertions
+        runtime_source = getattr(model, "runtime_source", None) or "unknown"
+        bundle_id = getattr(model, "bundle_id", None) or ""
+        bundle_status = getattr(model, "bundle_status", None) or ""
+        dev_fallback_used = getattr(model, "dev_fallback_used", False)
+        if dev_fallback_used:
+            issues.append("runtime used dev fallback instead of bundle")
+
         summary = {
             "bundle_dir": str(bundle_dir),
+            "bundle_id": bundle_id,
+            "bundle_status": bundle_status,
+            "runtime_source": runtime_source,
+            "dev_fallback_used": dev_fallback_used,
             "calibration_loaded": calibration_loaded,
             "abstention_behavior_verified": abstention_tested,
             "predictions": results,

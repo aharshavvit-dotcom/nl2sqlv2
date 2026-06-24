@@ -355,6 +355,7 @@ def _run_multi_seed_variance(
     additional_seeds = [s for s in seed_values if s != config.get("pipeline", {}).get("seed", 42)]
     if additional_seeds:
         try:
+            from orchestration.pipeline_config import PipelineConfig
             from orchestration.step_runner import StepRunner
             for seed_val in additional_seeds:
                 print(f"  Re-evaluating with seed {seed_val}...")
@@ -368,12 +369,24 @@ def _run_multi_seed_variance(
                     pass
                 # Create child config with seeds disabled to prevent recursion
                 child_config = copy.deepcopy(config)
-                child_config["pipeline"]["seed"] = seed_val
+                child_config.setdefault("pipeline", {})["seed"] = seed_val
                 if "seeds" in child_config:
                     child_config["seeds"]["enabled"] = False  # Anti-recursion
-                runner = StepRunner(child_config)
+                # Build proper PipelineConfig for StepRunner
+                child_training = {**config.get("training", {}), "_integrated_config": child_config}
+                child_pipeline_config = PipelineConfig(
+                    pipeline_name=f"seed_{seed_val}_eval",
+                    seed=seed_val,
+                    datasets=config.get("datasets", {}),
+                    training=child_training,
+                    artifacts=config.get("artifacts", {}),
+                    steps=["evaluate_generic_models"],
+                    smoke=bool(config.get("smoke", False)),
+                    integrated_config=child_config,
+                )
+                runner = StepRunner()
                 try:
-                    result = runner.run_step("evaluate_generic_models")
+                    result = runner.run_step("evaluate_generic_models", child_pipeline_config)
                     if result.get("status") == "completed":
                         child_summary = result.get("summary") or {}
                         for metric_name in tracked_metrics:
@@ -408,20 +421,23 @@ def _run_multi_seed_variance(
             high_variance.append(metric)
 
     seeds_evaluated = len(next(iter(per_seed_metrics.values()), []))
-    is_true_multi_seed = seeds_evaluated >= 2
+    has_multi_seed = seeds_evaluated >= 2
     variance_report = {
         "enabled": True,
-        "mode": "evaluation_only_stability" if is_true_multi_seed else "single_seed_baseline",
-        "true_multi_seed": is_true_multi_seed,
+        "mode": "evaluation_only_stability" if has_multi_seed else "single_seed_baseline",
         "seeds_requested": seed_values,
         "seeds_evaluated": seeds_evaluated,
-        "is_valid_for_variance_governance": is_true_multi_seed,
-        "is_valid_for_training_variance_governance": False,  # Evaluation-only, not full re-training
+        # Clear separation: evaluation stability vs true training variance
+        "evaluation_stability_available": has_multi_seed,
+        "true_training_variance_available": False,
+        "is_valid_for_evaluation_stability": has_multi_seed,
+        "is_valid_for_variance_governance": False,  # Evaluation-only, never true for governance
+        "is_valid_for_training_variance_governance": False,  # Requires full re-training per seed
         "note": (
             "Evaluation-only stability analysis across seeds. "
             "This measures prediction stability, not training variance. "
             "Full per-seed re-training is a future enhancement."
-        ) if is_true_multi_seed else (
+        ) if has_multi_seed else (
             "Single-seed baseline. Enable multi-seed and run full pipeline for stability analysis."
         ),
         "metrics": metrics_report,

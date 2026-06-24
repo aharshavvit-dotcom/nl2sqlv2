@@ -26,7 +26,8 @@ class ModelSelector:
         # Multi-seed variance check (when available and valid for governance)
         multi_seed_report = selected.metadata.get("multi_seed_report") if selected.metadata else None
         if multi_seed_report and isinstance(multi_seed_report, dict):
-            is_valid_governance = multi_seed_report.get("is_valid_for_variance_governance", False)
+            is_valid_training_governance = multi_seed_report.get("is_valid_for_training_variance_governance", False)
+            is_valid_eval_stability = multi_seed_report.get("is_valid_for_evaluation_stability", False)
             # Support both flat metric_std and nested metrics.*.std shapes
             variance = multi_seed_report.get("metric_std")
             if variance is None:
@@ -35,14 +36,25 @@ class ModelSelector:
                     for name, values in multi_seed_report.get("metrics", {}).items()
                     if isinstance(values, dict) and "std" in values
                 }
-            if is_valid_governance:
+            if is_valid_training_governance:
+                # True training variance governance warnings
                 high_variance = [
                     f"{metric}: std={std:.4f}" for metric, std in variance.items()
                     if isinstance(std, (int, float)) and std > 0.05
                 ]
                 if high_variance:
                     warnings.append(
-                        "High metric variance across seeds: " + ", ".join(high_variance)
+                        "training_variance_warning: High metric variance across seeds: " + ", ".join(high_variance)
+                    )
+            elif is_valid_eval_stability:
+                # Evaluation-only stability warnings (informational, not governance)
+                high_variance = [
+                    f"{metric}: std={std:.4f}" for metric, std in variance.items()
+                    if isinstance(std, (int, float)) and std > 0.05
+                ]
+                if high_variance:
+                    warnings.append(
+                        "evaluation_stability_warning: High prediction stability variance: " + ", ".join(high_variance)
                     )
             else:
                 mode = multi_seed_report.get("mode", "unknown")
@@ -50,7 +62,7 @@ class ModelSelector:
                 warnings.append(
                     f"multi_seed_variance_not_available: mode={mode}, "
                     f"seeds_evaluated={seeds_evaluated}, "
-                    f"is_valid_for_variance_governance=false"
+                    f"is_valid_for_training_variance_governance=false"
                 )
         return {
             "selected_model": asdict(selected),

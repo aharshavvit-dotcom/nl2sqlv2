@@ -38,6 +38,17 @@ class ModelQualityGate:
             if metric_key == "execution_match_rate" and not execution_status.get("enabled") and not execution_status.get("required"):
                 warnings.append("Execution-aware evaluation disabled by config; execution_match_rate threshold skipped.")
                 continue
+            # _production suffix thresholds are aspirational warnings, not blocking
+            if key.endswith("_production"):
+                base_metric = _threshold_metric_name(key.removesuffix("_production"))
+                actual = metrics.get(base_metric)
+                if actual is not None and isinstance(actual, (int, float)):
+                    if actual < expected:
+                        warnings.append(
+                            f"production_threshold_warning: {base_metric}={actual:.4f} "
+                            f"below production target {expected}"
+                        )
+                continue
             actual = metrics.get(metric_key)
             if actual is None:
                 missing_metrics.append(metric_key)

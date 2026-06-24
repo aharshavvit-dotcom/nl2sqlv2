@@ -14,6 +14,14 @@ from .schema_linker import SchemaLinker
 from .tokenizer import tokenize
 from .vocab import Vocabulary
 
+# Relation types for relation-aware schema attention (matches attention_model.RELATION_TYPES)
+RELATION_TYPE_MAP = {
+    "same_table": 0, "table_has_column": 1, "column_belongs_to_table": 2,
+    "fk_to_pk": 3, "pk_to_fk": 4, "primary_key": 5, "foreign_key_column": 6,
+    "same_column_name": 7, "same_data_type": 8, "unrelated": 9,
+}
+RELATION_UNRELATED = RELATION_TYPE_MAP["unrelated"]
+
 
 class IRTrainingDataset(Dataset):
     def __init__(
@@ -83,6 +91,7 @@ class IRTrainingDataset(Dataset):
             "table_candidate_token_ids": table_candidate_token_ids,
             "column_candidate_token_ids": column_candidate_token_ids,
             "candidate_token_ids": column_candidate_token_ids,
+            "relation_type_ids": self._build_relation_type_ids(schema_items, candidates),
             "labels": labels,
             "raw_example": row,
             "schema_items": schema_items,
@@ -167,6 +176,76 @@ class IRTrainingDataset(Dataset):
             rows[index] = self.vocab.encode(tokens, self.max_candidate_tokens)
         return rows
 
+    def _build_relation_type_ids(
+        self,
+        schema_items: dict[str, Any],
+        candidates: dict[str, Any],
+    ) -> list[list[int]]:
+        """Build [question_len, schema_len] relation type ID matrix.
+
+        For each (question_token, schema_token) pair, assigns a relation type ID.
+        Since question tokens don't have inherent schema relations, the matrix
+        broadcasts schema-schema relation info across the question dimension
+        by encoding each schema token's role (table membership, PK/FK, type).
+        """
+        q_len = self.max_question_len
+        s_len = self.max_schema_len
+
+        # Build per-schema-token relation type based on schema structure
+        schema_token_types = [RELATION_UNRELATED] * s_len
+
+        # Map column metadata for FK/PK/type info
+        columns = schema_items.get("columns", [])
+        tables = schema_items.get("tables", [])
+        table_set = set(tables)
+
+        # Build FK sets from candidates or schema_items
+        fk_columns: set[str] = set()
+        pk_columns: set[str] = set()
+        column_tables: dict[str, str] = {}
+        column_types: dict[str, str] = {}
+        for col_info in columns:
+            col_name = col_info.get("column", "")
+            tbl_name = col_info.get("table", "")
+            col_type = col_info.get("type", "")
+            column_tables[col_name] = tbl_name
+            column_types[col_name] = col_type
+            if col_info.get("primary_key"):
+                pk_columns.add(col_name)
+            if col_info.get("foreign_key") or col_info.get("is_fk"):
+                fk_columns.add(col_name)
+
+        # Assign types to column candidates (used for schema_len dimension)
+        column_candidates = candidates.get("columns", [])
+        for cand in column_candidates:
+            idx = cand.get("index", -1)
+            if not (0 <= idx < s_len):
+                continue
+            col_name = cand.get("column", "")
+            tbl_name = cand.get("table", "")
+
+            if col_name in pk_columns:
+                schema_token_types[idx] = RELATION_TYPE_MAP["primary_key"]
+            elif col_name in fk_columns:
+                schema_token_types[idx] = RELATION_TYPE_MAP["foreign_key_column"]
+            elif tbl_name in table_set:
+                schema_token_types[idx] = RELATION_TYPE_MAP["column_belongs_to_table"]
+            else:
+                schema_token_types[idx] = RELATION_UNRELATED
+
+        # Assign types to table candidates
+        table_candidates = candidates.get("tables", [])
+        for cand in table_candidates:
+            idx = cand.get("index", -1)
+            if not (0 <= idx < s_len):
+                continue
+            tbl_name = cand.get("table", "")
+            if tbl_name in table_set:
+                schema_token_types[idx] = RELATION_TYPE_MAP["same_table"]
+
+        # Broadcast across question dimension
+        return [list(schema_token_types) for _ in range(q_len)]
+
 
 def collate_ir_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
     label_keys = sorted(batch[0]["labels"])
@@ -185,6 +264,7 @@ def collate_ir_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "table_candidate_token_ids": torch.tensor([item["table_candidate_token_ids"] for item in batch], dtype=torch.long),
         "column_candidate_token_ids": torch.tensor([item["column_candidate_token_ids"] for item in batch], dtype=torch.long),
         "candidate_token_ids": torch.tensor([item["candidate_token_ids"] for item in batch], dtype=torch.long),
+        "relation_type_ids": torch.tensor([item["relation_type_ids"] for item in batch], dtype=torch.long),
         "labels": {
             key: torch.tensor([item["labels"][key] for item in batch], dtype=torch.long)
             for key in label_keys

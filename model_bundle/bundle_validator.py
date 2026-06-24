@@ -227,10 +227,55 @@ class ModelBundleValidator:
         lifecycle_proof.setdefault("simple_query_pass_computed", True)
         lifecycle_proof.setdefault("promotion_per_example_fields_complete", True)
         lifecycle_proof.setdefault("multi_seed_report_available", False)
-        lifecycle_proof.setdefault("multi_seed_true_variance", False)
+        lifecycle_proof.setdefault("multi_seed_mode", "unknown")
+        lifecycle_proof.setdefault("multi_seed_evaluation_stability_available", False)
+        lifecycle_proof.setdefault("multi_seed_true_training_variance", False)
+        lifecycle_proof.setdefault("multi_seed_valid_for_training_variance_governance", False)
         lifecycle_proof.setdefault("controlled_predicted_sql_evaluation_available", False)
         lifecycle_proof.setdefault("relation_aware_attention_enabled", False)
         lifecycle_proof.setdefault("curriculum_mode", "ordered_dataset")
+
+        # Read multi-seed variance report from bundle evaluation dir
+        seed_report_path = eval_dir / "multi_seed_variance_report.json"
+        if seed_report_path.exists():
+            seed_report = _read_json(seed_report_path)
+            if seed_report.get("enabled"):
+                lifecycle_proof["multi_seed_report_available"] = True
+                lifecycle_proof["multi_seed_mode"] = seed_report.get("mode", "unknown")
+                lifecycle_proof["multi_seed_evaluation_stability_available"] = bool(
+                    seed_report.get("evaluation_stability_available", False)
+                )
+                lifecycle_proof["multi_seed_true_training_variance"] = bool(
+                    seed_report.get("is_valid_for_training_variance_governance", False)
+                )
+                lifecycle_proof["multi_seed_valid_for_training_variance_governance"] = bool(
+                    seed_report.get("is_valid_for_training_variance_governance", False)
+                )
+
+        # Read predicted-SQL execution report from bundle evaluation dir
+        predicted_sql_path = eval_dir / "controlled_predicted_sql_execution_report.json"
+        if predicted_sql_path.exists():
+            predicted_sql_report = _read_json(predicted_sql_path)
+            if not predicted_sql_report.get("error"):
+                lifecycle_proof["controlled_predicted_sql_evaluation_available"] = True
+                lifecycle_proof["controlled_predicted_sql_measures_model_predictions"] = bool(
+                    predicted_sql_report.get("measures_model_predictions", True)
+                )
+                lifecycle_proof["controlled_predicted_sql_schema_graph_empty"] = bool(
+                    predicted_sql_report.get("schema_graph_empty", True)
+                )
+                lifecycle_proof["controlled_predicted_sql_execution_match_rate"] = float(
+                    predicted_sql_report.get("predicted_execution_match_rate",
+                        predicted_sql_report.get("predicted_result_value_match_rate", 0.0))
+                )
+                lifecycle_proof["controlled_predicted_sql_unsafe_sql_count"] = int(
+                    predicted_sql_report.get("unsafe_sql_count", 0)
+                )
+                lifecycle_proof["controlled_predicted_sql_passed"] = bool(
+                    predicted_sql_report.get("passed", False)
+                )
+                if predicted_sql_report.get("schema_graph_empty", True):
+                    warnings.append("Controlled predicted-SQL evaluation used empty schema graph")
 
         # Compute production_ready: split into core/fixture/full
         production_ready_core = bool(

@@ -126,6 +126,132 @@ def evaluate_controlled_fixtures(
     }
 
 
+def _build_schema_from_sqlite(
+    conn: sqlite3.Connection,
+) -> tuple[Any, list[Any]]:
+    """Build a SchemaGraph by introspecting the live SQLite database.
+
+    Returns (SchemaGraph, list_of_ForeignKeyInfo) so callers can inspect FK count.
+    """
+    from nl2sql_v1.schema import ColumnInfo, ForeignKeyInfo, SchemaGraph, TableInfo
+
+    tables: dict[str, TableInfo] = {}
+    all_fks: list[ForeignKeyInfo] = []
+
+    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+    table_names = [row[0] for row in cursor.fetchall()]
+
+    for table_name in table_names:
+        columns: dict[str, ColumnInfo] = {}
+        for col_row in conn.execute(f"PRAGMA table_info({table_name})").fetchall():
+            # col_row: (cid, name, type, notnull, default_value, pk)
+            col_name = col_row[1]
+            col_type = col_row[2] or "TEXT"
+            not_null = bool(col_row[3])
+            is_pk = bool(col_row[5])
+            columns[col_name] = ColumnInfo(
+                name=col_name, type=col_type.lower(), nullable=not not_null, primary_key=is_pk,
+            )
+
+        fk_list: list[ForeignKeyInfo] = []
+        for fk_row in conn.execute(f"PRAGMA foreign_key_list({table_name})").fetchall():
+            # fk_row: (id, seq, table, from, to, on_update, on_delete, match)
+            referred_table = fk_row[2]
+            constrained_col = fk_row[3]
+            referred_col = fk_row[4]
+            fk = ForeignKeyInfo(
+                table=table_name,
+                constrained_column=constrained_col,
+                referred_table=referred_table,
+                referred_column=referred_col,
+            )
+            fk_list.append(fk)
+            all_fks.append(fk)
+
+        tables[table_name] = TableInfo(name=table_name, columns=columns, foreign_keys=fk_list)
+
+    return SchemaGraph(tables=tables, dialect="sqlite"), all_fks
+
+
+def _normalize_value(value: Any) -> Any:
+    """Normalize a single value for comparison."""
+    if value is None:
+        return None
+    if isinstance(value, float):
+        return round(value, 6)
+    if isinstance(value, str):
+        return value.strip()
+    return value
+
+
+def _normalize_rows(rows: list[tuple]) -> list[tuple]:
+    """Normalize row values for order-independent comparison."""
+    return sorted(
+        tuple(_normalize_value(v) for v in row)
+        for row in rows
+    )
+
+
+def _values_match(a: Any, b: Any, tolerance: float = 1e-6) -> bool:
+    """Compare two values with float tolerance."""
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    if isinstance(a, float) and isinstance(b, float):
+        return abs(a - b) <= tolerance
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(float(a) - float(b)) <= tolerance
+    return a == b
+
+
+def _rows_match_ordered(pred: list[tuple], gold: list[tuple], tolerance: float = 1e-6) -> bool:
+    """Compare rows preserving order, with float tolerance."""
+    if len(pred) != len(gold):
+        return False
+    for p_row, g_row in zip(pred, gold):
+        if len(p_row) != len(g_row):
+            return False
+        if not all(_values_match(pv, gv, tolerance) for pv, gv in zip(p_row, g_row)):
+            return False
+    return True
+
+
+def _compare_results(
+    pred_rows: list[tuple],
+    gold_rows: list[tuple],
+    gold_sql: str,
+) -> dict[str, Any]:
+    """Normalized result comparison with order-awareness.
+
+    If gold SQL has ORDER BY, uses ordered comparison.
+    Otherwise, uses unordered normalized row-set comparison.
+    """
+    has_order_by = "ORDER BY" in gold_sql.upper()
+    row_count_match = len(pred_rows) == len(gold_rows)
+
+    # Unordered comparison (always computed)
+    pred_normalized = _normalize_rows(pred_rows)
+    gold_normalized = _normalize_rows(gold_rows)
+    unordered_match = pred_normalized == gold_normalized
+
+    # Ordered comparison (only meaningful with ORDER BY)
+    ordered_match: bool | None = None
+    if has_order_by:
+        ordered_match = _rows_match_ordered(pred_rows, gold_rows)
+
+    # Result value match: ordered when ORDER BY exists, unordered otherwise
+    result_value_match = ordered_match if has_order_by else unordered_match
+
+    return {
+        "row_count_match": row_count_match,
+        "unordered_result_match": unordered_match,
+        "ordered_result_match": ordered_match,
+        "result_value_match": result_value_match,
+        "has_order_by": has_order_by,
+    }
+
+
 def evaluate_controlled_predicted_sql(
     model_artifact_dir: Path | None = None,
     fixture_sql_path: Path | None = None,
@@ -183,11 +309,29 @@ def evaluate_controlled_predicted_sql(
         }
 
     results: list[dict[str, Any]] = []
+    schema_tables_available = 0
+    schema_relationships_available = 0
+    schema_graph_empty = True
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "controlled_predicted.db"
         conn = sqlite3.connect(str(db_path))
         try:
             conn.executescript(sql_seed)
+
+            # Build real SchemaGraph from fixture database via introspection
+            from nl2sql_v1.schema import ColumnInfo, ForeignKeyInfo, SchemaGraph, TableInfo
+            schema, fk_list = _build_schema_from_sqlite(conn)
+            schema_tables_available = len(schema.tables)
+            schema_relationships_available = len(fk_list)
+            schema_graph_empty = schema_tables_available == 0
+            if schema_graph_empty:
+                return {
+                    "error": "Schema graph is empty after SQLite introspection — cannot evaluate predicted SQL",
+                    "evaluation_type": "controlled_predicted_sql_execution",
+                    "measures_model_predictions": True,
+                    "schema_graph_empty": True,
+                    "schema_tables_available": 0,
+                }
 
             # Execute gold SQL first to get expected results
             gold_results: dict[str, list[tuple]] = {}
@@ -218,15 +362,14 @@ def evaluate_controlled_predicted_sql(
                     "predicted_execution_success": False,
                     "predicted_actual_row_count": None,
                     "predicted_row_count_match": False,
+                    "predicted_unordered_result_match": False,
+                    "predicted_ordered_result_match": None,
                     "predicted_result_value_match": False,
                     "error": None,
                 }
 
-                # Generate prediction
+                # Generate prediction using the real fixture schema
                 try:
-                    from schema_tools.schema_graph import SchemaGraph
-                    # Build minimal schema from fixture
-                    schema = SchemaGraph(tables={}, relationships=[])
                     result = model.predict(question, schema)
                     predicted_sql = result.sql or ""
                     entry["predicted_sql"] = predicted_sql
@@ -249,9 +392,12 @@ def evaluate_controlled_predicted_sql(
                                 entry["predicted_actual_row_count"] = len(pred_rows)
                                 if expected_rows is not None:
                                     entry["predicted_row_count_match"] = len(pred_rows) == expected_rows
-                                # Compare with gold results
+                                # Normalized result comparison
                                 gold_rows = gold_results.get(example_id, [])
-                                entry["predicted_result_value_match"] = (pred_rows == gold_rows)
+                                comparison = _compare_results(pred_rows, gold_rows, gold_sql)
+                                entry["predicted_unordered_result_match"] = comparison["unordered_result_match"]
+                                entry["predicted_ordered_result_match"] = comparison["ordered_result_match"]
+                                entry["predicted_result_value_match"] = comparison["result_value_match"]
                             except Exception as exc:
                                 entry["error"] = f"Execution error: {exc}"
                 except Exception as exc:
@@ -267,6 +413,8 @@ def evaluate_controlled_predicted_sql(
     exec_success = sum(1 for r in results if r["predicted_execution_success"])
     exec_match = sum(1 for r in results if r["predicted_result_value_match"])
     row_match = sum(1 for r in results if r["predicted_row_count_match"])
+    unordered_match = sum(1 for r in results if r.get("predicted_unordered_result_match"))
+    ordered_match = sum(1 for r in results if r.get("predicted_ordered_result_match") is True)
     unsafe = sum(1 for r in results if r["prediction_generated"] and not r["predicted_sql_is_select_only"])
 
     return {
@@ -275,11 +423,16 @@ def evaluate_controlled_predicted_sql(
         "model_artifact_dir": str(artifact_dir),
         "fixture_sql": str(sql_path),
         "fixture_cases": str(cases_path),
+        "schema_tables_available": schema_tables_available,
+        "schema_relationships_available": schema_relationships_available,
+        "schema_graph_empty": schema_graph_empty,
         "cases_total": total,
         "predictions_generated": predictions_generated,
         "predicted_sql_valid_count": valid_count,
         "predicted_execution_success_count": exec_success,
         "predicted_execution_match_count": exec_match,
+        "predicted_unordered_result_match_count": unordered_match,
+        "predicted_ordered_result_match_count": ordered_match,
         "predicted_execution_match_rate": exec_match / total if total else 0.0,
         "predicted_execution_error_rate": (total - exec_success) / total if total else 0.0,
         "predicted_row_count_match_rate": row_match / total if total else 0.0,

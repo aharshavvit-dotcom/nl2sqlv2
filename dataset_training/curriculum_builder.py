@@ -31,7 +31,18 @@ class CurriculumBuilder:
         self,
         examples: list[dict[str, Any]],
         phase_order: list[str] | None = None,
+        mode: str = "ordered_dataset",
+        allow_ordered_dataset_fallback: bool = True,
     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        # Guard: phased_epochs is not yet implemented
+        if mode == "phased_epochs":
+            if not allow_ordered_dataset_fallback:
+                raise NotImplementedError(
+                    "phased_epochs curriculum requested but not implemented. "
+                    "Set allow_ordered_dataset_fallback=true or use mode=ordered_dataset."
+                )
+            mode = "ordered_dataset"  # Downgrade with honest reporting
+
         phases = self.build_phases(examples)
         aliases = {
             "level_1_single_table": "phase_1",
@@ -50,7 +61,7 @@ class CurriculumBuilder:
         ordered = [row for name in canonical for row in phases.get(name, [])]
         distribution = {name: len(phases.get(name, [])) for name in phases}
         # Honest curriculum mode reporting
-        distribution["_curriculum_mode"] = "ordered_dataset"  # type: ignore[assignment]
-        distribution["_phased_epochs"] = False  # type: ignore[assignment]
+        distribution["_curriculum_mode"] = mode  # type: ignore[assignment]
+        distribution["_phased_epochs"] = mode == "phased_epochs"  # type: ignore[assignment]
         distribution["_active"] = True  # type: ignore[assignment]
         return ordered, distribution

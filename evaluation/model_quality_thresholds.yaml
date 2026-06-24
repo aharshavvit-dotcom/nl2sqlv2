@@ -2,6 +2,7 @@ minimums:
   query_ir_validity_rate: 0.90
   sql_validation_rate: 0.90
   simple_query_pass_rate: 0.80
+  simple_query_pass_rate_production: 0.95
   no_select_star_rate: 1.00
   unsafe_sql_count_max: 0
   unnecessary_join_rate_max: 0.05
