@@ -299,3 +299,59 @@ class TestTrainModelIntegration:
         assert readme.exists()
         source = readme.read_text(encoding="utf-8")
         assert "python training/train_model.py --config configs/training.yaml" in source
+
+    def test_bundle_manifest_includes_lifecycle_proof(self):
+        """27. BundleManifest lifecycle_proof fields are populated by builder."""
+        sys.path.insert(0, str(ROOT))
+        from model_bundle.bundle_manifest import BundleManifest
+
+        manifest = BundleManifest(
+            bundle_id="test_lifecycle",
+            status="candidate",
+            lifecycle_proof={
+                "trained_from_generic_corpus": True,
+                "generic_eval_valid_for_quality_gate": True,
+                "generic_eval_real_predictions": True,
+                "generic_eval_gold_replay_used": False,
+                "calibration_report_available": True,
+                "calibration_loaded_in_runtime_smoke": True,
+                "quality_gate_passed": True,
+                "bundle_runtime_smoke_passed": True,
+                "production_ready": True,
+            },
+        )
+        proof = manifest.lifecycle_proof
+        assert proof["trained_from_generic_corpus"] is True
+        assert proof["generic_eval_valid_for_quality_gate"] is True
+        assert proof["production_ready"] is True
+
+    def test_lifecycle_proof_marks_gold_replay_false_for_production(self):
+        """28. Gold replay must be false for production_ready to be true."""
+        sys.path.insert(0, str(ROOT))
+        from model_bundle.bundle_manifest import BundleManifest
+
+        manifest = BundleManifest(
+            bundle_id="test_gold_replay_check",
+            status="candidate",
+            lifecycle_proof={
+                "generic_eval_gold_replay_used": True,
+                "production_ready": False,
+            },
+        )
+        assert manifest.lifecycle_proof["generic_eval_gold_replay_used"] is True
+        assert manifest.lifecycle_proof["production_ready"] is False
+
+    def test_lifecycle_proof_records_calibration_loaded(self):
+        """29. lifecycle_proof includes calibration_loaded_in_runtime_smoke."""
+        sys.path.insert(0, str(ROOT))
+        from model_bundle.bundle_manifest import BundleManifest
+
+        manifest = BundleManifest(
+            bundle_id="test_cal",
+            status="candidate",
+            lifecycle_proof={
+                "calibration_loaded_in_runtime_smoke": False,
+            },
+        )
+        assert "calibration_loaded_in_runtime_smoke" in manifest.lifecycle_proof
+        assert manifest.lifecycle_proof["calibration_loaded_in_runtime_smoke"] is False

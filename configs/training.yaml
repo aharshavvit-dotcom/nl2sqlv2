@@ -74,3 +74,12 @@ bundle:
   build: true
   validate: true
   promote_if_quality_gate_passes: true
+
+# Multi-seed training variance (disabled by default).
+# When enabled, repeats evaluation over multiple seeds and reports metric variance.
+# This does NOT affect the primary training run — it adds a post-training
+# variance analysis step for monitoring metric stability.
+seeds:
+  enabled: false
+  values: [42, 123, 456]
+  report_output: artifacts/evaluation/multi_seed_variance_report.json

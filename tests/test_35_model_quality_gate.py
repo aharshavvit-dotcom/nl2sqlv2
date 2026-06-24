@@ -95,3 +95,79 @@ def test_quality_gate_rejects_gold_replay_report() -> None:
 
     assert result["passed"] is False
     assert any(check["metric"].endswith("valid_evaluation_source") for check in result["failed_checks"])
+
+
+def test_quality_gate_rejects_zero_predictions() -> None:
+    """Quality gate must reject a report with real_predictions_generated=0."""
+    report = {
+        "evaluation_mode": "real_model_predictions",
+        "gold_replay_used": False,
+        "predictor_used": True,
+        "is_valid_for_quality_gate": True,
+        "rows_evaluated": 0,
+        "real_predictions_generated": 0,
+        "test_performance": {
+            "evaluation_mode": "real_model_predictions",
+            "gold_replay_used": False,
+            "predictor_used": True,
+            "is_valid_for_quality_gate": False,
+            "rows_evaluated": 0,
+            "real_predictions_generated": 0,
+            "summary": {
+                "query_ir_validity_rate": 0.0,
+                "sql_validation_rate": 0.0,
+                "intent_accuracy_rate": 0.0,
+                "unnecessary_join_rate": 0.0,
+                "wrong_table_rate": 0.0,
+                "unsafe_sql_count": 0,
+            },
+        },
+        "unseen_db_performance": {"summary": {"sql_validation_rate": 0.0}},
+        "no_select_star_rate": 1.0,
+        "unsafe_sql_count": 0,
+        "feedback_regression_pass_rate": 1.0,
+    }
+
+    result = ModelQualityGate().evaluate(report, THRESHOLDS)
+
+    assert result["passed"] is False
+    failed_metrics = [check["metric"] for check in result["failed_checks"]]
+    assert any("real_predictions_generated" in m or "rows_evaluated" in m or "valid_evaluation_source" in m for m in failed_metrics)
+
+
+def test_quality_gate_rejects_predictor_not_used() -> None:
+    """Quality gate must reject a report with predictor_used=False."""
+    report = {
+        "evaluation_mode": "real_model_predictions",
+        "gold_replay_used": False,
+        "predictor_used": False,
+        "is_valid_for_quality_gate": False,
+        "rows_evaluated": 10,
+        "real_predictions_generated": 10,
+        "test_performance": {
+            "evaluation_mode": "real_model_predictions",
+            "gold_replay_used": False,
+            "predictor_used": False,
+            "is_valid_for_quality_gate": False,
+            "rows_evaluated": 10,
+            "real_predictions_generated": 10,
+            "summary": {
+                "query_ir_validity_rate": 0.99,
+                "sql_validation_rate": 0.99,
+                "intent_accuracy_rate": 0.98,
+                "unnecessary_join_rate": 0.0,
+                "wrong_table_rate": 0.0,
+                "unsafe_sql_count": 0,
+            },
+        },
+        "unseen_db_performance": {"summary": {"sql_validation_rate": 0.95}},
+        "no_select_star_rate": 1.0,
+        "unsafe_sql_count": 0,
+        "feedback_regression_pass_rate": 1.0,
+    }
+
+    result = ModelQualityGate().evaluate(report, THRESHOLDS)
+
+    assert result["passed"] is False
+    failed_metrics = [check["metric"] for check in result["failed_checks"]]
+    assert any("predictor_used" in m or "valid_evaluation_source" in m for m in failed_metrics)

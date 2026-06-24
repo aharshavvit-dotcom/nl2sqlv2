@@ -69,3 +69,63 @@ def test_dataset_scale_evaluator_labels_explicit_gold_replay() -> None:
 
     assert report["gold_replay_used"] is True
     assert report["is_valid_for_quality_gate"] is False
+
+
+def test_evaluator_invalid_when_zero_real_predictions() -> None:
+    """Even with predicted_query_ir present, if real_predictions_generated sums to 0 the report is invalid."""
+    row = {
+        "example_id": "ex1",
+        "question": "list users",
+        "query_ir": {"intent": "show_records", "base_table": "users", "joins": []},
+        "predicted_query_ir": {"intent": "show_records", "base_table": "users", "joins": []},
+        "ir_validation": {"is_valid": True},
+        "sql_validation": {"is_valid": True},
+        "confidence": 0.9,
+        "prediction_latency_ms": 10.0,
+    }
+
+    report = DatasetScaleEvaluator().evaluate_model(
+        "mock_model",
+        [row],
+        evaluation_mode="real_model_predictions",
+        predictor_used=False,
+    )
+
+    assert report["is_valid_for_quality_gate"] is False
+
+
+def test_evaluator_invalid_when_predictor_not_used() -> None:
+    """When predictor_used=False is explicitly passed, the report must be invalid."""
+    row = {
+        "example_id": "ex1",
+        "question": "list users",
+        "query_ir": {"intent": "show_records", "base_table": "users", "joins": []},
+        "predicted_query_ir": {"intent": "show_records", "base_table": "users", "joins": []},
+        "ir_validation": {"is_valid": True},
+        "sql_validation": {"is_valid": True},
+        "confidence": 0.95,
+        "prediction_latency_ms": 12.0,
+    }
+
+    report = DatasetScaleEvaluator().evaluate_model(
+        "mock_model",
+        [row],
+        evaluation_mode="real_model_predictions",
+        predictor_used=False,
+    )
+
+    assert report["predictor_used"] is False
+    assert report["is_valid_for_quality_gate"] is False
+
+
+def test_evaluator_invalid_when_rows_evaluated_zero() -> None:
+    """Empty rows list → is_valid_for_quality_gate must be False."""
+    report = DatasetScaleEvaluator().evaluate_model(
+        "mock_model",
+        [],
+        evaluation_mode="real_model_predictions",
+        predictor_used=True,
+    )
+
+    assert report["rows_evaluated"] == 0
+    assert report["is_valid_for_quality_gate"] is False

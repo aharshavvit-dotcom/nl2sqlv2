@@ -46,25 +46,7 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
         "use_conformal_threshold": bool(getattr(args, "use_conformal_threshold", True)),
         "abstain_when_calibrated_confidence_below": getattr(args, "abstain_when_calibrated_confidence_below", None),
     }
-    report = {
-        "evaluation_mode": test_mode,
-        "test_source": "real_model_predictions" if test_mode == "real_model_predictions" else "gold_replay_baseline",
-        "gold_replay_used": test_mode != "real_model_predictions" or unseen_mode != "real_model_predictions",
-        "predictor_used": test_mode == "real_model_predictions",
-        "model_artifact_source": test_artifact_source,
-        "is_valid_for_quality_gate": test_mode == "real_model_predictions" and unseen_mode == "real_model_predictions",
-        "summary": {
-            "test_examples": len(test_rows),
-            "unseen_db_test_examples": len(unseen_rows),
-            "model_bundle_dir": str(getattr(args, "model_bundle_dir", "") or ""),
-            "retrieval_model_dir": str(args.retrieval_model_dir),
-            "neural_model_dir": str(args.neural_model_dir),
-            "prediction_source": test_source,
-            "test_source": "real_model_predictions" if test_mode == "real_model_predictions" else "gold_replay_baseline",
-            "gold_replay_used": test_mode != "real_model_predictions" or unseen_mode != "real_model_predictions",
-            "is_valid_for_quality_gate": test_mode == "real_model_predictions" and unseen_mode == "real_model_predictions",
-        },
-        "test_performance": evaluator.evaluate_model(
+    test_eval = evaluator.evaluate_model(
             test_source,
             test_evaluation_rows,
             evaluation_mode=test_mode,
@@ -72,8 +54,8 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
             predictor_used=test_mode == "real_model_predictions",
             calibration_coverage_target=float(getattr(args, "calibration_coverage_target", 0.95)),
             calibration_config=calibration_config,
-        ),
-        "unseen_db_performance": evaluator.evaluate_model(
+        )
+    unseen_eval = evaluator.evaluate_model(
             unseen_source,
             unseen_evaluation_rows,
             schema_mode="unseen_db",
@@ -82,7 +64,41 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
             predictor_used=unseen_mode == "real_model_predictions",
             calibration_coverage_target=float(getattr(args, "calibration_coverage_target", 0.95)),
             calibration_config=calibration_config,
-        ),
+        )
+    # Derive strict validity from sub-report evaluator logic
+    test_valid = bool(test_eval.get("is_valid_for_quality_gate", False))
+    unseen_valid = bool(unseen_eval.get("is_valid_for_quality_gate", False))
+    overall_valid = test_valid and unseen_valid
+    gold_replay_used = bool(test_eval.get("gold_replay_used", False)) or bool(unseen_eval.get("gold_replay_used", False))
+    full_bundle_runtime_used = test_artifact_source == "model_bundle"
+    calibration_loaded = full_bundle_runtime_used  # bundle path loads calibration via RetrievalNL2SQLModel.load
+    report = {
+        "evaluation_mode": test_mode,
+        "test_source": "real_model_predictions" if test_mode == "real_model_predictions" else "gold_replay_baseline",
+        "gold_replay_used": gold_replay_used,
+        "predictor_used": test_mode == "real_model_predictions",
+        "model_artifact_source": test_artifact_source,
+        "full_bundle_runtime_used": full_bundle_runtime_used,
+        "calibration_loaded": calibration_loaded,
+        "calibration_runtime_active": calibration_loaded,
+        "is_valid_for_quality_gate": overall_valid,
+        "is_valid_for_full_bundle_quality_gate": overall_valid and full_bundle_runtime_used,
+        "rows_evaluated": int(test_eval.get("rows_evaluated", 0)),
+        "real_predictions_generated": int(test_eval.get("real_predictions_generated", 0)),
+        "prediction_failures": int(test_eval.get("prediction_failures", 0)),
+        "summary": {
+            "test_examples": len(test_rows),
+            "unseen_db_test_examples": len(unseen_rows),
+            "model_bundle_dir": str(getattr(args, "model_bundle_dir", "") or ""),
+            "retrieval_model_dir": str(args.retrieval_model_dir),
+            "neural_model_dir": str(args.neural_model_dir),
+            "prediction_source": test_source,
+            "test_source": "real_model_predictions" if test_mode == "real_model_predictions" else "gold_replay_baseline",
+            "gold_replay_used": gold_replay_used,
+            "is_valid_for_quality_gate": overall_valid,
+        },
+        "test_performance": test_eval,
+        "unseen_db_performance": unseen_eval,
     }
     test_summary = report["test_performance"]["summary"]
     report["summary"].update(
@@ -149,7 +165,7 @@ def _evaluation_rows(
                 "prediction_source": "neural_queryir",
                 "predicted_route": "neural_queryir",
             })
-        return merged, "neural_queryir", "artifact_dirs"
+        return merged, "neural_queryir", "neural_only_artifact_dirs"
     if allow_gold_replay_baseline:
         return [{**row, "prediction_source": "gold_replay_baseline"} for row in rows], "gold_replay_baseline", "none"
     raise RuntimeError(

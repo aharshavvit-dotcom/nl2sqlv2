@@ -102,16 +102,47 @@ class ModelBundleBuilder:
         percentiles = test_performance.get("percentiles") or {}
         lifecycle_proof = {
             "trained_from_generic_corpus": bool(generic_training_src and generic_training_src.exists()),
-            "real_predictions_generated": bool(
+            "dataset_contribution_report_available": bool(
+                generic_training_src and (generic_training_src / "dataset_contribution_report.json").exists()
+            ),
+            "unsupported_sql_report_available": bool(
+                generic_training_src and (generic_training_src / "unsupported_sql_report.json").exists()
+            ),
+            "generic_eval_available": bool(test_performance),
+            "generic_eval_real_predictions": bool(
                 (test_performance.get("real_predictions_generated") or 0) > 0
                 or (evaluation_report or {}).get("real_predictions_generated", 0) > 0
             ),
-            "gold_replay_used": bool((evaluation_report or {}).get("gold_replay_used", False)),
-            "calibration_report_available": bool(test_performance.get("calibration")),
-            "calibration_loaded_in_runtime_smoke": False,
-            "unseen_db_real_prediction_eval": bool(
+            "generic_eval_gold_replay_used": bool((evaluation_report or {}).get("gold_replay_used", False)),
+            "generic_eval_predictor_used": bool((evaluation_report or {}).get("predictor_used", False)),
+            "generic_eval_rows_evaluated": int(
+                test_performance.get("rows_evaluated", 0)
+                or (evaluation_report or {}).get("rows_evaluated", 0)
+            ),
+            "generic_eval_real_predictions_generated": int(
+                test_performance.get("real_predictions_generated", 0)
+                or (evaluation_report or {}).get("real_predictions_generated", 0)
+            ),
+            "generic_eval_valid_for_quality_gate": bool(
+                (evaluation_report or {}).get("is_valid_for_quality_gate", False)
+            ),
+            "unseen_db_eval_available": bool(unseen_performance),
+            "unseen_db_real_predictions": bool(
                 unseen_performance.get("evaluation_mode") == "real_model_predictions"
                 and not unseen_performance.get("gold_replay_used", False)
+            ),
+            "unseen_db_gold_replay_used": bool(unseen_performance.get("gold_replay_used", True)),
+            "unseen_db_valid_for_quality_gate": bool(
+                unseen_performance.get("is_valid_for_quality_gate", False)
+            ),
+            "classification_metrics_available": bool(classification_metrics),
+            "calibration_report_available": bool(test_performance.get("calibration")),
+            "calibration_loaded_in_runtime_smoke": False,
+            "conformal_threshold_available": bool(
+                (test_performance.get("calibration") or {}).get("conformal_confidence_threshold") is not None
+            ),
+            "schema_drift_baseline_available": bool(
+                any(key.startswith(("schema_", "question_", "candidate_")) for key in percentiles)
             ),
             "quality_gate_passed": bool((quality_gate_report or {}).get("passed", False)),
             "bundle_runtime_smoke_passed": False,
@@ -120,6 +151,7 @@ class ModelBundleBuilder:
                 for step in (pipeline_report or {}).get("steps", [])
                 if isinstance(step, dict)
             ),
+            "production_ready": False,
         }
 
         # Build manifest

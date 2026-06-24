@@ -509,6 +509,22 @@ if generate and question.strip():
     router_decision = result.router_decision or result.debug.get("router_decision") or {}
     neural_ir_raw = result.neural_ir_result or result.debug.get("neural_ir_result") or {}
 
+    # Runtime metadata
+    with st.expander("Runtime Metadata", expanded=False):
+        runtime_cols = st.columns(4)
+        runtime_source = result.debug.get("runtime_source", "unknown")
+        dev_fallback = result.debug.get("dev_fallback_used", False)
+        runtime_cols[0].metric("Runtime Source", runtime_source)
+        runtime_cols[1].metric("Dev Fallback", "Yes" if dev_fallback else "No")
+        runtime_cols[2].metric("Calibrated Conf.", f"{result.calibrated_confidence:.3f}" if result.calibrated_confidence is not None else "N/A")
+        runtime_cols[3].metric("Abstain", "Yes" if result.abstain else "No")
+        if bundle_info:
+            cal_path = bundle_info.get("calibration_report_path")
+            st.caption(f"Bundle: {bundle_info.get('bundle_dir', 'N/A')}")
+            st.caption(f"Calibration report: {'loaded' if cal_path else 'not available'}")
+        if dev_fallback:
+            st.warning("Runtime is using dev fallback artifacts — not a validated model bundle.")
+
     st.subheader("Confidence")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     source_label = {

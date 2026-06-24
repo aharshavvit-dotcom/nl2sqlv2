@@ -62,6 +62,8 @@ class ModelBundleLoader:
             )
 
         # Resolve paths from manifest
+        evaluation_dir = str(path / manifest.paths.get("evaluation", "evaluation/"))
+        calibration_report_path = str(Path(evaluation_dir) / "calibration_report.json")
         result: dict[str, Any] = {
             "manifest": manifest.to_dict(),
             "bundle_dir": str(path),
@@ -69,7 +71,9 @@ class ModelBundleLoader:
             "neural_model_dir": str(path / manifest.paths.get("neural_ir", "neural_ir/")),
             "ranker_dir": str(path / manifest.paths.get("adaptive_ranker", "adaptive_ranker/")),
             "semantic_defaults_dir": str(path / manifest.paths.get("semantic_defaults", "semantic_defaults/")),
-            "evaluation_dir": str(path / manifest.paths.get("evaluation", "evaluation/")),
+            "evaluation_dir": evaluation_dir,
+            "calibration_dir": evaluation_dir,
+            "calibration_report_path": calibration_report_path if Path(calibration_report_path).exists() else None,
         }
 
         return result

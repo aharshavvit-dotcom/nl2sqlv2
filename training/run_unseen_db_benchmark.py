@@ -57,6 +57,9 @@ def main() -> int:
     report["summary"]["test_source"] = report["test_source"]
     report["summary"]["real_predictions_generated"] = report["real_predictions_generated"]
     report["summary"]["prediction_failures"] = report["prediction_failures"]
+    report["summary"]["rows_evaluated"] = report.get("rows_evaluated", len(rows))
+    report["summary"]["predictor_used"] = report.get("predictor_used", mode == "real_model_predictions")
+    report["summary"]["is_valid_for_quality_gate"] = report.get("is_valid_for_quality_gate", False)
     save_report_pair(args.output, report, "Unseen DB Benchmark Report")
     print(json.dumps(report, indent=2, ensure_ascii=True))
     return 0

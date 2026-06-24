@@ -149,6 +149,30 @@ python training/run_unseen_db_benchmark.py \
 
 The unseen-DB benchmark fails closed when no runnable model artifacts are available. It may use gold replay only with `--allow-gold-replay-baseline`, and that report is explicitly marked invalid for quality gates.
 
+### Controlled Execution-Aware Evaluation
+```bash
+python training/run_execution_aware_evaluation.py --run-controlled-fixtures
+```
+Creates a temporary SQLite database from `evaluation/fixtures/controlled_evaluation.sql`, loads cases from `evaluation/fixtures/controlled_evaluation_cases.jsonl`, executes gold SQL, and verifies row counts and SQL safety. Use this to validate execution evaluation infrastructure without requiring full training.
+
+> **Note:** `BenchmarkRunner` has been renamed to `GoldReplayBenchmarkRunner`. It is a debug-only oracle baseline. All output is forced to `gold_replay_used = true` and `is_valid_for_quality_gate = false`. For real model benchmarks, use `run_unseen_db_benchmark.py` or `evaluate_generic_models.py`.
+
+### Lifecycle Proof Fields
+
+The `bundle_manifest.json` `lifecycle_proof` section records:
+- `generic_eval_valid_for_quality_gate` — evaluation passed strict validity checks
+- `generic_eval_real_predictions_generated` — count of real (non-gold-replay) predictions
+- `generic_eval_predictor_used` — a real predictor callable was used
+- `calibration_report_available`, `conformal_threshold_available` — calibration artifacts exist
+- `calibration_loaded_in_runtime_smoke` — calibration loaded during runtime smoke test
+- `production_ready` — all required fields are True
+
+Quality gates enforce: `real_predictions_generated > 0`, `predictor_used = true`, `rows_evaluated > 0`. Zero-prediction reports are always rejected.
+
+### Calibration and Conformal Threshold
+
+Calibration artifacts are written to `artifacts/evaluation/calibration_report.json` and copied into the bundle. The `conformal_confidence_threshold` is the learned threshold below which predictions trigger clarification/abstention. The app runtime smoke test verifies this threshold is behaviorally active (not just loaded).
+
 ---
 
 ## Model Selection & Promotion

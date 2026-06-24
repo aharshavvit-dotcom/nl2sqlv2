@@ -114,7 +114,14 @@ class DatasetScaleEvaluator:
             mode == "real_model_predictions" and bool(rows) and real_predictions_generated > 0
         )
         predictor_used = inferred_predictor_used if predictor_used is None else bool(predictor_used)
-        is_valid_for_quality_gate = mode == "real_model_predictions" and not gold_replay_used
+        is_valid_for_quality_gate = (
+            mode == "real_model_predictions"
+            and not gold_replay_used
+            and predictor_used is True
+            and real_predictions_generated > 0
+            and len(rows) > 0
+            and real_predictions_generated + prediction_failures == len(rows)
+        )
         return {
             "model_name": model_name,
             "schema_mode": schema_mode,

@@ -137,6 +137,49 @@ Raw heuristic confidence and calibrated confidence are stored separately. A cali
 
 Calibration is computed from evaluation outputs, copied into the bundle, and loaded by the same runtime path used by Streamlit. Runtime prediction results expose `raw_confidence`, `calibrated_confidence`, abstention metadata, and schema drift flags. Promotion uses statistical checks per metric when bootstrap evidence exists and falls back to point-estimate regression checks only for metrics without bootstrap coverage.
 
+### Lifecycle Proof
+
+Every `bundle_manifest.json` includes a `lifecycle_proof` section that records:
+
+| Field | Meaning |
+|:---|:---|
+| `trained_from_generic_corpus` | Bundle was trained from dataset-balanced generic QueryIR corpus |
+| `generic_eval_valid_for_quality_gate` | Evaluation passed all strict validity checks |
+| `generic_eval_real_predictions` | Real model predictions (not gold replay) |
+| `generic_eval_predictor_used` | A real predictor callable was used |
+| `generic_eval_rows_evaluated` | Number of rows evaluated |
+| `generic_eval_real_predictions_generated` | Number of real predictions generated |
+| `calibration_report_available` | Calibration report exists in bundle |
+| `calibration_loaded_in_runtime_smoke` | Calibration was loaded during runtime smoke test |
+| `conformal_threshold_available` | Conformal abstention threshold was computed |
+| `quality_gate_passed` | Quality gate passed |
+| `bundle_runtime_smoke_passed` | Bundle runtime smoke test passed |
+| `production_ready` | All required fields are True — bundle is production-safe |
+
+Evaluation reports are valid for quality gates **only** when `evaluation_mode = real_model_predictions`, `gold_replay_used = false`, `is_valid_for_quality_gate = true`, `predictor_used = true`, and `real_predictions_generated > 0`. Zero-prediction reports are always invalid.
+
+The `GoldReplayBenchmarkRunner` (formerly `BenchmarkRunner`) is a debug-only oracle baseline. Its output is always marked `is_valid_for_quality_gate = false`.
+
+### Execution-Aware Evaluation
+
+Controlled execution-aware evaluation uses a known SQLite fixture database:
+```bash
+python training/run_execution_aware_evaluation.py --run-controlled-fixtures
+```
+This creates a temporary database from `evaluation/fixtures/controlled_evaluation.sql`, executes gold SQL for each case in `evaluation/fixtures/controlled_evaluation_cases.jsonl`, and verifies row counts and SQL safety.
+
+---
+
+## Future Architecture Roadmap
+
+The following are planned but deferred until baselines are trustworthy:
+
+- **Relation-Aware Attention**: Cross-table schema encoding in the neural IR model
+- **Multi-Seed Training Variance**: Automated metric stability analysis across random seeds
+- **Execution-Aware Training Signal**: Using SQL execution results as a training reward signal
+- **Schema-Conditional Calibration**: Per-schema calibration curves instead of global
+- **Continuous Evaluation Dashboard**: Automated nightly evaluation on connected databases
+
 ---
 
 ## Training Configuration

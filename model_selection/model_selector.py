@@ -22,12 +22,26 @@ class ModelSelector:
             blocking_issues.append("No candidate passed hard blockers.")
             return {"selected_model": None, "rejected_models": rejected, "selection_reason": "all_candidates_rejected", "blocking_issues": blocking_issues, "warnings": []}
         selected = sorted(accepted, key=lambda item: _selection_score(item.metrics), reverse=True)[0]
+        warnings: list[str] = []
+        # Multi-seed variance check (when available)
+        multi_seed_report = selected.metadata.get("multi_seed_report") if selected.metadata else None
+        if multi_seed_report and isinstance(multi_seed_report, dict):
+            variance = multi_seed_report.get("metric_std", {})
+            high_variance = [
+                f"{metric}: std={std:.4f}" for metric, std in variance.items()
+                if isinstance(std, (int, float)) and std > 0.05
+            ]
+            if high_variance:
+                warnings.append(
+                    "High metric variance across seeds: " + ", ".join(high_variance)
+                )
         return {
             "selected_model": asdict(selected),
             "rejected_models": rejected,
             "selection_reason": f"highest quality score {_selection_score(selected.metrics):.4f}",
             "blocking_issues": [],
-            "warnings": [],
+            "multi_seed_report": multi_seed_report,
+            "warnings": warnings,
         }
 
 

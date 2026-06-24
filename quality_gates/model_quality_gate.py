@@ -191,6 +191,9 @@ class ModelQualityGate:
             gold_replay = bool(section.get("gold_replay_used", False) or section.get("gold_replay_baseline", False))
             valid = section.get("is_valid_for_quality_gate")
             predictor_used = section.get("predictor_used")
+            rows_evaluated = section.get("rows_evaluated", 0)
+            real_preds = section.get("real_predictions_generated", 0)
+            artifact_source = section.get("model_artifact_source")
             if mode in {"explicit_gold_replay_baseline", "explicit_oracle_upper_bound"} or gold_replay or valid is False:
                 failed.append({
                     "metric": f"{name}_valid_evaluation_source",
@@ -215,6 +218,26 @@ class ModelQualityGate:
                     "expected": True,
                     "comparison": "==",
                 })
+            if mode == "real_model_predictions" and isinstance(rows_evaluated, int) and rows_evaluated == 0:
+                failed.append({
+                    "metric": f"{name}_rows_evaluated",
+                    "actual": 0,
+                    "expected": "> 0",
+                    "comparison": ">",
+                })
+            if mode == "real_model_predictions" and isinstance(real_preds, int) and real_preds == 0:
+                failed.append({
+                    "metric": f"{name}_real_predictions_generated",
+                    "actual": 0,
+                    "expected": "> 0",
+                    "comparison": ">",
+                })
+            # Neural-only fallback warning
+            if artifact_source == "neural_only_artifact_dirs":
+                warnings.append(
+                    f"{name} used neural-only artifact dirs. This may not represent "
+                    "full bundle runtime performance and does not load bundle calibration."
+                )
         return failed, warnings
 
     @staticmethod

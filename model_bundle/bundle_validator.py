@@ -117,13 +117,29 @@ class ModelBundleValidator:
             _validate_evaluation_source(evaluation_report, issues if qg_required else warnings)
             test_perf = evaluation_report.get("test_performance") or {}
             unseen_perf = evaluation_report.get("unseen_db_performance") or {}
-            lifecycle_proof["real_predictions_generated"] = bool(
+            lifecycle_proof["generic_eval_available"] = True
+            lifecycle_proof["generic_eval_real_predictions"] = bool(
                 (test_perf.get("real_predictions_generated") or evaluation_report.get("real_predictions_generated") or 0) > 0
             )
-            lifecycle_proof["gold_replay_used"] = bool(evaluation_report.get("gold_replay_used", False))
-            lifecycle_proof["unseen_db_real_prediction_eval"] = bool(
+            lifecycle_proof["generic_eval_gold_replay_used"] = bool(evaluation_report.get("gold_replay_used", False))
+            lifecycle_proof["generic_eval_predictor_used"] = bool(evaluation_report.get("predictor_used", False))
+            lifecycle_proof["generic_eval_rows_evaluated"] = int(
+                test_perf.get("rows_evaluated", 0) or evaluation_report.get("rows_evaluated", 0)
+            )
+            lifecycle_proof["generic_eval_real_predictions_generated"] = int(
+                test_perf.get("real_predictions_generated", 0) or evaluation_report.get("real_predictions_generated", 0)
+            )
+            lifecycle_proof["generic_eval_valid_for_quality_gate"] = bool(
+                evaluation_report.get("is_valid_for_quality_gate", False)
+            )
+            lifecycle_proof["unseen_db_eval_available"] = bool(unseen_perf)
+            lifecycle_proof["unseen_db_real_predictions"] = bool(
                 unseen_perf.get("evaluation_mode") == "real_model_predictions"
                 and not unseen_perf.get("gold_replay_used", False)
+            )
+            lifecycle_proof["unseen_db_gold_replay_used"] = bool(unseen_perf.get("gold_replay_used", True))
+            lifecycle_proof["unseen_db_valid_for_quality_gate"] = bool(
+                unseen_perf.get("is_valid_for_quality_gate", False)
             )
 
         if qg_required:
@@ -169,14 +185,27 @@ class ModelBundleValidator:
         lifecycle_proof["bundle_runtime_smoke_passed"] = bool(smoke.get("passed", False))
         lifecycle_proof["calibration_loaded_in_runtime_smoke"] = bool(smoke.get("calibration_loaded", False))
         if qg_required:
-            if lifecycle_proof.get("gold_replay_used"):
+            if lifecycle_proof.get("generic_eval_gold_replay_used"):
                 issues.append("Lifecycle proof shows gold replay was used")
-            if not lifecycle_proof.get("real_predictions_generated"):
+            if not lifecycle_proof.get("generic_eval_real_predictions"):
                 issues.append("Lifecycle proof shows no real model predictions were generated")
+            if not lifecycle_proof.get("generic_eval_valid_for_quality_gate"):
+                issues.append("Lifecycle proof shows generic eval is not valid for quality gate")
             if not lifecycle_proof.get("calibration_report_available"):
                 issues.append("Lifecycle proof missing required calibration report")
             if not lifecycle_proof.get("calibration_loaded_in_runtime_smoke"):
                 issues.append("Lifecycle proof shows calibration was not loaded in runtime smoke")
+
+        # Compute production_ready flag
+        lifecycle_proof["production_ready"] = bool(
+            lifecycle_proof.get("generic_eval_valid_for_quality_gate")
+            and lifecycle_proof.get("generic_eval_real_predictions")
+            and not lifecycle_proof.get("generic_eval_gold_replay_used")
+            and lifecycle_proof.get("quality_gate_passed")
+            and lifecycle_proof.get("bundle_runtime_smoke_passed")
+            and lifecycle_proof.get("calibration_report_available")
+            and lifecycle_proof.get("calibration_loaded_in_runtime_smoke")
+        )
 
         return _result(issues, warnings, checked, lifecycle_proof)
 
@@ -246,6 +275,12 @@ def _validate_evaluation_source(report: dict[str, Any], issues: list[str]) -> No
             issues.append(f"{name} is marked not valid for quality gate")
         if mode in {"explicit_gold_replay_baseline", "explicit_oracle_upper_bound"}:
             issues.append(f"{name} uses non-production evaluation mode: {mode}")
+        artifact_source = section.get("model_artifact_source")
+        if artifact_source == "neural_only_artifact_dirs":
+            issues.append(
+                f"{name} used neural-only artifact dirs, not the full bundle runtime. "
+                "This is acceptable for diagnostics but not for production bundle validation."
+            )
 
 
 def _validate_retrieval_runtime(

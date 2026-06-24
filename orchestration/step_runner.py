@@ -541,9 +541,33 @@ class StepRunner:
             issues.append("calibration report exists but runtime did not load it")
         if model.artifact_dir is None:
             issues.append("runtime fell back to sample/dev artifacts")
+
+        # Controlled abstention test: temporarily inject a very high threshold
+        # to prove the calibration is behaviorally active (not just loaded).
+        abstention_tested = False
+        if calibration_loaded and model.orchestrator.confidence_calibration:
+            saved_threshold = model.orchestrator.confidence_calibration.get("conformal_confidence_threshold")
+            try:
+                model.orchestrator.confidence_calibration["conformal_confidence_threshold"] = 0.99
+                abstention_result = model.predict("list all users", schema)
+                if not abstention_result.abstain:
+                    issues.append(
+                        "Abstention test failed: with conformal_threshold=0.99, "
+                        "runtime should abstain but returned abstain=False"
+                    )
+                abstention_tested = True
+            except Exception as exc:
+                issues.append(f"Abstention test error: {exc}")
+            finally:
+                if saved_threshold is not None:
+                    model.orchestrator.confidence_calibration["conformal_confidence_threshold"] = saved_threshold
+                else:
+                    model.orchestrator.confidence_calibration.pop("conformal_confidence_threshold", None)
+
         summary = {
             "bundle_dir": str(bundle_dir),
             "calibration_loaded": calibration_loaded,
+            "abstention_behavior_verified": abstention_tested,
             "predictions": results,
         }
         if issues:

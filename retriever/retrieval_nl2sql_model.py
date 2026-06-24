@@ -191,7 +191,7 @@ class RetrievalNL2SQLModel:
 
     def predict(self, question: str, schema: SchemaGraph, use_neural_ir_fallback: bool | None = None, use_option_a_fallback: bool | None = None) -> PredictionResult:
         _fallback = use_neural_ir_fallback if use_neural_ir_fallback is not None else use_option_a_fallback
-        return self.orchestrator.predict(
+        result = self.orchestrator.predict(
             question=question,
             schema=schema,
             retriever=self.retriever,
@@ -201,6 +201,9 @@ class RetrievalNL2SQLModel:
             validator=None,
             use_neural_ir_fallback=self.use_neural_ir_fallback if _fallback is None else _fallback,
         )
+        result.debug["dev_fallback_used"] = self.artifact_dir is None
+        result.debug["runtime_source"] = "model_bundle" if self.artifact_dir is not None else "dev_fallback"
+        return result
 
     @staticmethod
     def _load_metadata(artifact_dir: Path) -> dict[str, Any]:

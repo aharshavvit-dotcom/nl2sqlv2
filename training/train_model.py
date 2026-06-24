@@ -264,6 +264,22 @@ def main() -> int:
     if not args.dry_run:
         write_training_report(report, config)
 
+    # 6b. Multi-seed variance analysis (scaffolding — runs only when enabled)
+    seeds_config = config.get("seeds", {})
+    if seeds_config.get("enabled", False) and not args.dry_run and status == "completed":
+        seed_values = seeds_config.get("values", [42])
+        report_output = ROOT / seeds_config.get("report_output", "artifacts/evaluation/multi_seed_variance_report.json")
+        print(f"\n  Multi-seed variance analysis enabled ({len(seed_values)} seeds)")
+        print(f"  Seeds: {seed_values}")
+        print(f"  Report: {report_output}")
+        # TODO: Implement multi-seed iteration:
+        #   for seed in seed_values:
+        #       config["pipeline"]["seed"] = seed
+        #       seed_report = run_pipeline(config, args)
+        #       collect metrics per seed
+        #   compute mean/std per metric, write variance report
+        print(f"  [Note] Multi-seed iteration not yet implemented — scaffolding only.")
+
     # 7. Summary
     status = report.get("status", "unknown")
     step_count = len(report.get("steps", []))
