@@ -51,13 +51,20 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     metrics = _metrics(_read(args.evaluation_report), _read(args.execution_report))
+    # Attach multi-seed variance report if available
+    variance_path = args.evaluation_report.parent / "multi_seed_variance_report.json"
+    multi_seed_report = _read(variance_path) if variance_path.exists() else None
     candidate = ModelCandidate(
         name="adaptive_router",
         artifact_dir=str(ROOT / "artifacts"),
         model_type="adaptive_router",
         metrics=metrics,
         created_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-        metadata={"evaluation_report": str(args.evaluation_report), "execution_report": str(args.execution_report)},
+        metadata={
+            "evaluation_report": str(args.evaluation_report),
+            "execution_report": str(args.execution_report),
+            "multi_seed_report": multi_seed_report,
+        },
     )
     report = ModelSelector().select_best([candidate], load_thresholds(args.thresholds))
     SelectionReporter().write(args.output, report)

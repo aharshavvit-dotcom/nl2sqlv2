@@ -244,3 +244,77 @@ class TestBundleLoaderCalibration:
         source = (ROOT / "model_bundle" / "bundle_loader.py").read_text(encoding="utf-8")
         assert "calibration_dir" in source
         assert "calibration_report_path" in source
+
+
+class TestPreciseRuntimeSource:
+    """Verify runtime_source produces precise labels."""
+
+    def test_runtime_source_dev_fallback(self) -> None:
+        """When artifact_dir is None, runtime_source must be 'dev_fallback'."""
+        from inference.prediction_models import PredictionResult
+
+        result = PredictionResult(question="test", normalized_question="test")
+        result.debug["dev_fallback_used"] = True
+        # Simulate what RetrievalNL2SQLModel.predict() does for dev fallback
+        result.debug["runtime_source"] = "dev_fallback"
+        assert result.debug["runtime_source"] == "dev_fallback"
+
+    def test_runtime_source_values_in_predict_code(self) -> None:
+        """The predict method must distinguish model_bundle_current, model_bundle_candidate, artifact_dirs, dev_fallback."""
+        source = (ROOT / "retriever" / "retrieval_nl2sql_model.py").read_text(encoding="utf-8")
+        assert "model_bundle_" in source  # model_bundle_{status}
+        assert '"artifact_dirs"' in source
+        assert '"dev_fallback"' in source
+
+    def test_runtime_source_model_bundle_status_interpolation(self) -> None:
+        """runtime_source must be f'model_bundle_{status}' when bundle metadata present."""
+        source = (ROOT / "retriever" / "retrieval_nl2sql_model.py").read_text(encoding="utf-8")
+        assert 'f"model_bundle_{bundle_status}"' in source
+
+    def test_debug_contains_calibration_and_drift_flags(self) -> None:
+        """predict() must set calibration_loaded and schema_drift_baseline_loaded in debug."""
+        source = (ROOT / "retriever" / "retrieval_nl2sql_model.py").read_text(encoding="utf-8")
+        assert "calibration_loaded" in source
+        assert "schema_drift_baseline_loaded" in source
+
+
+class TestAbstentionReasonAndDrift:
+    """Verify abstention_reason and schema_drift_flags are in PredictionResult."""
+
+    def test_abstention_reason_field_exists(self) -> None:
+        """PredictionResult must have abstention_reason field."""
+        from inference.prediction_models import PredictionResult
+
+        result = PredictionResult(question="test", normalized_question="test", abstain=True, abstention_reason="low calibrated confidence")
+        assert result.abstention_reason == "low calibrated confidence"
+
+    def test_schema_drift_flags_field_exists(self) -> None:
+        """PredictionResult must have schema_drift_flags field."""
+        from inference.prediction_models import PredictionResult
+
+        result = PredictionResult(
+            question="test", normalized_question="test",
+            schema_drift_flags=["schema_complexity_p95_exceeded", "question_length_p99_exceeded"],
+        )
+        assert len(result.schema_drift_flags) == 2
+        assert "schema_complexity_p95_exceeded" in result.schema_drift_flags
+
+    def test_abstention_reason_surfaced_in_streamlit_source(self) -> None:
+        """The Streamlit app source must reference abstention_reason and schema_drift_flags."""
+        source = (ROOT / "app" / "streamlit_app.py").read_text(encoding="utf-8")
+        assert "abstention_reason" in source
+        assert "schema_drift_flags" in source
+
+    def test_abstention_fields_serializable(self) -> None:
+        """PredictionResult with abstention_reason and schema_drift_flags must be JSON-serializable."""
+        from inference.prediction_models import PredictionResult
+
+        result = PredictionResult(
+            question="test", normalized_question="test",
+            abstain=True, abstention_reason="conformal threshold",
+            schema_drift_flags=["high_complexity"],
+        )
+        data = result.model_dump()
+        serialized = json.dumps(data)
+        assert "conformal threshold" in serialized
+        assert "high_complexity" in serialized

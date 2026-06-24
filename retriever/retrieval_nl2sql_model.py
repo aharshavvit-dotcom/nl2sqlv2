@@ -202,7 +202,19 @@ class RetrievalNL2SQLModel:
             use_neural_ir_fallback=self.use_neural_ir_fallback if _fallback is None else _fallback,
         )
         result.debug["dev_fallback_used"] = self.artifact_dir is None
-        result.debug["runtime_source"] = "model_bundle" if self.artifact_dir is not None else "dev_fallback"
+        # Precise runtime_source: distinguish validated bundles from raw artifact dirs
+        bundle_meta = self.metadata.get("model_bundle") or {}
+        if self.artifact_dir is None:
+            result.debug["runtime_source"] = "dev_fallback"
+        elif bundle_meta:
+            bundle_status = bundle_meta.get("status", "candidate")
+            result.debug["runtime_source"] = f"model_bundle_{bundle_status}"
+        else:
+            result.debug["runtime_source"] = "artifact_dirs"
+        # Additional runtime provenance for the Streamlit UI
+        result.debug["calibration_loaded"] = bool(self.orchestrator.confidence_calibration)
+        result.debug["schema_drift_baseline_loaded"] = bool(self.orchestrator.schema_drift_baseline)
+        result.debug["bundle_dir"] = bundle_meta.get("bundle_id", "")
         return result
 
     @staticmethod

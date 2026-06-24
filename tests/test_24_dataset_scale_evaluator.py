@@ -129,3 +129,33 @@ def test_evaluator_invalid_when_rows_evaluated_zero() -> None:
 
     assert report["rows_evaluated"] == 0
     assert report["is_valid_for_quality_gate"] is False
+
+
+def test_per_example_contains_bootstrap_promotion_fields() -> None:
+    """per_example must contain simple_query_pass, gold_comparison_score, unseen_db_sql_valid
+    for bootstrap promotion to work (see promotion_policy.py)."""
+    gold = {"intent": "show_records", "base_table": "users", "joins": []}
+    row = {
+        "example_id": "ex1",
+        "question": "list users",
+        "query_ir": gold,
+        "predicted_query_ir": gold,
+        "ir_validation": {"is_valid": True},
+        "sql_validation": {"is_valid": True},
+        "confidence": 0.95,
+        "prediction_latency_ms": 10.0,
+    }
+
+    # Gold schema mode → unseen_db_sql_valid should be None
+    report = DatasetScaleEvaluator().evaluate_model("mock_model", [row], schema_mode="gold")
+    pe = report["per_example"][0]
+    assert "simple_query_pass" in pe
+    assert "gold_comparison_score" in pe
+    assert "unseen_db_sql_valid" in pe
+    assert pe["unseen_db_sql_valid"] is None  # Not unseen_db mode
+
+    # Unseen-DB schema mode → unseen_db_sql_valid should be bool
+    report_unseen = DatasetScaleEvaluator().evaluate_model("mock_model", [row], schema_mode="unseen_db")
+    pe_unseen = report_unseen["per_example"][0]
+    assert isinstance(pe_unseen["unseen_db_sql_valid"], bool)
+    assert pe_unseen["gold_comparison_score"] >= 0.0

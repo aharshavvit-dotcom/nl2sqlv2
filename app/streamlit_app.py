@@ -518,12 +518,29 @@ if generate and question.strip():
         runtime_cols[1].metric("Dev Fallback", "Yes" if dev_fallback else "No")
         runtime_cols[2].metric("Calibrated Conf.", f"{result.calibrated_confidence:.3f}" if result.calibrated_confidence is not None else "N/A")
         runtime_cols[3].metric("Abstain", "Yes" if result.abstain else "No")
+
+        # Calibration and drift loading status
+        extra_cols = st.columns(4)
+        extra_cols[0].metric("Calibration Loaded", "Yes" if result.debug.get("calibration_loaded") else "No")
+        extra_cols[1].metric("Drift Baseline Loaded", "Yes" if result.debug.get("schema_drift_baseline_loaded") else "No")
+        extra_cols[2].metric("Raw Confidence", f"{result.raw_confidence:.3f}" if result.raw_confidence is not None else "N/A")
+        extra_cols[3].metric("Conformal Threshold", f"{result.conformal_threshold:.3f}" if result.conformal_threshold is not None else "N/A")
+
         if bundle_info:
             cal_path = bundle_info.get("calibration_report_path")
             st.caption(f"Bundle: {bundle_info.get('bundle_dir', 'N/A')}")
             st.caption(f"Calibration report: {'loaded' if cal_path else 'not available'}")
         if dev_fallback:
-            st.warning("Runtime is using dev fallback artifacts — not a validated model bundle.")
+            st.warning("⚠️ Development fallback is active. This is not production-safe. "
+                        "Run `python training/train_model.py` to build a validated model bundle.")
+        # Abstention reason
+        if result.abstain and result.abstention_reason:
+            st.info(f"Abstention reason: {result.abstention_reason}")
+        elif result.abstain:
+            st.info("Abstention triggered (no specific reason recorded)")
+        # Schema drift flags
+        if result.schema_drift_flags:
+            st.warning("Schema drift detected:\n" + "\n".join(f"- {flag}" for flag in result.schema_drift_flags))
 
     st.subheader("Confidence")
     c1, c2, c3, c4, c5, c6 = st.columns(6)

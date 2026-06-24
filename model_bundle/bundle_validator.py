@@ -196,6 +196,26 @@ class ModelBundleValidator:
             if not lifecycle_proof.get("calibration_loaded_in_runtime_smoke"):
                 issues.append("Lifecycle proof shows calibration was not loaded in runtime smoke")
 
+        # Check for controlled fixture evaluation results in the bundle
+        fixture_report_path = eval_dir / "controlled_fixture_evaluation_report.json"
+        if fixture_report_path.exists():
+            fixture_report = _read_json(fixture_report_path)
+            fixture_summary = fixture_report.get("summary") or {}
+            lifecycle_proof["controlled_fixture_eval_available"] = True
+            lifecycle_proof["controlled_fixture_eval_passed"] = bool(
+                fixture_summary.get("execution_success_rate", 0.0) == 1.0
+                and fixture_summary.get("row_count_match_rate", 0.0) == 1.0
+                and fixture_summary.get("select_only_rate", 0.0) == 1.0
+            )
+            lifecycle_proof["controlled_fixture_execution_success_rate"] = float(
+                fixture_summary.get("execution_success_rate", 0.0)
+            )
+            lifecycle_proof["controlled_fixture_row_count_match_rate"] = float(
+                fixture_summary.get("row_count_match_rate", 0.0)
+            )
+        else:
+            lifecycle_proof.setdefault("controlled_fixture_eval_available", False)
+
         # Compute production_ready flag
         lifecycle_proof["production_ready"] = bool(
             lifecycle_proof.get("generic_eval_valid_for_quality_gate")

@@ -75,6 +75,11 @@ bundle:
   validate: true
   promote_if_quality_gate_passes: true
 
+execution_aware:
+  controlled_fixtures:
+    enabled: true
+    output: artifacts/evaluation/controlled_fixture_evaluation_report.json
+
 # Multi-seed training variance (disabled by default).
 # When enabled, repeats evaluation over multiple seeds and reports metric variance.
 # This does NOT affect the primary training run — it adds a post-training
@@ -83,3 +88,11 @@ seeds:
   enabled: false
   values: [42, 123, 456]
   report_output: artifacts/evaluation/multi_seed_variance_report.json
+  metrics:
+    - intent_macro_f1
+    - base_table_accuracy
+    - join_decision_macro_f1
+    - sql_validation_rate
+    - query_ir_validity_rate
+    - execution_match_rate
+

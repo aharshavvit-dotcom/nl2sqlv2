@@ -153,6 +153,21 @@ class StepRunner:
     def _contract_run_execution_aware_evaluation(self, config: PipelineConfig) -> StepContract:
         return StepContract(name="run_execution_aware_evaluation", required=False)
 
+    def _contract_run_controlled_fixture_evaluation(self, config: PipelineConfig) -> StepContract:
+        integrated = config.training.get("_integrated_config") or {}
+        controlled = (integrated.get("execution_aware") or {}).get("controlled_fixtures") or {}
+        if not controlled.get("enabled", False):
+            return StepContract(
+                name="run_controlled_fixture_evaluation", required=False,
+                can_skip=True, skip_reason="controlled_fixtures disabled in config",
+            )
+        output = controlled.get("output", "artifacts/evaluation/controlled_fixture_evaluation_report.json")
+        return StepContract(
+            name="run_controlled_fixture_evaluation",
+            required=False,
+            outputs=[str(ROOT / output)],
+        )
+
     def _contract_evaluate_generic_models(self, config: PipelineConfig) -> StepContract:
         return StepContract(
             name="evaluate_generic_models",
@@ -395,6 +410,35 @@ class StepRunner:
         output = Path(artifacts["evaluation_dir"]) / "execution_aware_evaluation_report.json"
         write_json(output, report)
         return {"status": "completed", "summary": report["summary"]}
+
+    def _run_run_controlled_fixture_evaluation(self, config: PipelineConfig) -> dict[str, Any]:
+        from dataset_training.utils import write_json
+        from training.run_execution_aware_evaluation import evaluate_controlled_fixtures
+
+        integrated = config.training.get("_integrated_config") or {}
+        controlled = (integrated.get("execution_aware") or {}).get("controlled_fixtures") or {}
+        output_path = controlled.get("output", "artifacts/evaluation/controlled_fixture_evaluation_report.json")
+        report = evaluate_controlled_fixtures()
+        output = ROOT / output_path
+        output.parent.mkdir(parents=True, exist_ok=True)
+        write_json(output, report)
+        summary = report.get("summary") or {}
+        passed = (
+            summary.get("execution_success_rate", 0.0) == 1.0
+            and summary.get("row_count_match_rate", 0.0) == 1.0
+            and summary.get("select_only_rate", 0.0) == 1.0
+        )
+        return {
+            "status": "completed",
+            "summary": {
+                "controlled_fixture_eval": True,
+                "total_cases": report.get("total_cases", 0),
+                "execution_success_rate": summary.get("execution_success_rate", 0.0),
+                "row_count_match_rate": summary.get("row_count_match_rate", 0.0),
+                "safe_sql_rate": summary.get("select_only_rate", 0.0),
+                "passed": passed,
+            },
+        }
 
     def _run_evaluate_generic_models(self, config: PipelineConfig) -> dict[str, Any]:
         from training.evaluate_generic_models import evaluate_generic_models

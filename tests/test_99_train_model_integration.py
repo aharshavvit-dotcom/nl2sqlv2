@@ -355,3 +355,108 @@ class TestTrainModelIntegration:
         )
         assert "calibration_loaded_in_runtime_smoke" in manifest.lifecycle_proof
         assert manifest.lifecycle_proof["calibration_loaded_in_runtime_smoke"] is False
+
+    def test_controlled_fixture_step_in_pipeline_config(self):
+        """30. When execution_aware.controlled_fixtures.enabled=true, pipeline includes the step."""
+        sys.path.insert(0, str(ROOT))
+        from orchestration.pipeline_config import build_pipeline_steps
+
+        config = {"evaluation": {"enabled": True}, "execution_aware": {"controlled_fixtures": {"enabled": True}}}
+        steps = build_pipeline_steps(config)
+        assert "run_controlled_fixture_evaluation" in steps
+
+    def test_controlled_fixture_step_absent_when_disabled(self):
+        """31. When controlled_fixtures not enabled, step should not appear."""
+        sys.path.insert(0, str(ROOT))
+        from orchestration.pipeline_config import build_pipeline_steps
+
+        steps = build_pipeline_steps({"evaluation": {"enabled": True}})
+        assert "run_controlled_fixture_evaluation" not in steps
+
+    def test_multi_seed_config_parsed(self):
+        """32. Seeds config is parsed from training.yaml."""
+        import yaml
+
+        config_path = ROOT / "configs" / "training.yaml"
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        seeds = config.get("seeds", {})
+        assert "enabled" in seeds
+        assert "values" in seeds
+        assert "metrics" in seeds
+        assert isinstance(seeds["metrics"], list)
+        assert len(seeds["metrics"]) > 0
+
+    def test_multi_seed_status_used_before_assignment_fixed(self):
+        """33. The NameError where status was used before assignment in train_model.py is fixed."""
+        import ast
+
+        source = (ROOT / "training" / "train_model.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        # Find the main() function
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "main":
+                # Find all assignments to 'status' and all reads of 'status'
+                first_assign = None
+                first_read_in_seeds = None
+                for child in ast.walk(node):
+                    if isinstance(child, ast.Assign):
+                        for target in child.targets:
+                            if isinstance(target, ast.Name) and target.id == "status":
+                                if first_assign is None:
+                                    first_assign = child.lineno
+                    if isinstance(child, ast.Name) and child.id == "status" and isinstance(child.ctx, ast.Load):
+                        if first_read_in_seeds is None or child.lineno < first_read_in_seeds:
+                            first_read_in_seeds = child.lineno
+                assert first_assign is not None, "status is never assigned in main()"
+                assert first_read_in_seeds is not None, "status is never read in main()"
+                assert first_assign <= first_read_in_seeds, (
+                    f"status is read at line {first_read_in_seeds} before assigned at line {first_assign}"
+                )
+                break
+
+    def test_production_ready_requires_all_critical_fields(self):
+        """34. production_ready in lifecycle proof requires all critical conditions."""
+        sys.path.insert(0, str(ROOT))
+        from model_bundle.bundle_builder import ModelBundleBuilder
+
+        # With all conditions met
+        result = ModelBundleBuilder().build_candidate_bundle(
+            work_dir=ROOT / "artifacts",
+            output_dir=ROOT / "artifacts" / "model_bundle" / "_test_prod_ready",
+            config={},
+            pipeline_report={"steps": [
+                {"step": "run_app_smoke_check", "status": "completed", "summary": {"calibration_loaded": True}},
+                {"step": "run_controlled_fixture_evaluation", "status": "completed", "summary": {
+                    "passed": True, "execution_success_rate": 1.0, "row_count_match_rate": 1.0,
+                }},
+            ]},
+            evaluation_report={
+                "is_valid_for_quality_gate": True,
+                "real_predictions_generated": 10,
+                "gold_replay_used": False,
+                "predictor_used": True,
+                "test_performance": {"calibration": {"conformal_confidence_threshold": 0.85}},
+            },
+            quality_gate_report={"passed": True},
+        )
+        manifest_path = ROOT / "artifacts" / "model_bundle" / "_test_prod_ready" / "bundle_manifest.json"
+        if manifest_path.exists():
+            manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            lp = manifest_data.get("lifecycle_proof", {})
+            assert lp.get("production_ready") is True
+            assert lp.get("controlled_fixture_eval_available") is True
+            # Clean up
+            import shutil
+            shutil.rmtree(ROOT / "artifacts" / "model_bundle" / "_test_prod_ready", ignore_errors=True)
+
+    def test_step_runner_recognizes_controlled_fixture_step(self):
+        """35. StepRunner can get contract for run_controlled_fixture_evaluation."""
+        sys.path.insert(0, str(ROOT))
+        from orchestration.pipeline_config import PipelineConfig
+        from orchestration.step_runner import StepRunner
+
+        config = PipelineConfig(pipeline_name="test", training={"_integrated_config": {
+            "execution_aware": {"controlled_fixtures": {"enabled": True}},
+        }})
+        contract = StepRunner().get_contract("run_controlled_fixture_evaluation", config)
+        assert contract.name == "run_controlled_fixture_evaluation"

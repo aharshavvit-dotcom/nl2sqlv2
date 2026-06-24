@@ -136,7 +136,8 @@ class PromotionPolicy:
         }
         rng = random.Random(seed)
         for metric, (field, higher_is_better) in metric_fields.items():
-            available = [item for item in ids if field in challenger[item] and field in champion[item]]
+            available = [item for item in ids if field in challenger[item] and field in champion[item]
+                         and challenger[item][field] is not None and champion[item][field] is not None]
             if not available:
                 continue
             def delta(sample: list[str]) -> float:

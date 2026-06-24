@@ -84,6 +84,18 @@ class DatasetScaleEvaluator:
                 "execution_match": bool(row.get("execution_match", False)),
                 "unnecessary_join": bool((pred.get("joins") or []) and not (gold.get("joins") or [])),
                 "wrong_table": gold.get("base_table") != pred.get("base_table"),
+                # Bootstrap promotion fields (required by promotion_policy.py)
+                "simple_query_pass": bool(item_metrics.get("simple_query_match", False)),
+                "gold_comparison_score": float(
+                    row.get("gold_comparison_score")
+                    or item_metrics.get("gold_comparison_score")
+                    or (1.0 if correct else 0.0)
+                ),
+                "unseen_db_sql_valid": (
+                    bool(item_metrics.get("sql_validation", False))
+                    if schema_mode == "unseen_db"
+                    else None
+                ),
             })
 
         summary = {f"{key}_rate": metrics[key] / totals[key] if totals[key] else 0.0 for key in totals}

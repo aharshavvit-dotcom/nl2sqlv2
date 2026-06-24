@@ -61,3 +61,7 @@ bundle:
   build: true
   validate: true
   promote_if_quality_gate_passes: false
+
+execution_aware:
+  controlled_fixtures:
+    enabled: true

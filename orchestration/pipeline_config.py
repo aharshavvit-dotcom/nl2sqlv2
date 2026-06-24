@@ -34,6 +34,10 @@ def build_pipeline_steps(config: dict[str, Any]) -> list[str]:
     if evaluation.get("enabled", True):
         if evaluation.get("run_execution_aware", False):
             steps.append("run_execution_aware_evaluation")
+        execution_aware = config.get("execution_aware") or {}
+        controlled_fixtures = execution_aware.get("controlled_fixtures") or {}
+        if controlled_fixtures.get("enabled", False):
+            steps.append("run_controlled_fixture_evaluation")
         steps.append("evaluate_generic_models")
     steps.append("run_quality_gate")
     if bundle.get("build", True):

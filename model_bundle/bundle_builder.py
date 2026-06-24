@@ -100,6 +100,19 @@ class ModelBundleBuilder:
         unseen_performance = (evaluation_report or {}).get("unseen_db_performance") or {}
         classification_metrics = test_performance.get("classification_metrics") or {}
         percentiles = test_performance.get("percentiles") or {}
+        # Extract controlled fixture results from pipeline_report if available
+        _steps = [s for s in (pipeline_report or {}).get("steps", []) if isinstance(s, dict)]
+        _fixture_step = next(
+            (s for s in _steps if s.get("step") == "run_controlled_fixture_evaluation" and s.get("status") == "completed"),
+            None,
+        )
+        _fixture_summary = (_fixture_step or {}).get("summary") or {}
+        _smoke_step = next(
+            (s for s in _steps if s.get("step") == "run_app_smoke_check" and s.get("status") == "completed"),
+            None,
+        )
+        _smoke_summary = (_smoke_step or {}).get("summary") or {}
+
         lifecycle_proof = {
             "trained_from_generic_corpus": bool(generic_training_src and generic_training_src.exists()),
             "dataset_contribution_report_available": bool(
@@ -137,7 +150,7 @@ class ModelBundleBuilder:
             ),
             "classification_metrics_available": bool(classification_metrics),
             "calibration_report_available": bool(test_performance.get("calibration")),
-            "calibration_loaded_in_runtime_smoke": False,
+            "calibration_loaded_in_runtime_smoke": bool(_smoke_summary.get("calibration_loaded", False)),
             "conformal_threshold_available": bool(
                 (test_performance.get("calibration") or {}).get("conformal_confidence_threshold") is not None
             ),
@@ -145,14 +158,28 @@ class ModelBundleBuilder:
                 any(key.startswith(("schema_", "question_", "candidate_")) for key in percentiles)
             ),
             "quality_gate_passed": bool((quality_gate_report or {}).get("passed", False)),
-            "bundle_runtime_smoke_passed": False,
-            "app_runtime_smoke_passed": any(
-                step.get("step") == "run_app_smoke_check" and step.get("status") == "completed"
-                for step in (pipeline_report or {}).get("steps", [])
-                if isinstance(step, dict)
+            "bundle_runtime_smoke_passed": bool(_smoke_step is not None),
+            "app_runtime_smoke_passed": bool(_smoke_step is not None),
+            # Controlled fixture evaluation lifecycle proof
+            "controlled_fixture_eval_available": bool(_fixture_step is not None),
+            "controlled_fixture_eval_passed": bool(_fixture_summary.get("passed", False)),
+            "controlled_fixture_execution_success_rate": float(
+                _fixture_summary.get("execution_success_rate", 0.0)
             ),
-            "production_ready": False,
+            "controlled_fixture_row_count_match_rate": float(
+                _fixture_summary.get("row_count_match_rate", 0.0)
+            ),
         }
+        # production_ready: AND of all critical lifecycle fields
+        lifecycle_proof["production_ready"] = all([
+            lifecycle_proof["generic_eval_valid_for_quality_gate"],
+            lifecycle_proof["generic_eval_real_predictions"],
+            not lifecycle_proof["generic_eval_gold_replay_used"],
+            lifecycle_proof["quality_gate_passed"],
+            lifecycle_proof["calibration_report_available"],
+            lifecycle_proof["bundle_runtime_smoke_passed"],
+            lifecycle_proof["calibration_loaded_in_runtime_smoke"],
+        ])
 
         # Build manifest
         bundle_id = f"nl2sql_bundle_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
