@@ -31,6 +31,23 @@ class TrainingDiagnostics:
             or ("schema_pairwise_relation_bias" if pairwise_relation_matrix else "schema_token_role_bias")
         )
         relation_types = rat_config.get("relation_types", [])
+
+        # Phase 6: Track both bias paths independently
+        question_schema_role_bias_active = bool(
+            relation_enabled and relation_bias_mode in ("schema_token_role_bias", "combined")
+        )
+        schema_pairwise_relation_bias_active = bool(
+            relation_enabled and relation_bias_mode in ("schema_pairwise_relation_bias", "combined")
+        )
+        effective_mode = "disabled"
+        if relation_enabled:
+            if question_schema_role_bias_active and schema_pairwise_relation_bias_active:
+                effective_mode = "combined"
+            elif schema_pairwise_relation_bias_active:
+                effective_mode = "schema_pairwise_relation_bias"
+            elif question_schema_role_bias_active:
+                effective_mode = "schema_token_role_bias"
+
         self.config_summary = {
             "optimizer_name": config.get("optimizer", {}).get("name", "unknown"),
             "activation_name": config.get("model", {}).get("activation", "unknown"),
@@ -51,7 +68,10 @@ class TrainingDiagnostics:
             "relation_aware_attention": {
                 "enabled": relation_enabled,
                 "relation_type_ids_available": True,  # Now wired in ir_dataset
-                "relation_bias_mode": relation_bias_mode if relation_enabled else "disabled",
+                "schema_relation_type_ids_available": True,  # Pairwise matrix wired in ir_dataset
+                "relation_bias_mode": effective_mode,
+                "question_schema_role_bias_active": question_schema_role_bias_active,
+                "schema_pairwise_relation_bias_active": schema_pairwise_relation_bias_active,
                 "pairwise_relation_matrix": bool(pairwise_relation_matrix and relation_enabled),
                 "relation_types": relation_types,
                 "relation_bias_parameters": len(relation_types) if relation_enabled else 0,

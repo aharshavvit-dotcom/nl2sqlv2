@@ -78,12 +78,15 @@ class ModelSelector:
                     f"is_valid_for_training_variance_governance=false"
                 )
         predicted_sql_execution = _predicted_sql_summary(selected.metrics, selected.metadata or {}, thresholds)
+        # Phase 4+5: Use metric_sample_counts for variance warnings
+        metric_sample_counts = multi_seed_report.get("metric_sample_counts", {}) if multi_seed_report else {}
         return {
             "selected_model": asdict(selected),
             "rejected_models": rejected,
             "selection_reason": f"highest quality score {_selection_score(selected.metrics):.4f}",
             "blocking_issues": [],
             "multi_seed_report": multi_seed_report,
+            "metric_sample_counts": metric_sample_counts,
             "predicted_sql_execution": predicted_sql_execution,
             "warnings": warnings,
         }

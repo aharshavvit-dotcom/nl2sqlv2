@@ -272,6 +272,14 @@ class ModelBundleValidator:
                     "evaluation_stability_interpretation",
                     "deterministic_path_expected_zero_variance",
                 )
+                # Phase 4: Record seed_runs_completed and metric_sample_counts
+                lifecycle_proof["seed_runs_completed"] = int(seed_report.get("seed_runs_completed", 0))
+                lifecycle_proof["metric_sample_counts"] = dict(seed_report.get("metric_sample_counts") or {})
+                # Phase 9: Identity verification for multi-seed report
+                seed_identity = _verify_report_identity(
+                    seed_report, str(path), manifest.bundle_id, "multi_seed_report",
+                )
+                lifecycle_proof.update(seed_identity)
 
         # Read predicted-SQL execution report from bundle first, root artifacts second.
         predicted_sql_report, predicted_location, predicted_path = _read_predicted_sql_report(eval_dir, checked)
@@ -292,6 +300,17 @@ class ModelBundleValidator:
             else:
                 warnings.append(warning)
         if predicted_sql_report:
+            # Phase 1: Verify identity metadata
+            predicted_identity = _verify_report_identity(
+                predicted_sql_report, str(path), manifest.bundle_id,
+                "controlled_predicted_sql_report",
+            )
+            lifecycle_proof.update(predicted_identity)
+            if predicted_identity.get("controlled_predicted_sql_report_identity_stale", False):
+                warnings.append("controlled_predicted_sql_report_identity_stale")
+                if policy["required_for_full_training"]:
+                    issues.append("controlled_predicted_sql_report_identity_does_not_match_candidate_bundle")
+
             if not predicted_sql_report.get("error"):
                 lifecycle_proof["controlled_predicted_sql_evaluation_available"] = True
                 lifecycle_proof["controlled_predicted_sql_measures_model_predictions"] = bool(
@@ -323,12 +342,25 @@ class ModelBundleValidator:
                 lifecycle_proof["controlled_predicted_sql_passed"] = bool(
                     predicted_sql_report.get("passed", False)
                 )
+                # Phase 3: failure breakdown
+                lifecycle_proof["controlled_predicted_sql_failure_breakdown"] = dict(
+                    predicted_sql_report.get("failure_breakdown") or {}
+                )
                 if predicted_sql_report.get("schema_graph_empty", True):
                     warnings.append("Controlled predicted-SQL evaluation used empty schema graph")
                 if policy["required_for_full_training"] and not predicted_sql_report.get("central_sql_validator_used", False):
                     issues.append("controlled_predicted_sql_missing_central_sql_validation")
             elif policy["required_for_full_training"]:
                 issues.append(f"controlled_predicted_sql_report_error: {predicted_sql_report.get('error')}")
+
+        # Read execution-aware evaluation report and verify identity (Phase 9)
+        exec_aware_path = eval_dir / "execution_aware_evaluation_report.json"
+        if exec_aware_path.exists():
+            exec_aware_report = _read_json(exec_aware_path)
+            exec_identity = _verify_report_identity(
+                exec_aware_report, str(path), manifest.bundle_id, "execution_aware_report",
+            )
+            lifecycle_proof.update(exec_identity)
 
         # Compute production_ready: split into core/fixture/full
         production_ready_core = bool(
@@ -378,6 +410,60 @@ def _read_predicted_sql_report(eval_dir: Path, checked: list[str]) -> tuple[dict
     if root_path.exists():
         return _read_json(root_path), "root_artifacts", root_path
     return None, "missing", None
+
+
+def _verify_report_identity(
+    report: dict[str, Any],
+    candidate_bundle_dir: str,
+    bundle_id: str | None,
+    report_name: str,
+) -> dict[str, Any]:
+    """Phase 1+9: Verify report identity metadata matches current candidate.
+
+    Returns dict with identity verification fields:
+      - identity_present: whether report has identity metadata
+      - identity_verified: whether bundle_id and candidate_bundle_dir match
+      - identity_stale: True if identity is present but does not match
+      - identity_bundle_id_match: whether bundle_id matches
+      - identity_candidate_dir_match: whether candidate_bundle_dir matches
+    """
+    result: dict[str, Any] = {
+        f"{report_name}_identity_present": False,
+        f"{report_name}_identity_verified": False,
+        f"{report_name}_identity_stale": False,
+        f"{report_name}_identity_bundle_id_match": False,
+        f"{report_name}_identity_candidate_dir_match": False,
+        f"{report_name}_identity_missing": True,
+    }
+    report_bundle_id = report.get("bundle_id")
+    report_candidate_dir = report.get("candidate_bundle_dir")
+    report_pipeline_run_id = report.get("pipeline_run_id")
+
+    has_identity = report_bundle_id is not None or report_candidate_dir is not None or report_pipeline_run_id is not None
+    if not has_identity:
+        return result
+
+    result[f"{report_name}_identity_present"] = True
+    result[f"{report_name}_identity_missing"] = False
+
+    # Check bundle_id match
+    bundle_match = True
+    if bundle_id is not None and report_bundle_id is not None:
+        bundle_match = str(report_bundle_id) == str(bundle_id)
+    result[f"{report_name}_identity_bundle_id_match"] = bundle_match
+
+    # Check candidate_bundle_dir match
+    dir_match = True
+    if candidate_bundle_dir and report_candidate_dir:
+        # Normalize paths for comparison
+        dir_match = str(Path(report_candidate_dir).resolve()) == str(Path(candidate_bundle_dir).resolve())
+    result[f"{report_name}_identity_candidate_dir_match"] = dir_match
+
+    verified = bundle_match and dir_match
+    result[f"{report_name}_identity_verified"] = verified
+    result[f"{report_name}_identity_stale"] = not verified
+
+    return result
 
 
 def _controlled_predicted_sql_policy(bundle_dir: Path, config: dict[str, Any] | None) -> dict[str, bool]:

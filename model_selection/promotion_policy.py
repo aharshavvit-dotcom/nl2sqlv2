@@ -191,6 +191,13 @@ class PromotionPolicy:
             if check is not None:
                 checks[metric_name] = check
         available = any(metric in challenger_metrics for metric in PREDICTED_SQL_METRICS)
+
+        # Phase 8: Per-case comparison by stable case_id
+        per_case_comparison = _compare_predicted_sql_per_case(
+            challenger_metrics.get("controlled_predicted_sql_cases"),
+            champion_metrics.get("controlled_predicted_sql_cases") if champion_metrics else None,
+        )
+
         return {
             "available": available,
             "execution_match_rate": challenger_metrics.get("controlled_predicted_sql_execution_match_rate"),
@@ -198,6 +205,7 @@ class PromotionPolicy:
             "unsafe_sql_count": challenger_metrics.get("controlled_predicted_sql_unsafe_sql_count"),
             "blocking": False,
             "deltas": checks,
+            "per_case_comparison": per_case_comparison,
         }
 
 
@@ -208,3 +216,53 @@ def _percentile(values: list[float], percentile: int) -> float:
     lower = int(position)
     upper = min(lower + 1, len(values) - 1)
     return values[lower] + (values[upper] - values[lower]) * (position - lower)
+
+
+def _compare_predicted_sql_per_case(
+    challenger_cases: list[dict[str, Any]] | None,
+    champion_cases: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Phase 8: Compare predicted-SQL results by stable case_id between champion and challenger."""
+    if not challenger_cases:
+        return {"available": False, "reason": "no_challenger_cases"}
+    if not champion_cases:
+        return {"available": False, "reason": "no_champion_cases"}
+
+    # Index by case_id
+    challenger_by_id = {
+        str(c.get("case_id") or c.get("example_id", i)): c
+        for i, c in enumerate(challenger_cases)
+    }
+    champion_by_id = {
+        str(c.get("case_id") or c.get("example_id", i)): c
+        for i, c in enumerate(champion_cases)
+    }
+    common_ids = sorted(set(challenger_by_id) & set(champion_by_id))
+    if not common_ids:
+        return {"available": False, "reason": "no_common_case_ids"}
+
+    regressions: list[dict[str, Any]] = []
+    improvements: list[dict[str, Any]] = []
+    unchanged: int = 0
+    for case_id in common_ids:
+        chall = challenger_by_id[case_id]
+        champ = champion_by_id[case_id]
+        chall_match = bool(chall.get("final_execution_match") or chall.get("predicted_result_value_match"))
+        champ_match = bool(champ.get("final_execution_match") or champ.get("predicted_result_value_match"))
+        if chall_match and not champ_match:
+            improvements.append({"case_id": case_id, "question": chall.get("question")})
+        elif not chall_match and champ_match:
+            regressions.append({"case_id": case_id, "question": chall.get("question")})
+        else:
+            unchanged += 1
+
+    return {
+        "available": True,
+        "common_cases": len(common_ids),
+        "regressions": regressions,
+        "improvements": improvements,
+        "unchanged": unchanged,
+        "regression_count": len(regressions),
+        "improvement_count": len(improvements),
+    }
+

@@ -479,9 +479,14 @@ class StepRunner:
         controlled_predicted = (integrated.get("execution_aware") or {}).get("controlled_predicted_sql") or {}
         bundle_dir = _candidate_bundle_dir(config)
 
+        # Phase 1: Pass identity metadata for stale-report protection
         report = evaluate_controlled_predicted_sql(
             model_artifact_dir=bundle_dir,
             config=controlled_predicted,
+            bundle_id=config.pipeline_name,
+            pipeline_run_id=config.pipeline_name,
+            candidate_bundle_dir=str(bundle_dir),
+            commit_sha=None,  # auto-detected inside
         )
         output = Path(artifacts["evaluation_dir"]) / "controlled_predicted_sql_execution_report.json"
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -510,6 +515,14 @@ class StepRunner:
                 "predicted_row_count_match_rate": report.get("predicted_row_count_match_rate", 0.0),
                 "predicted_safe_sql_rate": report.get("predicted_safe_sql_rate", 0.0),
                 "unsafe_sql_count": report.get("unsafe_sql_count", 0),
+                "failure_breakdown": report.get("failure_breakdown"),
+                "report_identity": {
+                    "bundle_id": report.get("bundle_id"),
+                    "pipeline_run_id": report.get("pipeline_run_id"),
+                    "candidate_bundle_dir": report.get("candidate_bundle_dir"),
+                    "commit_sha": report.get("commit_sha"),
+                    "generated_at": report.get("generated_at"),
+                },
                 "passed": report.get("passed", False),
             },
         }
@@ -548,7 +561,21 @@ class StepRunner:
             and controlled_predicted.get("required_for_full_training", False)
             and controlled_predicted.get("require_report_attached_to_bundle", True)
         )
+
+        # Phase 2: Structured output with required/optional separation
+        required_reports = ["controlled_predicted_sql_execution_report.json"] if required else []
+        reports_missing_required = [name for name in missing if name in required_reports]
+        reports_missing_optional = [name for name in missing if name not in required_reports]
+
         summary = {
+            "reports_attached": attached,
+            "reports_attached_count": len(attached),
+            "reports_missing_required": reports_missing_required,
+            "reports_missing_optional": reports_missing_optional,
+            "reports_missing_count": len(missing),
+            "candidate_bundle_dir": str(candidate),
+            "evaluation_dir": str(evaluation_dir),
+            # Legacy compat
             "attached_reports": attached,
             "missing_optional_reports": missing,
             "controlled_predicted_sql_report_attached_to_bundle": predicted_attached,

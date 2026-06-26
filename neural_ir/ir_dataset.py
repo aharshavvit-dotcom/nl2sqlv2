@@ -362,3 +362,134 @@ def _index_hard_negatives(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any
         if isinstance(negative_ir, dict):
             indexed[example_id] = row
     return indexed
+
+
+# ---------------------------------------------------------------------------
+# Phase 7: Candidate-level graph encoding
+# ---------------------------------------------------------------------------
+
+
+def build_candidate_metadata(
+    candidates: dict[str, Any],
+    schema_items: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build stable candidate-level metadata with canonical IDs.
+
+    Each entry contains:
+      candidate_id: stable ID like "table:users" or "column:users.id"
+      candidate_type: "table" or "column"
+      table_name, column_name, data_type, is_primary_key, is_foreign_key, foreign_key_target
+    """
+    metadata: list[dict[str, Any]] = []
+    # Tables first
+    for table_cand in candidates.get("tables", []):
+        table_name = str(table_cand.get("table") or table_cand.get("display") or "")
+        metadata.append({
+            "candidate_id": f"table:{table_name}",
+            "candidate_type": "table",
+            "index": int(table_cand.get("index", -1)),
+            "table_name": table_name,
+            "column_name": None,
+            "data_type": None,
+            "is_primary_key": False,
+            "is_foreign_key": False,
+            "foreign_key_target": None,
+        })
+    # Columns
+    columns_by_name: dict[str, dict[str, Any]] = {}
+    for col in schema_items.get("columns", []):
+        key = f"{col.get('table', '')}.{col.get('column', '')}"
+        columns_by_name[key] = col
+    for col_cand in candidates.get("columns", []):
+        table_name = str(col_cand.get("table") or "")
+        column_name = str(col_cand.get("column") or "")
+        key = f"{table_name}.{column_name}"
+        schema_col = columns_by_name.get(key, {})
+        metadata.append({
+            "candidate_id": f"column:{table_name}.{column_name}",
+            "candidate_type": "column",
+            "index": int(col_cand.get("index", -1)),
+            "table_name": table_name,
+            "column_name": column_name,
+            "data_type": str(schema_col.get("type") or col_cand.get("type") or ""),
+            "is_primary_key": bool(schema_col.get("primary_key", False)),
+            "is_foreign_key": bool(schema_col.get("foreign_key", schema_col.get("is_fk", False))),
+            "foreign_key_target": _normalize_fk_target(
+                schema_col.get("foreign_key_target")
+            ),
+        })
+    return metadata
+
+
+def build_candidate_pairwise_relation_matrix(
+    candidate_metadata: list[dict[str, Any]],
+    max_candidates: int,
+) -> list[list[int]]:
+    """Build [max_candidates, max_candidates] pairwise relation matrix using stable candidate IDs.
+
+    This operates at candidate-level granularity (not token-level), avoiding
+    fragile multi-token matching and duplicate-column-name issues.
+    """
+    matrix = [[RELATION_UNRELATED] * max_candidates for _ in range(max_candidates)]
+    for left in candidate_metadata:
+        li = left.get("index", -1)
+        if not (0 <= li < max_candidates):
+            continue
+        for right in candidate_metadata:
+            ri = right.get("index", -1)
+            if not (0 <= ri < max_candidates):
+                continue
+            matrix[li][ri] = _candidate_pairwise_relation(left, right)
+    return matrix
+
+
+def _candidate_pairwise_relation(
+    left: dict[str, Any],
+    right: dict[str, Any],
+) -> int:
+    """Compute relation type between two candidates using stable metadata."""
+    left_type = left.get("candidate_type", "")
+    right_type = right.get("candidate_type", "")
+
+    if left_type == "table" and right_type == "table":
+        return (
+            RELATION_TYPE_MAP["same_table"]
+            if left.get("table_name") == right.get("table_name")
+            else RELATION_UNRELATED
+        )
+    if left_type == "table" and right_type == "column":
+        return (
+            RELATION_TYPE_MAP["table_has_column"]
+            if left.get("table_name") == right.get("table_name")
+            else RELATION_UNRELATED
+        )
+    if left_type == "column" and right_type == "table":
+        return (
+            RELATION_TYPE_MAP["column_belongs_to_table"]
+            if left.get("table_name") == right.get("table_name")
+            else RELATION_UNRELATED
+        )
+    if left_type == "column" and right_type == "column":
+        # FK→PK
+        left_fk = left.get("foreign_key_target")
+        right_fk = right.get("foreign_key_target")
+        if left_fk and left_fk.get("table") == right.get("table_name") and left_fk.get("column") == right.get("column_name"):
+            return RELATION_TYPE_MAP["fk_to_pk"]
+        if right_fk and right_fk.get("table") == left.get("table_name") and right_fk.get("column") == left.get("column_name"):
+            return RELATION_TYPE_MAP["pk_to_fk"]
+        # Same table
+        if left.get("table_name") == right.get("table_name"):
+            if left.get("candidate_id") == right.get("candidate_id"):
+                if left.get("is_primary_key"):
+                    return RELATION_TYPE_MAP["primary_key"]
+                if left.get("is_foreign_key"):
+                    return RELATION_TYPE_MAP["foreign_key_column"]
+            return RELATION_TYPE_MAP["same_table"]
+        # Same column name across tables
+        if left.get("column_name") == right.get("column_name"):
+            return RELATION_TYPE_MAP["same_column_name"]
+        # Same data type
+        if left.get("data_type") and left.get("data_type") == right.get("data_type"):
+            return RELATION_TYPE_MAP["same_data_type"]
+    return RELATION_UNRELATED
+

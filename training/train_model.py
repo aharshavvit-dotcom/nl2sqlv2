@@ -448,6 +448,7 @@ def _run_multi_seed_variance(
     metrics_report: dict[str, dict[str, Any]] = {}
     high_variance: list[str] = []
     metric_std_flat: dict[str, float] = {}
+    metric_sample_counts: dict[str, int] = {}
     for metric in tracked_metrics:
         values = per_seed_metrics.get(metric, [])
         if not values:
@@ -460,18 +461,26 @@ def _run_multi_seed_variance(
             "std": round(std_val, 6),
             "min": round(min(values), 6),
             "max": round(max(values), 6),
+            "sample_count": len(values),
         }
         metric_std_flat[metric] = round(std_val, 6)
+        metric_sample_counts[metric] = len(values)
         if std_val > 0.05:
             high_variance.append(metric)
 
-    seeds_evaluated = len(next(iter(per_seed_metrics.values()), []))
-    has_multi_seed = seeds_evaluated >= 2
+    # Phase 4: Proper seed run accounting from actual statuses
+    seed_runs_completed = sum(1 for run in seed_runs if run.get("status") == "completed")
+    seed_runs_failed = sum(1 for run in seed_runs if run.get("status") == "failed")
+    seed_runs_requested = len(seed_values)
+    has_multi_seed = seed_runs_completed >= 2
     variance_report = {
         "enabled": True,
         "mode": "evaluation_only_stability" if has_multi_seed else "single_seed_baseline",
         "seeds_requested": seed_values,
-        "seeds_evaluated": seeds_evaluated,
+        "seeds_evaluated": seed_runs_completed,  # Backward compat
+        "seed_runs_requested": seed_runs_requested,
+        "seed_runs_completed": seed_runs_completed,
+        "seed_runs_failed": seed_runs_failed,
         # Clear separation: evaluation stability vs true training variance
         "evaluation_stability_available": has_multi_seed,
         "true_training_variance_available": False,
@@ -495,6 +504,7 @@ def _run_multi_seed_variance(
         "seed_runs": seed_runs,
         "metrics": metrics_report,
         "metric_std": metric_std_flat,  # Flat dict for backward compat with ModelSelector
+        "metric_sample_counts": metric_sample_counts,
         "high_variance_metrics": high_variance,
         "passed": len(high_variance) == 0,
     }

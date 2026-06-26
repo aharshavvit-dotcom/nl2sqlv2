@@ -258,6 +258,10 @@ def evaluate_controlled_predicted_sql(
     fixture_sql_path: Path | None = None,
     fixture_cases_path: Path | None = None,
     config: dict[str, Any] | None = None,
+    bundle_id: str | None = None,
+    pipeline_run_id: str | None = None,
+    candidate_bundle_dir: str | None = None,
+    commit_sha: str | None = None,
 ) -> dict[str, Any]:
     """Run predicted-SQL controlled execution evaluation.
 
@@ -268,14 +272,28 @@ def evaluate_controlled_predicted_sql(
 
     This is the stronger model metric: it measures actual model prediction accuracy.
     """
+    from datetime import datetime, timezone
+
     fixture_dir = ROOT / "evaluation" / "fixtures"
     sql_path = fixture_sql_path or fixture_dir / "controlled_evaluation.sql"
     cases_path = fixture_cases_path or fixture_dir / "controlled_evaluation_cases.jsonl"
 
+    # Identity metadata (Phase 1)
+    identity = {
+        "report_type": "controlled_predicted_sql_execution",
+        "report_schema_version": "1.0",
+        "bundle_id": bundle_id,
+        "candidate_bundle_dir": candidate_bundle_dir,
+        "model_artifact_source": "model_bundle_candidate" if candidate_bundle_dir else "artifact_dirs",
+        "commit_sha": commit_sha or _git_commit_sha(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "pipeline_run_id": pipeline_run_id,
+    }
+
     if not sql_path.exists():
-        return {"error": f"Fixture SQL not found: {sql_path}", "evaluation_type": "controlled_predicted_sql_execution"}
+        return {**identity, "error": f"Fixture SQL not found: {sql_path}", "evaluation_type": "controlled_predicted_sql_execution"}
     if not cases_path.exists():
-        return {"error": f"Fixture cases not found: {cases_path}", "evaluation_type": "controlled_predicted_sql_execution"}
+        return {**identity, "error": f"Fixture cases not found: {cases_path}", "evaluation_type": "controlled_predicted_sql_execution"}
 
     # Resolve model artifact directory
     artifact_dir = model_artifact_dir
@@ -290,10 +308,12 @@ def evaluate_controlled_predicted_sql(
                 break
     if artifact_dir is None or not artifact_dir.exists():
         return {
+            **identity,
             "error": "No model artifact directory found for predicted-SQL evaluation",
             "evaluation_type": "controlled_predicted_sql_execution",
             "measures_model_predictions": True,
         }
+    identity["model_artifact_dir"] = str(artifact_dir)
 
     sql_seed = sql_path.read_text(encoding="utf-8")
     cases = read_jsonl(cases_path)
@@ -304,6 +324,7 @@ def evaluate_controlled_predicted_sql(
         model = RetrievalNL2SQLModel.load(str(artifact_dir))
     except Exception as exc:
         return {
+            **identity,
             "error": f"Failed to load model from {artifact_dir}: {exc}",
             "evaluation_type": "controlled_predicted_sql_execution",
             "measures_model_predictions": True,
@@ -328,6 +349,7 @@ def evaluate_controlled_predicted_sql(
             schema_graph_empty = schema_tables_available == 0
             if schema_graph_empty:
                 return {
+                    **identity,
                     "error": "Schema graph is empty after SQLite introspection; cannot evaluate predicted SQL",
                     "evaluation_type": "controlled_predicted_sql_execution",
                     "measures_model_predictions": True,
@@ -346,19 +368,37 @@ def evaluate_controlled_predicted_sql(
                 except Exception:
                     gold_results[example_id] = []
 
-            for case in cases:
+            for case_index, case in enumerate(cases):
                 example_id = case.get("example_id", "")
                 question = case.get("question", "")
                 gold_sql = case.get("gold_sql", "")
                 expected_rows = case.get("expected_row_count")
+                # Stable case_id (Phase 8)
+                case_id = case.get("case_id") or f"controlled_{case_index + 1:03d}"
 
                 entry: dict[str, Any] = {
+                    "case_id": case_id,
                     "example_id": example_id,
                     "question": question,
                     "gold_sql": gold_sql,
                     "expected_row_count": expected_rows,
                     "predicted_sql": None,
                     "prediction_generated": False,
+                    # Phase 3: Separated SQL validation from execution
+                    "central_sql_validator_used": True,
+                    "production_sql_valid": False,
+                    "production_sql_validation_errors": [],
+                    "production_sql_validation_warnings": [],
+                    "fixture_execution_allowed": False,
+                    "fixture_execution_blocked_reason": None,
+                    "sqlite_execution_success": False,
+                    "sqlite_execution_error": None,
+                    "row_count_match": False,
+                    "unordered_result_match": False,
+                    "ordered_result_match": None,
+                    "result_value_match": False,
+                    "final_execution_match": False,
+                    # Legacy fields for backward compat
                     "predicted_sql_valid": False,
                     "predicted_sql_is_select_only": False,
                     "sql_validation_passed": False,
@@ -372,6 +412,8 @@ def evaluate_controlled_predicted_sql(
                     "predicted_unordered_result_match": False,
                     "predicted_ordered_result_match": None,
                     "predicted_result_value_match": False,
+                    "predicted_safe_sql": False,
+                    "unsafe_sql": False,
                     "error": None,
                 }
 
@@ -391,34 +433,56 @@ def evaluate_controlled_predicted_sql(
                         select_only = bool((validation.get("checks") or {}).get("select_only", False))
                         validation_passed = bool(validation.get("is_valid", validation.get("ok", False)))
                         validation_errors = [str(item) for item in validation.get("issues", [])]
+                        validation_warnings = [str(item) for item in validation.get("warnings", [])]
+
+                        # Phase 3: Production SQL validation result
+                        entry["production_sql_valid"] = validation_passed
+                        entry["production_sql_validation_errors"] = validation_errors
+                        entry["production_sql_validation_warnings"] = validation_warnings
+
+                        # Legacy compat
                         entry["predicted_sql_is_select_only"] = select_only
                         entry["predicted_sql_valid"] = validation_passed
                         entry["sql_validation_passed"] = validation_passed
                         entry["sql_validation_errors"] = validation_errors
                         entry["select_only"] = select_only
                         entry["safe_sql"] = validation_passed
+                        entry["predicted_safe_sql"] = validation_passed
+                        entry["unsafe_sql"] = not validation_passed
+
                         if not validation_passed:
                             entry["blocked_statement_reason"] = _blocked_statement_reason(
-                                validation,
-                                predicted_sql,
+                                validation, predicted_sql,
+                            )
+                            entry["fixture_execution_blocked_reason"] = (
+                                "production_sql_validation_failed: " + "; ".join(validation_errors)
                             )
                             entry["error"] = "SQL validation failed: " + "; ".join(validation_errors)
-
-                        if validation_passed:
+                        else:
+                            # Phase 3: Fixture execution is allowed after validation
+                            entry["fixture_execution_allowed"] = True
                             try:
                                 cursor = conn.execute(predicted_sql)
                                 pred_rows = cursor.fetchall()
+                                entry["sqlite_execution_success"] = True
                                 entry["predicted_execution_success"] = True
                                 entry["predicted_actual_row_count"] = len(pred_rows)
                                 if expected_rows is not None:
-                                    entry["predicted_row_count_match"] = len(pred_rows) == expected_rows
+                                    entry["row_count_match"] = len(pred_rows) == expected_rows
+                                    entry["predicted_row_count_match"] = entry["row_count_match"]
                                 # Normalized result comparison
                                 gold_rows = gold_results.get(example_id, [])
                                 comparison = _compare_results(pred_rows, gold_rows, gold_sql)
+                                entry["unordered_result_match"] = comparison["unordered_result_match"]
+                                entry["ordered_result_match"] = comparison["ordered_result_match"]
+                                entry["result_value_match"] = comparison["result_value_match"]
+                                entry["final_execution_match"] = comparison["result_value_match"]
+                                # Legacy compat
                                 entry["predicted_unordered_result_match"] = comparison["unordered_result_match"]
                                 entry["predicted_ordered_result_match"] = comparison["ordered_result_match"]
                                 entry["predicted_result_value_match"] = comparison["result_value_match"]
                             except Exception as exc:
+                                entry["sqlite_execution_error"] = str(exc)
                                 entry["error"] = f"Execution error: {exc}"
                 except Exception as exc:
                     entry["error"] = f"Prediction error: {exc}"
@@ -429,22 +493,36 @@ def evaluate_controlled_predicted_sql(
 
     total = len(results)
     predictions_generated = sum(1 for r in results if r["prediction_generated"])
-    valid_count = sum(1 for r in results if r["predicted_sql_valid"])
-    safe_count = sum(1 for r in results if r.get("safe_sql"))
-    select_only_count = sum(1 for r in results if r.get("select_only"))
-    exec_success = sum(1 for r in results if r["predicted_execution_success"])
-    exec_match = sum(1 for r in results if r["predicted_result_value_match"])
-    row_match = sum(1 for r in results if r["predicted_row_count_match"])
-    unordered_match = sum(1 for r in results if r.get("predicted_unordered_result_match"))
-    ordered_match = sum(1 for r in results if r.get("predicted_ordered_result_match") is True)
+    production_valid = sum(1 for r in results if r["production_sql_valid"])
+    production_invalid = sum(1 for r in results if r["prediction_generated"] and not r["production_sql_valid"])
+    fixture_allowed = sum(1 for r in results if r["fixture_execution_allowed"])
+    fixture_blocked = sum(1 for r in results if r["prediction_generated"] and not r["fixture_execution_allowed"])
+    sqlite_success = sum(1 for r in results if r["sqlite_execution_success"])
+    sqlite_error = sum(1 for r in results if r["fixture_execution_allowed"] and not r["sqlite_execution_success"])
+    exec_match = sum(1 for r in results if r["final_execution_match"])
+    row_match = sum(1 for r in results if r["row_count_match"])
+    unordered_match = sum(1 for r in results if r.get("unordered_result_match"))
+    ordered_match = sum(1 for r in results if r.get("ordered_result_match") is True)
+    row_count_mismatch = sum(1 for r in results if r["sqlite_execution_success"] and not r["row_count_match"])
+    value_mismatch = sum(1 for r in results if r["sqlite_execution_success"] and r["row_count_match"] and not r["result_value_match"])
     unsafe = sum(1 for r in results if r["prediction_generated"] and not r.get("safe_sql"))
     prediction_denominator = max(predictions_generated, 1)
 
+    # Phase 3: Failure breakdown
+    failure_breakdown = {
+        "production_sql_validation_failed": production_invalid,
+        "fixture_execution_blocked": fixture_blocked,
+        "sqlite_execution_error": sqlite_error,
+        "row_count_mismatch": row_count_mismatch,
+        "value_mismatch": value_mismatch,
+    }
+
     return {
+        # Phase 1: Identity metadata
+        **identity,
         "evaluation_type": "controlled_predicted_sql_execution",
         "measures_model_predictions": True,
         "central_sql_validator_used": True,
-        "model_artifact_dir": str(artifact_dir),
         "fixture_sql": str(sql_path),
         "fixture_cases": str(cases_path),
         "schema_tables_available": schema_tables_available,
@@ -452,24 +530,44 @@ def evaluate_controlled_predicted_sql(
         "schema_graph_empty": schema_graph_empty,
         "cases_total": total,
         "predictions_generated": predictions_generated,
-        "predicted_sql_valid_count": valid_count,
-        "predicted_execution_success_count": exec_success,
+        # Phase 3: Separated counts
+        "production_sql_valid_count": production_valid,
+        "production_sql_validation_failure_count": production_invalid,
+        "fixture_execution_allowed_count": fixture_allowed,
+        "fixture_execution_blocked_count": fixture_blocked,
+        "sqlite_execution_success_count": sqlite_success,
+        "sqlite_execution_error_count": sqlite_error,
         "predicted_execution_match_count": exec_match,
         "predicted_unordered_result_match_count": unordered_match,
         "predicted_ordered_result_match_count": ordered_match,
-        "predicted_sql_validation_success_rate": valid_count / prediction_denominator,
-        "predicted_safe_sql_rate": safe_count / prediction_denominator,
-        "predicted_select_only_rate": select_only_count / prediction_denominator,
+        "failure_breakdown": failure_breakdown,
+        # Rates
+        "predicted_sql_valid_count": production_valid,
+        "predicted_execution_success_count": sqlite_success,
+        "predicted_sql_validation_success_rate": production_valid / prediction_denominator,
+        "predicted_safe_sql_rate": production_valid / prediction_denominator,
+        "predicted_select_only_rate": sum(1 for r in results if r.get("select_only")) / prediction_denominator,
         "predicted_unsafe_sql_count": unsafe,
-        "predicted_execution_success_rate": exec_success / total if total else 0.0,
+        "predicted_execution_success_rate": sqlite_success / total if total else 0.0,
         "predicted_execution_match_rate": exec_match / total if total else 0.0,
-        "predicted_execution_error_rate": (total - exec_success) / total if total else 0.0,
+        "predicted_execution_error_rate": (total - sqlite_success) / total if total else 0.0,
         "predicted_row_count_match_rate": row_match / total if total else 0.0,
         "predicted_result_value_match_rate": exec_match / total if total else 0.0,
         "unsafe_sql_count": unsafe,
         "passed": unsafe == 0 and (exec_match / total if total else 0.0) >= (config or {}).get("min_execution_match_rate", 0.0),
         "cases": results,
     }
+
+
+def _git_commit_sha() -> str | None:
+    """Try to get current git commit SHA."""
+    import subprocess
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=str(ROOT), stderr=subprocess.DEVNULL,
+        ).decode().strip() or None
+    except Exception:
+        return None
 
 
 def _blocked_statement_reason(validation: dict[str, Any], sql: str) -> str:

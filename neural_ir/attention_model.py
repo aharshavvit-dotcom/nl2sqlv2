@@ -197,29 +197,46 @@ class SchemaAwareOptionAIRModel(nn.Module):
         schema_emb = self.embedding(schema_ids)
         question_out, _ = self.question_encoder(question_emb)
         schema_out, _ = self.schema_encoder(schema_emb)
-        active_relation_bias_mode = "disabled"
+
+        # Phase 6: Track active modes independently and support combined mode
+        schema_pairwise_active = False
+        schema_role_active = False
+
         if (
             self.relation_bias is not None
             and schema_relation_type_ids is not None
-            and self.relation_bias_mode == "schema_pairwise_relation_bias"
+            and self.relation_bias_mode in ("schema_pairwise_relation_bias", "combined")
         ):
             schema_out = self._schema_pairwise_relation_context(
                 schema_out,
                 schema_mask=schema_mask,
                 schema_relation_type_ids=schema_relation_type_ids,
             )
-            active_relation_bias_mode = "schema_pairwise_relation_bias"
+            schema_pairwise_active = True
 
         question_vec = self._masked_mean(question_out, question_mask)
         schema_vec = self._masked_mean(schema_out, schema_mask)
+
+        # Pass relation_type_ids if role bias is enabled (either alone or combined)
+        role_bias_ids = None
+        if self.relation_bias is not None and self.relation_bias_mode in ("schema_token_role_bias", "combined"):
+            role_bias_ids = relation_type_ids
+            schema_role_active = role_bias_ids is not None
+
         attended_schema, attention_weights = self._schema_attention(
             question_out,
             schema_out,
             question_mask=question_mask,
             schema_mask=schema_mask,
-            relation_type_ids=relation_type_ids,
+            relation_type_ids=role_bias_ids,
         )
-        if active_relation_bias_mode == "disabled" and self.relation_bias is not None and relation_type_ids is not None:
+
+        active_relation_bias_mode = "disabled"
+        if schema_pairwise_active and schema_role_active:
+            active_relation_bias_mode = "combined"
+        elif schema_pairwise_active:
+            active_relation_bias_mode = "schema_pairwise_relation_bias"
+        elif schema_role_active:
             active_relation_bias_mode = "schema_token_role_bias"
         fused = self.fusion(torch.cat([question_vec, schema_vec, attended_schema, question_vec * attended_schema], dim=-1))
 
