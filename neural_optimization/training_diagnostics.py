@@ -69,9 +69,11 @@ class TrainingDiagnostics:
                 "enabled": relation_enabled,
                 "relation_type_ids_available": True,  # Now wired in ir_dataset
                 "schema_relation_type_ids_available": True,  # Pairwise matrix wired in ir_dataset
+                "candidate_relation_type_ids_available": True, # Candidate matrix wired in ir_dataset
                 "relation_bias_mode": effective_mode,
                 "question_schema_role_bias_active": question_schema_role_bias_active,
                 "schema_pairwise_relation_bias_active": schema_pairwise_relation_bias_active,
+                "candidate_pairwise_relation_bias_active": effective_mode in ("candidate_pairwise_relation_bias", "combined"),
                 "pairwise_relation_matrix": bool(pairwise_relation_matrix and relation_enabled),
                 "relation_types": relation_types,
                 "relation_bias_parameters": len(relation_types) if relation_enabled else 0,

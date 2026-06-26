@@ -172,6 +172,8 @@ The `bundle_manifest.json` `lifecycle_proof` section records:
 - `central_sql_validator_used` — predicted SQL used the shared validator before fixture execution
 - `predicted_safe_sql_rate`, `predicted_execution_success_rate`, `predicted_row_count_match_rate` — controlled predicted-SQL execution summary
 - `evaluation_stability_interpretation` — explains whether seed metrics are evaluation-only stability or full training variance
+- `report_identity_validated` — Identity verification confirmed `bundle_id` and pipeline IDs match exactly between reports and candidate bundle
+- `primary_seed_included` — At least the primary seed completed successfully
 - `production_ready` — all required fields are True
 
 Quality gates enforce: `real_predictions_generated > 0`, `predictor_used = true`, `rows_evaluated > 0`. Zero-prediction reports are always rejected.

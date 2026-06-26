@@ -51,6 +51,7 @@ MODEL_INPUT_KEYS = [
     "schema_link_scores",
     "relation_type_ids",
     "schema_relation_type_ids",
+    "candidate_relation_type_ids",
 ]
 
 

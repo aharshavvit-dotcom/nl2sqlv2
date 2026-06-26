@@ -389,6 +389,8 @@ def evaluate_controlled_predicted_sql(
                     "production_sql_valid": False,
                     "production_sql_validation_errors": [],
                     "production_sql_validation_warnings": [],
+                    "blocked_by_production_policy": False,
+                    "production_policy_blocks": [],
                     "fixture_execution_allowed": False,
                     "fixture_execution_blocked_reason": None,
                     "sqlite_execution_success": False,
@@ -435,10 +437,19 @@ def evaluate_controlled_predicted_sql(
                         validation_errors = [str(item) for item in validation.get("issues", [])]
                         validation_warnings = [str(item) for item in validation.get("warnings", [])]
 
+                        # Phase 10: Differentiate between execution/parse errors and production policy blocks
+                        checks = validation.get("checks") or {}
+                        parse_success = bool(checks.get("parse", False))
+                        blocked_by_policy = parse_success and not validation_passed
+
                         # Phase 3: Production SQL validation result
                         entry["production_sql_valid"] = validation_passed
                         entry["production_sql_validation_errors"] = validation_errors
                         entry["production_sql_validation_warnings"] = validation_warnings
+                        entry["blocked_by_production_policy"] = blocked_by_policy
+                        entry["production_policy_blocks"] = [
+                            k for k, v in checks.items() if not v and k != "parse"
+                        ] if blocked_by_policy else []
 
                         # Legacy compat
                         entry["predicted_sql_is_select_only"] = select_only
@@ -454,10 +465,11 @@ def evaluate_controlled_predicted_sql(
                             entry["blocked_statement_reason"] = _blocked_statement_reason(
                                 validation, predicted_sql,
                             )
+                            reason_prefix = "production_policy_blocked" if blocked_by_policy else "production_sql_validation_failed"
                             entry["fixture_execution_blocked_reason"] = (
-                                "production_sql_validation_failed: " + "; ".join(validation_errors)
+                                f"{reason_prefix}: " + "; ".join(validation_errors)
                             )
-                            entry["error"] = "SQL validation failed: " + "; ".join(validation_errors)
+                            entry["error"] = f"{reason_prefix}: " + "; ".join(validation_errors)
                         else:
                             # Phase 3: Fixture execution is allowed after validation
                             entry["fixture_execution_allowed"] = True

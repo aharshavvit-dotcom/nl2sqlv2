@@ -277,7 +277,7 @@ class ModelBundleValidator:
                 lifecycle_proof["metric_sample_counts"] = dict(seed_report.get("metric_sample_counts") or {})
                 # Phase 9: Identity verification for multi-seed report
                 seed_identity = _verify_report_identity(
-                    seed_report, str(path), manifest.bundle_id, "multi_seed_report",
+                    seed_report, str(path), manifest, "multi_seed_report",
                 )
                 lifecycle_proof.update(seed_identity)
 
@@ -302,15 +302,26 @@ class ModelBundleValidator:
         if predicted_sql_report:
             # Phase 1: Verify identity metadata
             predicted_identity = _verify_report_identity(
-                predicted_sql_report, str(path), manifest.bundle_id,
+                predicted_sql_report, str(path), manifest,
                 "controlled_predicted_sql_report",
             )
             lifecycle_proof.update(predicted_identity)
             if predicted_identity.get("controlled_predicted_sql_report_identity_stale", False):
                 warnings.append("controlled_predicted_sql_report_identity_stale")
                 if policy["required_for_full_training"]:
-                    issues.append("controlled_predicted_sql_report_identity_does_not_match_candidate_bundle")
-
+                    issues.append("controlled_predicted_sql_report_identity_stale")
+            if predicted_identity.get("controlled_predicted_sql_report_identity_missing", False):
+                warnings.append("controlled_predicted_sql_report_identity_missing")
+                if policy["required_for_full_training"]:
+                    issues.append("controlled_predicted_sql_report_identity_missing")
+            if predicted_identity.get("controlled_predicted_sql_report_pipeline_run_id_only", False):
+                warnings.append("controlled_predicted_sql_report_pipeline_run_id_only")
+                if policy["required_for_full_training"]:
+                    issues.append("controlled_predicted_sql_report_pipeline_run_id_only")
+            if predicted_identity.get("controlled_predicted_sql_report_identity_mismatch", False):
+                warnings.append("controlled_predicted_sql_report_identity_mismatch")
+                if policy["required_for_full_training"]:
+                    issues.append("controlled_predicted_sql_report_identity_mismatch")
             if not predicted_sql_report.get("error"):
                 lifecycle_proof["controlled_predicted_sql_evaluation_available"] = True
                 lifecycle_proof["controlled_predicted_sql_measures_model_predictions"] = bool(
@@ -358,7 +369,7 @@ class ModelBundleValidator:
         if exec_aware_path.exists():
             exec_aware_report = _read_json(exec_aware_path)
             exec_identity = _verify_report_identity(
-                exec_aware_report, str(path), manifest.bundle_id, "execution_aware_report",
+                exec_aware_report, str(path), manifest, "execution_aware_report",
             )
             lifecycle_proof.update(exec_identity)
 
@@ -415,53 +426,85 @@ def _read_predicted_sql_report(eval_dir: Path, checked: list[str]) -> tuple[dict
 def _verify_report_identity(
     report: dict[str, Any],
     candidate_bundle_dir: str,
-    bundle_id: str | None,
+    manifest: Any,  # ModelBundleManifest
     report_name: str,
 ) -> dict[str, Any]:
-    """Phase 1+9: Verify report identity metadata matches current candidate.
-
-    Returns dict with identity verification fields:
-      - identity_present: whether report has identity metadata
-      - identity_verified: whether bundle_id and candidate_bundle_dir match
-      - identity_stale: True if identity is present but does not match
-      - identity_bundle_id_match: whether bundle_id matches
-      - identity_candidate_dir_match: whether candidate_bundle_dir matches
-    """
+    """Phase 1+3+9: Verify report identity metadata matches current candidate."""
     result: dict[str, Any] = {
         f"{report_name}_identity_present": False,
         f"{report_name}_identity_verified": False,
         f"{report_name}_identity_stale": False,
+        f"{report_name}_identity_missing": True,
+        f"{report_name}_pipeline_run_id_only": False,
+        f"{report_name}_identity_mismatch": False,
         f"{report_name}_identity_bundle_id_match": False,
         f"{report_name}_identity_candidate_dir_match": False,
-        f"{report_name}_identity_missing": True,
+        f"{report_name}_commit_matches": True,
+        f"{report_name}_pipeline_run_matches": True,
+        f"{report_name}_generated_after_bundle_build": True,
     }
+    
     report_bundle_id = report.get("bundle_id")
     report_candidate_dir = report.get("candidate_bundle_dir")
     report_pipeline_run_id = report.get("pipeline_run_id")
+    report_commit_sha = report.get("commit_sha")
+    report_generated_at = report.get("generated_at")
 
-    has_identity = report_bundle_id is not None or report_candidate_dir is not None or report_pipeline_run_id is not None
-    if not has_identity:
+    strong_identity_present = bool(report_bundle_id) or bool(report_candidate_dir)
+    pipeline_run_id_present = bool(report_pipeline_run_id)
+
+    if not strong_identity_present and not pipeline_run_id_present:
         return result
 
     result[f"{report_name}_identity_present"] = True
-    result[f"{report_name}_identity_missing"] = False
+    result[f"{report_name}_identity_missing"] = not strong_identity_present
 
-    # Check bundle_id match
-    bundle_match = True
-    if bundle_id is not None and report_bundle_id is not None:
-        bundle_match = str(report_bundle_id) == str(bundle_id)
-    result[f"{report_name}_identity_bundle_id_match"] = bundle_match
+    if not strong_identity_present and pipeline_run_id_present:
+        result[f"{report_name}_pipeline_run_id_only"] = True
+        result[f"{report_name}_identity_stale"] = True
+        return result
 
-    # Check candidate_bundle_dir match
-    dir_match = True
-    if candidate_bundle_dir and report_candidate_dir:
-        # Normalize paths for comparison
+    # Check strong identity matches
+    bundle_match = False
+    if report_bundle_id and manifest.bundle_id:
+        bundle_match = str(report_bundle_id) == str(manifest.bundle_id)
+    
+    dir_match = False
+    if report_candidate_dir and candidate_bundle_dir:
         dir_match = str(Path(report_candidate_dir).resolve()) == str(Path(candidate_bundle_dir).resolve())
-    result[f"{report_name}_identity_candidate_dir_match"] = dir_match
 
-    verified = bundle_match and dir_match
-    result[f"{report_name}_identity_verified"] = verified
-    result[f"{report_name}_identity_stale"] = not verified
+    identity_verified = bundle_match or dir_match
+    
+    result[f"{report_name}_identity_bundle_id_match"] = bundle_match
+    result[f"{report_name}_identity_candidate_dir_match"] = dir_match
+    result[f"{report_name}_identity_verified"] = identity_verified
+    result[f"{report_name}_identity_mismatch"] = strong_identity_present and not identity_verified
+
+    # Phase 3 checks
+    commit_matches = True
+    if report_commit_sha and manifest.git_commit and manifest.git_commit != "unknown":
+        commit_matches = str(report_commit_sha) == str(manifest.git_commit)
+    result[f"{report_name}_commit_matches"] = commit_matches
+
+    pipeline_run_matches = True
+    if report_pipeline_run_id and getattr(manifest, "pipeline_run_id", None):
+        pipeline_run_matches = str(report_pipeline_run_id) == str(manifest.pipeline_run_id)
+    result[f"{report_name}_pipeline_run_matches"] = pipeline_run_matches
+
+    generated_after = True
+    if report_generated_at and manifest.created_at:
+        try:
+            from dateutil.parser import isoparse
+            # Only complain if report was generated BEFORE bundle creation (stale)
+            # Some reports are generated after bundle build, which is fine.
+            if isoparse(report_generated_at) < isoparse(manifest.created_at):
+                generated_after = False
+        except Exception:
+            pass
+    result[f"{report_name}_generated_after_bundle_build"] = generated_after
+
+    stale = not identity_verified or not commit_matches or not pipeline_run_matches or not generated_after
+    result[f"{report_name}_identity_stale"] = stale
 
     return result
 

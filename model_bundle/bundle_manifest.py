@@ -16,6 +16,7 @@ class BundleManifest:
     status: str = "candidate"  # candidate | validated | failed | current
     created_at: str = ""
     git_commit: str = "unknown"
+    pipeline_run_id: str = ""
     training_config_path: str = ""
     training_config_hash: str = ""
     datasets: list[str] = field(default_factory=list)

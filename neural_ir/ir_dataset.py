@@ -76,6 +76,9 @@ class IRTrainingDataset(Dataset):
         labels = self._add_hard_negative_labels(row, schema_items, labels)
         labels = self._cap_pointer_labels(labels)
         self._force_gold_masks(candidate_masks, labels)
+        candidate_metadata = build_candidate_metadata(candidates, schema_items, self.max_tables)
+        unified_candidate_token_ids = self._unified_candidate_token_ids(candidate_metadata, self.max_tables + self.max_columns)
+        
         return {
             "question_ids": question_ids,
             "schema_ids": schema_ids,
@@ -90,7 +93,7 @@ class IRTrainingDataset(Dataset):
             "schema_link_scores": link_scores,
             "table_candidate_token_ids": table_candidate_token_ids,
             "column_candidate_token_ids": column_candidate_token_ids,
-            "candidate_token_ids": column_candidate_token_ids,
+            "candidate_token_ids": unified_candidate_token_ids,
             "relation_type_ids": build_question_schema_relation_type_ids(
                 schema_items,
                 schema_tokens,
@@ -101,6 +104,10 @@ class IRTrainingDataset(Dataset):
                 schema_items,
                 schema_tokens,
                 self.max_schema_len,
+            ),
+            "candidate_relation_type_ids": build_candidate_pairwise_relation_matrix(
+                candidate_metadata,
+                self.max_tables + self.max_columns,
             ),
             "labels": labels,
             "raw_example": row,
@@ -186,6 +193,17 @@ class IRTrainingDataset(Dataset):
             rows[index] = self.vocab.encode(tokens, self.max_candidate_tokens)
         return rows
 
+    def _unified_candidate_token_ids(self, candidate_metadata: list[dict[str, Any]], max_candidates: int) -> list[list[int]]:
+        rows = [[self.vocab.pad_id] * self.max_candidate_tokens for _ in range(max_candidates)]
+        for candidate in candidate_metadata:
+            index = int(candidate.get("candidate_index", -1))
+            if not (0 <= index < max_candidates):
+                continue
+            name = candidate.get("column_name") or candidate.get("table_name") or ""
+            tokens = tokenize(str(name))
+            rows[index] = self.vocab.encode(tokens, self.max_candidate_tokens)
+        return rows
+
 
 def collate_ir_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
     label_keys = sorted(batch[0]["labels"])
@@ -206,6 +224,7 @@ def collate_ir_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "candidate_token_ids": torch.tensor([item["candidate_token_ids"] for item in batch], dtype=torch.long),
         "relation_type_ids": torch.tensor([item["relation_type_ids"] for item in batch], dtype=torch.long),
         "schema_relation_type_ids": torch.tensor([item["schema_relation_type_ids"] for item in batch], dtype=torch.long),
+        "candidate_relation_type_ids": torch.tensor([item["candidate_relation_type_ids"] for item in batch], dtype=torch.long),
         "labels": {
             key: torch.tensor([item["labels"][key] for item in batch], dtype=torch.long)
             for key in label_keys
@@ -372,10 +391,12 @@ def _index_hard_negatives(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any
 def build_candidate_metadata(
     candidates: dict[str, Any],
     schema_items: dict[str, Any],
+    max_tables: int,
 ) -> list[dict[str, Any]]:
     """Build stable candidate-level metadata with canonical IDs.
 
     Each entry contains:
+      candidate_index: unified index (tables=index, columns=max_tables+index)
       candidate_id: stable ID like "table:users" or "column:users.id"
       candidate_type: "table" or "column"
       table_name, column_name, data_type, is_primary_key, is_foreign_key, foreign_key_target
@@ -384,10 +405,13 @@ def build_candidate_metadata(
     # Tables first
     for table_cand in candidates.get("tables", []):
         table_name = str(table_cand.get("table") or table_cand.get("display") or "")
+        orig_index = int(table_cand.get("index", -1))
         metadata.append({
             "candidate_id": f"table:{table_name}",
             "candidate_type": "table",
-            "index": int(table_cand.get("index", -1)),
+            "candidate_index": orig_index if orig_index >= 0 else -1,
+            "original_table_index": orig_index,
+            "original_column_index": None,
             "table_name": table_name,
             "column_name": None,
             "data_type": None,
@@ -405,10 +429,13 @@ def build_candidate_metadata(
         column_name = str(col_cand.get("column") or "")
         key = f"{table_name}.{column_name}"
         schema_col = columns_by_name.get(key, {})
+        orig_index = int(col_cand.get("index", -1))
         metadata.append({
             "candidate_id": f"column:{table_name}.{column_name}",
             "candidate_type": "column",
-            "index": int(col_cand.get("index", -1)),
+            "candidate_index": (max_tables + orig_index) if orig_index >= 0 else -1,
+            "original_table_index": None,
+            "original_column_index": orig_index,
             "table_name": table_name,
             "column_name": column_name,
             "data_type": str(schema_col.get("type") or col_cand.get("type") or ""),
@@ -432,11 +459,11 @@ def build_candidate_pairwise_relation_matrix(
     """
     matrix = [[RELATION_UNRELATED] * max_candidates for _ in range(max_candidates)]
     for left in candidate_metadata:
-        li = left.get("index", -1)
+        li = left.get("candidate_index", -1)
         if not (0 <= li < max_candidates):
             continue
         for right in candidate_metadata:
-            ri = right.get("index", -1)
+            ri = right.get("candidate_index", -1)
             if not (0 <= ri < max_candidates):
                 continue
             matrix[li][ri] = _candidate_pairwise_relation(left, right)

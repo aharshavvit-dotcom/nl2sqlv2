@@ -353,6 +353,7 @@ class ModelBundleBuilder:
             status="candidate",
             created_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             git_commit=self._git_commit(),
+            pipeline_run_id=config.get("pipeline_name", ""),
             training_config_path=str(config_path) if config_path else "",
             training_config_hash=config_hash,
             datasets=datasets,

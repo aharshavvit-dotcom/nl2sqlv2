@@ -480,10 +480,20 @@ class StepRunner:
         bundle_dir = _candidate_bundle_dir(config)
 
         # Phase 1: Pass identity metadata for stale-report protection
+        manifest_path = bundle_dir / "bundle_manifest.json"
+        manifest_bundle_id = config.pipeline_name
+        if manifest_path.exists():
+            try:
+                import json
+                manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest_bundle_id = manifest_data.get("bundle_id", config.pipeline_name)
+            except Exception:
+                pass
+
         report = evaluate_controlled_predicted_sql(
             model_artifact_dir=bundle_dir,
             config=controlled_predicted,
-            bundle_id=config.pipeline_name,
+            bundle_id=manifest_bundle_id,
             pipeline_run_id=config.pipeline_name,
             candidate_bundle_dir=str(bundle_dir),
             commit_sha=None,  # auto-detected inside

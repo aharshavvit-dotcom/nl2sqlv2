@@ -192,6 +192,7 @@ class SchemaAwareOptionAIRModel(nn.Module):
         column_candidate_token_ids=None,
         relation_type_ids=None,
         schema_relation_type_ids=None,
+        candidate_relation_type_ids=None,
     ) -> dict:
         question_emb = self.embedding(question_ids)
         schema_emb = self.embedding(schema_ids)
@@ -201,6 +202,7 @@ class SchemaAwareOptionAIRModel(nn.Module):
         # Phase 6: Track active modes independently and support combined mode
         schema_pairwise_active = False
         schema_role_active = False
+        candidate_pairwise_active = False
 
         if (
             self.relation_bias is not None
@@ -244,6 +246,23 @@ class SchemaAwareOptionAIRModel(nn.Module):
             column_candidate_token_ids = candidate_token_ids
         table_vectors = self._candidate_vectors(table_candidate_token_ids, self.max_tables, schema_vec)
         column_vectors = self._candidate_vectors(column_candidate_token_ids, self.max_columns, schema_vec)
+        
+        # Phase 6: Apply candidate-level pairwise relation context
+        if (
+            self.relation_bias is not None
+            and candidate_relation_type_ids is not None
+            and self.relation_bias_mode in ("candidate_pairwise_relation_bias", "combined")
+        ):
+            unified_candidate_vectors = torch.cat([table_vectors, column_vectors], dim=1)
+            unified_candidate_vectors = self._candidate_pairwise_relation_context(
+                unified_candidate_vectors,
+                candidate_mask=None,  # Or use a generic mask if available
+                candidate_relation_type_ids=candidate_relation_type_ids,
+            )
+            candidate_pairwise_active = True
+            table_vectors = unified_candidate_vectors[:, :self.max_tables, :]
+            column_vectors = unified_candidate_vectors[:, self.max_tables:, :]
+            
         table_link_scores = schema_link_scores.new_zeros((schema_link_scores.size(0), self.max_tables)) if schema_link_scores is not None else None
 
         base_table_logits = self.table_pointer(fused, table_vectors, table_candidate_mask, table_link_scores)
@@ -333,6 +352,23 @@ class SchemaAwareOptionAIRModel(nn.Module):
         weights = torch.softmax(scores, dim=-1)
         context = torch.matmul(weights, schema_out)
         return schema_out + context
+
+    def _candidate_pairwise_relation_context(
+        self,
+        candidate_vectors: torch.Tensor,
+        candidate_mask: torch.Tensor | None,
+        candidate_relation_type_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        scale = math.sqrt(max(candidate_vectors.size(-1), 1))
+        scores = torch.matmul(candidate_vectors, candidate_vectors.transpose(1, 2)) / scale
+        relation_bias = self.relation_bias(candidate_relation_type_ids.to(scores.device))
+        scores = scores + relation_bias
+        if candidate_mask is not None:
+            mask = candidate_mask.to(scores.device).bool()
+            scores = scores.masked_fill(~mask.unsqueeze(1), -1e9)
+        weights = torch.softmax(scores, dim=-1)
+        context = torch.matmul(weights, candidate_vectors)
+        return candidate_vectors + context
 
     def _candidate_vectors(
         self,

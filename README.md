@@ -163,9 +163,12 @@ Every `bundle_manifest.json` includes a `lifecycle_proof` section that records:
 | `evaluation_stability_interpretation` | Explains whether seed metrics are evaluation-only stability or full training variance |
 | `quality_gate_passed` | Quality gate passed |
 | `bundle_runtime_smoke_passed` | Bundle runtime smoke test passed |
-| `production_ready` | All required fields are True — bundle is production-safe |
+| `production_ready` | All required fields are True - bundle is production-safe |
+| `report_identity_validated` | Identity verification confirmed that `bundle_id` and pipeline IDs match exactly between report and candidate directory. |
+| `primary_seed_included` | At least the primary seed (`seed_runs_completed >= 1`) completed successfully in tracking. |
 
 Evaluation reports are valid for quality gates **only** when `evaluation_mode = real_model_predictions`, `gold_replay_used = false`, `is_valid_for_quality_gate = true`, `predictor_used = true`, and `real_predictions_generated > 0`. Zero-prediction reports are always invalid.
+In addition, strict identity enforcement requires `bundle_id` or matching directory paths to prove the evaluation report belongs to the candidate bundle. Stale reports from previous pipelines will block bundle promotion. Single-seed runs are explicitly tracked and count as a completed seed.
 
 The `GoldReplayBenchmarkRunner` (formerly `BenchmarkRunner`) is a debug-only oracle baseline. Its output is always marked `is_valid_for_quality_gate = false`.
 

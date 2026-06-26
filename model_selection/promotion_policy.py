@@ -244,6 +244,7 @@ def _compare_predicted_sql_per_case(
     regressions: list[dict[str, Any]] = []
     improvements: list[dict[str, Any]] = []
     unchanged: int = 0
+    
     for case_id in common_ids:
         chall = challenger_by_id[case_id]
         champ = champion_by_id[case_id]
@@ -256,6 +257,29 @@ def _compare_predicted_sql_per_case(
         else:
             unchanged += 1
 
+    # Phase 9: Bootstrap percentiles
+    bootstrap_iterations = 1000
+    p05, p50, p95 = 0.0, 0.0, 0.0
+    point_delta = 0.0
+    
+    if common_ids:
+        rng = random.Random(42)
+        def delta(sample: list[str]) -> float:
+            c = sum(bool(challenger_by_id[i].get("final_execution_match") or challenger_by_id[i].get("predicted_result_value_match")) for i in sample) / len(sample)
+            b = sum(bool(champion_by_id[i].get("final_execution_match") or champion_by_id[i].get("predicted_result_value_match")) for i in sample) / len(sample)
+            return c - b
+            
+        point_delta = delta(common_ids)
+        if len(common_ids) >= 10:  # Only bootstrap if enough cases
+            deltas = sorted(delta([rng.choice(common_ids) for _ in common_ids]) for _ in range(bootstrap_iterations))
+            p05 = _percentile(deltas, 5)
+            p50 = _percentile(deltas, 50)
+            p95 = _percentile(deltas, 95)
+        else:
+            p05 = point_delta
+            p50 = point_delta
+            p95 = point_delta
+
     return {
         "available": True,
         "common_cases": len(common_ids),
@@ -264,5 +288,11 @@ def _compare_predicted_sql_per_case(
         "unchanged": unchanged,
         "regression_count": len(regressions),
         "improvement_count": len(improvements),
+        "execution_match_delta": point_delta,
+        "delta_p05": p05,
+        "delta_p50": p50,
+        "delta_p95": p95,
+        "regression_detected": p05 < 0.0,
+        "statistical_check_available": len(common_ids) >= 10,
     }
 

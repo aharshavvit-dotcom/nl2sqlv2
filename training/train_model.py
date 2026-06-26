@@ -364,6 +364,7 @@ def _run_multi_seed_variance(
     seed_runs: list[dict[str, Any]] = [{
         "mode": "evaluation_only_stability",
         "seed": primary_seed,
+        "status": "completed",
         "input_model_source": model_source,
         "model_bundle_dir": model_bundle_dir,
         "evaluation_output_dir": str(resolved_artifacts.get("evaluation_dir", ROOT / "artifacts/evaluation")),
@@ -476,6 +477,7 @@ def _run_multi_seed_variance(
     variance_report = {
         "enabled": True,
         "mode": "evaluation_only_stability" if has_multi_seed else "single_seed_baseline",
+        "primary_seed_included": True,
         "seeds_requested": seed_values,
         "seeds_evaluated": seed_runs_completed,  # Backward compat
         "seed_runs_requested": seed_runs_requested,
