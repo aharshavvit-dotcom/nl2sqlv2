@@ -7,8 +7,12 @@ import re
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from .bundle_manifest import load_manifest
 
+
+ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED_MANIFEST_METRICS = [
     "query_ir_validity_rate",
@@ -28,7 +32,7 @@ class ModelBundleValidator:
     )
     _CREDENTIAL_URL = re.compile(r"[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s:@]+@", re.IGNORECASE)
 
-    def validate(self, bundle_dir: str | Path) -> dict[str, Any]:
+    def validate(self, bundle_dir: str | Path, config: dict[str, Any] | None = None) -> dict[str, Any]:
         path = Path(bundle_dir)
         issues: list[str] = []
         warnings: list[str] = []
@@ -45,6 +49,8 @@ class ModelBundleValidator:
         except Exception as exc:
             issues.append(f"Failed to parse bundle_manifest.json: {exc}")
             return _result(issues, warnings, checked)
+
+        policy = _controlled_predicted_sql_policy(path, config)
 
         if manifest.status == "failed":
             issues.append("Bundle status is failed")
@@ -232,6 +238,13 @@ class ModelBundleValidator:
         lifecycle_proof.setdefault("multi_seed_true_training_variance", False)
         lifecycle_proof.setdefault("multi_seed_valid_for_training_variance_governance", False)
         lifecycle_proof.setdefault("controlled_predicted_sql_evaluation_available", False)
+        lifecycle_proof.setdefault("controlled_predicted_sql_report_location", "missing")
+        lifecycle_proof.setdefault("controlled_predicted_sql_report_attached_to_bundle", False)
+        lifecycle_proof.setdefault("controlled_predicted_sql_report_source", "")
+        lifecycle_proof.setdefault(
+            "controlled_predicted_sql_report_bundle_path",
+            str(eval_dir / "controlled_predicted_sql_execution_report.json"),
+        )
         lifecycle_proof.setdefault("relation_aware_attention_enabled", False)
         lifecycle_proof.setdefault("curriculum_mode", "ordered_dataset")
 
@@ -251,11 +264,34 @@ class ModelBundleValidator:
                 lifecycle_proof["multi_seed_valid_for_training_variance_governance"] = bool(
                     seed_report.get("is_valid_for_training_variance_governance", False)
                 )
+                lifecycle_proof["stochastic_inference_enabled"] = bool(
+                    seed_report.get("stochastic_inference_enabled", False)
+                )
+                lifecycle_proof["stochastic_components"] = list(seed_report.get("stochastic_components") or [])
+                lifecycle_proof["evaluation_stability_interpretation"] = seed_report.get(
+                    "evaluation_stability_interpretation",
+                    "deterministic_path_expected_zero_variance",
+                )
 
-        # Read predicted-SQL execution report from bundle evaluation dir
-        predicted_sql_path = eval_dir / "controlled_predicted_sql_execution_report.json"
-        if predicted_sql_path.exists():
-            predicted_sql_report = _read_json(predicted_sql_path)
+        # Read predicted-SQL execution report from bundle first, root artifacts second.
+        predicted_sql_report, predicted_location, predicted_path = _read_predicted_sql_report(eval_dir, checked)
+        lifecycle_proof["controlled_predicted_sql_report_location"] = predicted_location
+        lifecycle_proof["controlled_predicted_sql_report_attached_to_bundle"] = predicted_location == "bundle"
+        lifecycle_proof["controlled_predicted_sql_report_bundle_path"] = str(
+            eval_dir / "controlled_predicted_sql_execution_report.json"
+        )
+        lifecycle_proof["controlled_predicted_sql_report_source"] = str(predicted_path) if predicted_path else ""
+        if predicted_location == "root_artifacts":
+            warnings.append("controlled_predicted_sql_report_not_attached_to_bundle")
+            if policy["require_report_attached_to_bundle"]:
+                issues.append("controlled_predicted_sql_report_required_but_not_attached_to_bundle")
+        elif predicted_location == "missing" and policy["enabled"]:
+            warning = "controlled_predicted_sql_report_missing"
+            if policy["required_for_full_training"]:
+                issues.append(warning)
+            else:
+                warnings.append(warning)
+        if predicted_sql_report:
             if not predicted_sql_report.get("error"):
                 lifecycle_proof["controlled_predicted_sql_evaluation_available"] = True
                 lifecycle_proof["controlled_predicted_sql_measures_model_predictions"] = bool(
@@ -269,13 +305,30 @@ class ModelBundleValidator:
                         predicted_sql_report.get("predicted_result_value_match_rate", 0.0))
                 )
                 lifecycle_proof["controlled_predicted_sql_unsafe_sql_count"] = int(
-                    predicted_sql_report.get("unsafe_sql_count", 0)
+                    predicted_sql_report.get("unsafe_sql_count",
+                        predicted_sql_report.get("predicted_unsafe_sql_count", 0))
+                )
+                lifecycle_proof["controlled_predicted_sql_execution_success_rate"] = float(
+                    predicted_sql_report.get("predicted_execution_success_rate", 0.0)
+                )
+                lifecycle_proof["controlled_predicted_sql_row_count_match_rate"] = float(
+                    predicted_sql_report.get("predicted_row_count_match_rate", 0.0)
+                )
+                lifecycle_proof["controlled_predicted_sql_safe_sql_rate"] = float(
+                    predicted_sql_report.get("predicted_safe_sql_rate", 0.0)
+                )
+                lifecycle_proof["central_sql_validator_used"] = bool(
+                    predicted_sql_report.get("central_sql_validator_used", False)
                 )
                 lifecycle_proof["controlled_predicted_sql_passed"] = bool(
                     predicted_sql_report.get("passed", False)
                 )
                 if predicted_sql_report.get("schema_graph_empty", True):
                     warnings.append("Controlled predicted-SQL evaluation used empty schema graph")
+                if policy["required_for_full_training"] and not predicted_sql_report.get("central_sql_validator_used", False):
+                    issues.append("controlled_predicted_sql_missing_central_sql_validation")
+            elif policy["required_for_full_training"]:
+                issues.append(f"controlled_predicted_sql_report_error: {predicted_sql_report.get('error')}")
 
         # Compute production_ready: split into core/fixture/full
         production_ready_core = bool(
@@ -313,6 +366,47 @@ def _read_json(path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
+
+def _read_predicted_sql_report(eval_dir: Path, checked: list[str]) -> tuple[dict[str, Any] | None, str, Path | None]:
+    bundle_path = eval_dir / "controlled_predicted_sql_execution_report.json"
+    root_path = ROOT / "artifacts" / "evaluation" / "controlled_predicted_sql_execution_report.json"
+    checked.append(str(bundle_path))
+    if bundle_path.exists():
+        return _read_json(bundle_path), "bundle", bundle_path
+    checked.append(str(root_path))
+    if root_path.exists():
+        return _read_json(root_path), "root_artifacts", root_path
+    return None, "missing", None
+
+
+def _controlled_predicted_sql_policy(bundle_dir: Path, config: dict[str, Any] | None) -> dict[str, bool]:
+    controlled = ((config or {}).get("execution_aware") or {}).get("controlled_predicted_sql") or {}
+    if not controlled:
+        controlled = _read_bundled_training_config(bundle_dir).get("execution_aware", {}).get("controlled_predicted_sql", {})
+    enabled = bool(controlled.get("enabled", False))
+    required = bool(controlled.get("required_for_full_training", False))
+    return {
+        "enabled": enabled,
+        "required_for_full_training": required,
+        "require_report_attached_to_bundle": bool(
+            enabled and required and controlled.get("require_report_attached_to_bundle", True)
+        ),
+    }
+
+
+def _read_bundled_training_config(bundle_dir: Path) -> dict[str, Any]:
+    configs_dir = bundle_dir / "configs"
+    if not configs_dir.exists():
+        return {}
+    for path in sorted(configs_dir.glob("*.yaml")) + sorted(configs_dir.glob("*.yml")):
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            continue
+        if isinstance(payload, dict) and "execution_aware" in payload:
+            return payload
+    return {}
 
 
 def _require_files(base: Path, names: list[str], label: str, issues: list[str], checked: list[str]) -> None:

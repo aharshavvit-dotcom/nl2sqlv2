@@ -18,6 +18,22 @@ model:
   max_candidate_tokens: 16
   max_tables: 64
   max_columns: 256
+  relation_aware_attention:
+    enabled: false
+    relation_bias_mode: schema_pairwise_relation_bias
+    pairwise_relation_matrix: true
+    relation_types:
+      - same_table
+      - table_has_column
+      - column_belongs_to_table
+      - fk_to_pk
+      - pk_to_fk
+      - primary_key
+      - foreign_key_column
+      - same_column_name
+      - same_data_type
+      - unrelated
+    bias_init: 0.0
 
 optimizer:
   name: adamw
@@ -30,6 +46,8 @@ scheduler:
 training:
   curriculum:
     enabled: true
+    mode: ordered_dataset
+    allow_ordered_dataset_fallback: false
     phases: [level_1_single_table, level_2_filter_count, level_3_aggregation, level_4_join]
   batch_size: 4
   epochs: 1

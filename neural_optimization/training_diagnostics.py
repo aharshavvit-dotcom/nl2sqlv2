@@ -24,6 +24,13 @@ class TrainingDiagnostics:
     def set_config(self, config: dict[str, Any]) -> None:
         rat_config = config.get("model", {}).get("relation_aware_attention", {})
         curriculum_config = config.get("training", {}).get("curriculum", {})
+        relation_enabled = bool(rat_config.get("enabled", False))
+        pairwise_relation_matrix = bool(rat_config.get("pairwise_relation_matrix", True))
+        relation_bias_mode = str(
+            rat_config.get("relation_bias_mode")
+            or ("schema_pairwise_relation_bias" if pairwise_relation_matrix else "schema_token_role_bias")
+        )
+        relation_types = rat_config.get("relation_types", [])
         self.config_summary = {
             "optimizer_name": config.get("optimizer", {}).get("name", "unknown"),
             "activation_name": config.get("model", {}).get("activation", "unknown"),
@@ -39,13 +46,15 @@ class TrainingDiagnostics:
                 "enabled": bool(curriculum_config.get("enabled", True)),
                 "active": True,
                 "mode": curriculum_config.get("mode", "ordered_dataset"),
-                "phased_epochs": curriculum_config.get("mode") == "phased_epochs",
+                "phased_epochs": False,
             },
             "relation_aware_attention": {
-                "enabled": bool(rat_config.get("enabled", False)),
+                "enabled": relation_enabled,
                 "relation_type_ids_available": True,  # Now wired in ir_dataset
-                "relation_types": rat_config.get("relation_types", []),
-                "relation_bias_parameters": len(rat_config.get("relation_types", [])) if rat_config.get("enabled") else 0,
+                "relation_bias_mode": relation_bias_mode if relation_enabled else "disabled",
+                "pairwise_relation_matrix": bool(pairwise_relation_matrix and relation_enabled),
+                "relation_types": relation_types,
+                "relation_bias_parameters": len(relation_types) if relation_enabled else 0,
             },
         }
 

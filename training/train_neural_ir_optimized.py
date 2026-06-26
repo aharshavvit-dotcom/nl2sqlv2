@@ -218,6 +218,8 @@ def run_optimized_training(
         train_dataset.examples, curriculum_distribution = CurriculumBuilder().order_examples(
             train_dataset.examples,
             curriculum_cfg.get("phases") or [],
+            mode=str(curriculum_cfg.get("mode", "ordered_dataset")),
+            allow_ordered_dataset_fallback=bool(curriculum_cfg.get("allow_ordered_dataset_fallback", False)),
         )
 
     val_dataset = IRTrainingDataset(

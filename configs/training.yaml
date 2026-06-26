@@ -69,6 +69,7 @@ calibration:
 quality_gate:
   thresholds: evaluation/model_quality_thresholds.yaml
   required: true
+  mode: production
 
 bundle:
   build: true
@@ -83,6 +84,7 @@ execution_aware:
   controlled_predicted_sql:
     enabled: false
     required_for_full_training: false
+    require_report_attached_to_bundle: true
     min_execution_match_rate: 0.70
 
 # Multi-seed training variance (disabled by default).
@@ -100,4 +102,3 @@ seeds:
     - sql_validation_rate
     - query_ir_validity_rate
     - execution_match_rate
-

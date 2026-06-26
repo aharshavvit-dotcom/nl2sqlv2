@@ -86,6 +86,13 @@ DEFAULT_V2_CONFIG = {
     "weight_decay": 0.00001,
     "use_hard_negative_loss": True,
     "hard_negative_loss_weight": 0.3,
+    "relation_aware_attention": {
+        "enabled": False,
+        "relation_bias_mode": "schema_pairwise_relation_bias",
+        "pairwise_relation_matrix": True,
+        "relation_types": RELATION_TYPES,
+        "bias_init": 0.0,
+    },
 }
 
 
@@ -105,6 +112,15 @@ class SchemaAwareOptionAIRModel(nn.Module):
         # Relation-aware schema attention (experimental, disabled by default)
         rat_config = merged.get("relation_aware_attention") or {}
         self.relation_aware_enabled = bool(rat_config.get("enabled", False))
+        self.pairwise_relation_matrix_enabled = bool(rat_config.get("pairwise_relation_matrix", True))
+        self.relation_bias_mode = str(
+            rat_config.get("relation_bias_mode")
+            or (
+                "schema_pairwise_relation_bias"
+                if self.pairwise_relation_matrix_enabled
+                else "schema_token_role_bias"
+            )
+        )
         if self.relation_aware_enabled:
             relation_types = rat_config.get("relation_types", RELATION_TYPES)
             bias_init = float(rat_config.get("bias_init", 0.0))
@@ -175,11 +191,24 @@ class SchemaAwareOptionAIRModel(nn.Module):
         table_candidate_token_ids=None,
         column_candidate_token_ids=None,
         relation_type_ids=None,
+        schema_relation_type_ids=None,
     ) -> dict:
         question_emb = self.embedding(question_ids)
         schema_emb = self.embedding(schema_ids)
         question_out, _ = self.question_encoder(question_emb)
         schema_out, _ = self.schema_encoder(schema_emb)
+        active_relation_bias_mode = "disabled"
+        if (
+            self.relation_bias is not None
+            and schema_relation_type_ids is not None
+            and self.relation_bias_mode == "schema_pairwise_relation_bias"
+        ):
+            schema_out = self._schema_pairwise_relation_context(
+                schema_out,
+                schema_mask=schema_mask,
+                schema_relation_type_ids=schema_relation_type_ids,
+            )
+            active_relation_bias_mode = "schema_pairwise_relation_bias"
 
         question_vec = self._masked_mean(question_out, question_mask)
         schema_vec = self._masked_mean(schema_out, schema_mask)
@@ -190,6 +219,8 @@ class SchemaAwareOptionAIRModel(nn.Module):
             schema_mask=schema_mask,
             relation_type_ids=relation_type_ids,
         )
+        if active_relation_bias_mode == "disabled" and self.relation_bias is not None and relation_type_ids is not None:
+            active_relation_bias_mode = "schema_token_role_bias"
         fused = self.fusion(torch.cat([question_vec, schema_vec, attended_schema, question_vec * attended_schema], dim=-1))
 
         if column_candidate_token_ids is None:
@@ -246,6 +277,7 @@ class SchemaAwareOptionAIRModel(nn.Module):
                 "date_column": date_column_logits.detach(),
                 "filter_column": filter_column_logits.detach(),
             },
+            "relation_bias_mode": active_relation_bias_mode,
         }
 
     def _schema_attention(
@@ -267,6 +299,23 @@ class SchemaAwareOptionAIRModel(nn.Module):
         weights = torch.softmax(scores, dim=-1)
         context = torch.matmul(weights, schema_out)
         return self._masked_mean(context, question_mask), weights
+
+    def _schema_pairwise_relation_context(
+        self,
+        schema_out: torch.Tensor,
+        schema_mask: torch.Tensor | None,
+        schema_relation_type_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        scale = math.sqrt(max(schema_out.size(-1), 1))
+        scores = torch.matmul(schema_out, schema_out.transpose(1, 2)) / scale
+        relation_bias = self.relation_bias(schema_relation_type_ids.to(scores.device))
+        scores = scores + relation_bias
+        if schema_mask is not None:
+            mask = schema_mask.to(scores.device).bool()
+            scores = scores.masked_fill(~mask.unsqueeze(1), -1e9)
+        weights = torch.softmax(scores, dim=-1)
+        context = torch.matmul(weights, schema_out)
+        return schema_out + context
 
     def _candidate_vectors(
         self,

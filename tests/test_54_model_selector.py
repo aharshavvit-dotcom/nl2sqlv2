@@ -25,3 +25,19 @@ def test_model_with_high_unnecessary_joins_rejected() -> None:
 
     assert report["selected_model"] is None
     assert "unnecessary_join_rate" in report["rejected_models"][0]["blocking_issues"]
+
+
+def test_model_selector_surfaces_predicted_sql_metrics() -> None:
+    report = ModelSelector().select_best([
+        _candidate(
+            "safe",
+            controlled_predicted_sql_execution_match_rate=0.7,
+            controlled_predicted_sql_safe_sql_rate=1.0,
+            controlled_predicted_sql_unsafe_sql_count=0,
+        )
+    ], THRESHOLDS)
+
+    predicted = report["predicted_sql_execution"]
+    assert predicted["available"] is True
+    assert predicted["execution_match_rate"] == 0.7
+    assert predicted["safe_sql_rate"] == 1.0

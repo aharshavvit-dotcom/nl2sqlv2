@@ -91,7 +91,17 @@ class IRTrainingDataset(Dataset):
             "table_candidate_token_ids": table_candidate_token_ids,
             "column_candidate_token_ids": column_candidate_token_ids,
             "candidate_token_ids": column_candidate_token_ids,
-            "relation_type_ids": self._build_relation_type_ids(schema_items, candidates),
+            "relation_type_ids": build_question_schema_relation_type_ids(
+                schema_items,
+                schema_tokens,
+                self.max_question_len,
+                self.max_schema_len,
+            ),
+            "schema_relation_type_ids": build_schema_relation_type_ids(
+                schema_items,
+                schema_tokens,
+                self.max_schema_len,
+            ),
             "labels": labels,
             "raw_example": row,
             "schema_items": schema_items,
@@ -176,76 +186,6 @@ class IRTrainingDataset(Dataset):
             rows[index] = self.vocab.encode(tokens, self.max_candidate_tokens)
         return rows
 
-    def _build_relation_type_ids(
-        self,
-        schema_items: dict[str, Any],
-        candidates: dict[str, Any],
-    ) -> list[list[int]]:
-        """Build [question_len, schema_len] relation type ID matrix.
-
-        For each (question_token, schema_token) pair, assigns a relation type ID.
-        Since question tokens don't have inherent schema relations, the matrix
-        broadcasts schema-schema relation info across the question dimension
-        by encoding each schema token's role (table membership, PK/FK, type).
-        """
-        q_len = self.max_question_len
-        s_len = self.max_schema_len
-
-        # Build per-schema-token relation type based on schema structure
-        schema_token_types = [RELATION_UNRELATED] * s_len
-
-        # Map column metadata for FK/PK/type info
-        columns = schema_items.get("columns", [])
-        tables = schema_items.get("tables", [])
-        table_set = set(tables)
-
-        # Build FK sets from candidates or schema_items
-        fk_columns: set[str] = set()
-        pk_columns: set[str] = set()
-        column_tables: dict[str, str] = {}
-        column_types: dict[str, str] = {}
-        for col_info in columns:
-            col_name = col_info.get("column", "")
-            tbl_name = col_info.get("table", "")
-            col_type = col_info.get("type", "")
-            column_tables[col_name] = tbl_name
-            column_types[col_name] = col_type
-            if col_info.get("primary_key"):
-                pk_columns.add(col_name)
-            if col_info.get("foreign_key") or col_info.get("is_fk"):
-                fk_columns.add(col_name)
-
-        # Assign types to column candidates (used for schema_len dimension)
-        column_candidates = candidates.get("columns", [])
-        for cand in column_candidates:
-            idx = cand.get("index", -1)
-            if not (0 <= idx < s_len):
-                continue
-            col_name = cand.get("column", "")
-            tbl_name = cand.get("table", "")
-
-            if col_name in pk_columns:
-                schema_token_types[idx] = RELATION_TYPE_MAP["primary_key"]
-            elif col_name in fk_columns:
-                schema_token_types[idx] = RELATION_TYPE_MAP["foreign_key_column"]
-            elif tbl_name in table_set:
-                schema_token_types[idx] = RELATION_TYPE_MAP["column_belongs_to_table"]
-            else:
-                schema_token_types[idx] = RELATION_UNRELATED
-
-        # Assign types to table candidates
-        table_candidates = candidates.get("tables", [])
-        for cand in table_candidates:
-            idx = cand.get("index", -1)
-            if not (0 <= idx < s_len):
-                continue
-            tbl_name = cand.get("table", "")
-            if tbl_name in table_set:
-                schema_token_types[idx] = RELATION_TYPE_MAP["same_table"]
-
-        # Broadcast across question dimension
-        return [list(schema_token_types) for _ in range(q_len)]
-
 
 def collate_ir_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
     label_keys = sorted(batch[0]["labels"])
@@ -265,6 +205,7 @@ def collate_ir_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "column_candidate_token_ids": torch.tensor([item["column_candidate_token_ids"] for item in batch], dtype=torch.long),
         "candidate_token_ids": torch.tensor([item["candidate_token_ids"] for item in batch], dtype=torch.long),
         "relation_type_ids": torch.tensor([item["relation_type_ids"] for item in batch], dtype=torch.long),
+        "schema_relation_type_ids": torch.tensor([item["schema_relation_type_ids"] for item in batch], dtype=torch.long),
         "labels": {
             key: torch.tensor([item["labels"][key] for item in batch], dtype=torch.long)
             for key in label_keys
@@ -275,6 +216,128 @@ def collate_ir_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "schema_linking": [item["schema_linking"] for item in batch],
         "candidate_warnings": [item["candidate_warnings"] for item in batch],
     }
+
+
+def build_question_schema_relation_type_ids(
+    schema_items: dict[str, Any],
+    schema_tokens: list[str],
+    max_question_len: int,
+    max_schema_len: int,
+) -> list[list[int]]:
+    """Build [question_len, schema_len] role-bias IDs for question-schema attention."""
+    roles = [
+        _schema_token_role(entity)
+        for entity in _schema_token_entities(schema_items, schema_tokens, max_schema_len)
+    ]
+    return [list(roles) for _ in range(max_question_len)]
+
+
+def build_schema_relation_type_ids(
+    schema_items: dict[str, Any],
+    schema_tokens: list[str],
+    max_schema_len: int,
+) -> list[list[int]]:
+    """Build [schema_len, schema_len] pairwise schema relation IDs."""
+    entities = _schema_token_entities(schema_items, schema_tokens, max_schema_len)
+    return [
+        [_pairwise_relation(left, right) for right in entities]
+        for left in entities
+    ]
+
+
+def _schema_token_entities(
+    schema_items: dict[str, Any],
+    schema_tokens: list[str],
+    max_schema_len: int,
+) -> list[dict[str, Any] | None]:
+    table_by_token: dict[str, dict[str, Any]] = {}
+    for table in schema_items.get("tables", []):
+        for token in tokenize(str(table).replace("_", " ")):
+            table_by_token.setdefault(token, {"kind": "table", "table": str(table)})
+
+    column_by_token: dict[str, dict[str, Any]] = {}
+    for column in schema_items.get("columns", []):
+        entity = {
+            "kind": "column",
+            "table": str(column.get("table") or ""),
+            "column": str(column.get("column") or ""),
+            "type": str(column.get("type") or ""),
+            "primary_key": bool(column.get("primary_key", False)),
+            "foreign_key": bool(column.get("foreign_key", column.get("is_fk", False))),
+            "foreign_key_target": _normalize_fk_target(column.get("foreign_key_target")),
+        }
+        for token in tokenize(entity["column"].replace("_", " ")):
+            column_by_token.setdefault(token, entity)
+
+    entities: list[dict[str, Any] | None] = [None] * max_schema_len
+    for index, token in enumerate(schema_tokens[:max_schema_len]):
+        normalized = str(token).lower()
+        entities[index] = column_by_token.get(normalized) or table_by_token.get(normalized)
+    return entities
+
+
+def _schema_token_role(entity: dict[str, Any] | None) -> int:
+    if not entity:
+        return RELATION_UNRELATED
+    if entity.get("kind") == "table":
+        return RELATION_TYPE_MAP["same_table"]
+    if entity.get("primary_key"):
+        return RELATION_TYPE_MAP["primary_key"]
+    if entity.get("foreign_key"):
+        return RELATION_TYPE_MAP["foreign_key_column"]
+    if entity.get("table"):
+        return RELATION_TYPE_MAP["column_belongs_to_table"]
+    return RELATION_UNRELATED
+
+
+def _pairwise_relation(left: dict[str, Any] | None, right: dict[str, Any] | None) -> int:
+    if not left or not right:
+        return RELATION_UNRELATED
+    left_kind = left.get("kind")
+    right_kind = right.get("kind")
+    if left_kind == "table" and right_kind == "table":
+        return RELATION_TYPE_MAP["same_table"] if left.get("table") == right.get("table") else RELATION_UNRELATED
+    if left_kind == "table" and right_kind == "column":
+        return RELATION_TYPE_MAP["table_has_column"] if left.get("table") == right.get("table") else RELATION_UNRELATED
+    if left_kind == "column" and right_kind == "table":
+        return RELATION_TYPE_MAP["column_belongs_to_table"] if left.get("table") == right.get("table") else RELATION_UNRELATED
+    if left_kind == "column" and right_kind == "column":
+        if _fk_points_to(left, right):
+            return RELATION_TYPE_MAP["fk_to_pk"]
+        if _fk_points_to(right, left):
+            return RELATION_TYPE_MAP["pk_to_fk"]
+        if left.get("table") == right.get("table"):
+            if left.get("column") == right.get("column") and left.get("primary_key"):
+                return RELATION_TYPE_MAP["primary_key"]
+            if left.get("column") == right.get("column") and left.get("foreign_key"):
+                return RELATION_TYPE_MAP["foreign_key_column"]
+            return RELATION_TYPE_MAP["same_table"]
+        if left.get("column") == right.get("column"):
+            return RELATION_TYPE_MAP["same_column_name"]
+        if left.get("type") and left.get("type") == right.get("type"):
+            return RELATION_TYPE_MAP["same_data_type"]
+    return RELATION_UNRELATED
+
+
+def _fk_points_to(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    target = _normalize_fk_target(left.get("foreign_key_target"))
+    if not target:
+        return False
+    return target.get("table") == right.get("table") and target.get("column") == right.get("column")
+
+
+def _normalize_fk_target(raw: Any) -> dict[str, str] | None:
+    if not raw:
+        return None
+    if isinstance(raw, dict):
+        table = raw.get("table") or raw.get("to_table") or raw.get("referred_table")
+        column = raw.get("column") or raw.get("to_column") or raw.get("referred_column")
+        if table and column:
+            return {"table": str(table), "column": str(column)}
+    if isinstance(raw, str) and "." in raw:
+        table, column = raw.split(".", 1)
+        return {"table": table, "column": column}
+    return None
 
 
 def load_jsonl(path: Path) -> list[dict[str, Any]]:

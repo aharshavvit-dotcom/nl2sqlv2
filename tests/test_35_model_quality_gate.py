@@ -54,6 +54,81 @@ def test_quality_gate_passes_good_metrics() -> None:
     assert result["passed"] is True
 
 
+def test_production_simple_query_threshold_is_blocking() -> None:
+    report = {
+        "quality_gate_mode": "production",
+        "test_performance": {
+            "summary": {
+                "query_ir_validity_rate": 1.0,
+                "sql_validation_rate": 1.0,
+                "simple_query_pass_rate": 0.90,
+                "unnecessary_join_rate": 0.0,
+                "wrong_table_rate": 0.0,
+                "unsafe_sql_count": 0,
+            }
+        },
+        "unseen_db_performance": {"summary": {"sql_validation_rate": 1.0}},
+        "no_select_star_rate": 1.0,
+        "unsafe_sql_count": 0,
+        "feedback_regression_pass_rate": 1.0,
+    }
+
+    result = ModelQualityGate().evaluate(report, THRESHOLDS)
+
+    assert result["passed"] is False
+    assert any(check["metric"] == "simple_query_pass_rate" for check in result["failed_checks"])
+
+
+def test_production_missing_simple_query_does_not_use_intent_accuracy() -> None:
+    report = {
+        "quality_gate_mode": "production",
+        "test_performance": {
+            "summary": {
+                "query_ir_validity_rate": 1.0,
+                "sql_validation_rate": 1.0,
+                "intent_accuracy_rate": 1.0,
+                "unnecessary_join_rate": 0.0,
+                "wrong_table_rate": 0.0,
+                "unsafe_sql_count": 0,
+            }
+        },
+        "unseen_db_performance": {"summary": {"sql_validation_rate": 1.0}},
+        "no_select_star_rate": 1.0,
+        "unsafe_sql_count": 0,
+        "feedback_regression_pass_rate": 1.0,
+    }
+
+    result = ModelQualityGate().evaluate(report, THRESHOLDS)
+
+    assert result["passed"] is False
+    assert "simple_query_pass_rate" in result["missing_metrics"]
+
+
+def test_smoke_simple_query_uses_flat_080_threshold() -> None:
+    report = {
+        "quality_gate_mode": "smoke",
+        "test_performance": {
+            "summary": {
+                "query_ir_validity_rate": 1.0,
+                "sql_validation_rate": 1.0,
+                "simple_query_pass_rate": 0.81,
+                "unnecessary_join_rate": 0.0,
+                "wrong_table_rate": 0.0,
+                "unsafe_sql_count": 0,
+            }
+        },
+        "unseen_db_performance": {"summary": {"sql_validation_rate": 1.0}},
+        "no_select_star_rate": 1.0,
+        "unsafe_sql_count": 0,
+        "feedback_regression_pass_rate": 1.0,
+    }
+    thresholds = {"minimums": {**THRESHOLDS["minimums"], "simple_query_pass_rate": 0.80}}
+
+    result = ModelQualityGate().evaluate(report, thresholds)
+
+    assert result["passed"] is True
+
+
 def test_quality_gate_fails_missing_critical_metric() -> None:
     report = {
         "test_performance": {"summary": {"query_ir_validity_rate": 0.99, "sql_validation_rate": 0.99}},

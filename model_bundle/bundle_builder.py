@@ -13,6 +13,9 @@ from typing import Any
 from .bundle_manifest import BundleManifest, save_manifest
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 class ModelBundleBuilder:
     """Assembles a candidate model bundle from training artifacts."""
 
@@ -178,10 +181,19 @@ class ModelBundleBuilder:
         lifecycle_proof["multi_seed_evaluation_stability_available"] = False
         lifecycle_proof["multi_seed_true_training_variance"] = False
         lifecycle_proof["multi_seed_valid_for_training_variance_governance"] = False
+        lifecycle_proof["stochastic_inference_enabled"] = False
+        lifecycle_proof["stochastic_components"] = []
+        lifecycle_proof["evaluation_stability_interpretation"] = "deterministic_path_expected_zero_variance"
         lifecycle_proof["controlled_gold_sql_fixture_validation_passed"] = bool(
             _fixture_step is not None and _fixture_summary.get("passed", False)
         )
         lifecycle_proof["controlled_predicted_sql_evaluation_available"] = False
+        lifecycle_proof["controlled_predicted_sql_report_location"] = "missing"
+        lifecycle_proof["controlled_predicted_sql_report_attached_to_bundle"] = False
+        lifecycle_proof["controlled_predicted_sql_report_source"] = ""
+        lifecycle_proof["controlled_predicted_sql_report_bundle_path"] = str(
+            out / "evaluation" / "controlled_predicted_sql_execution_report.json"
+        )
         lifecycle_proof["relation_aware_attention_enabled"] = False
         lifecycle_proof["curriculum_mode"] = "ordered_dataset"
 
@@ -213,6 +225,14 @@ class ModelBundleBuilder:
             lifecycle_proof["multi_seed_valid_for_training_variance_governance"] = bool(
                 _seed_report.get("is_valid_for_training_variance_governance", False)
             )
+            lifecycle_proof["stochastic_inference_enabled"] = bool(
+                _seed_report.get("stochastic_inference_enabled", False)
+            )
+            lifecycle_proof["stochastic_components"] = list(_seed_report.get("stochastic_components") or [])
+            lifecycle_proof["evaluation_stability_interpretation"] = _seed_report.get(
+                "evaluation_stability_interpretation",
+                "deterministic_path_expected_zero_variance",
+            )
 
         # Check for predicted-SQL report: first in pipeline steps, then artifact file
         _predicted_sql_step = next(
@@ -231,6 +251,10 @@ class ModelBundleBuilder:
                     _predicted_sql_report = None
         if _predicted_sql_report and not _predicted_sql_report.get("error"):
             lifecycle_proof["controlled_predicted_sql_evaluation_available"] = True
+            lifecycle_proof["controlled_predicted_sql_report_location"] = "root_artifacts"
+            lifecycle_proof["controlled_predicted_sql_report_source"] = str(
+                ROOT / "artifacts" / "evaluation" / "controlled_predicted_sql_execution_report.json"
+            )
             lifecycle_proof["controlled_predicted_sql_measures_model_predictions"] = bool(
                 _predicted_sql_report.get("measures_model_predictions", True)
             )
@@ -245,10 +269,43 @@ class ModelBundleBuilder:
                     _predicted_sql_report.get("predicted_result_value_match_rate", 0.0))
             )
             lifecycle_proof["controlled_predicted_sql_unsafe_sql_count"] = int(
-                _predicted_sql_report.get("unsafe_sql_count", 0)
+                _predicted_sql_report.get("unsafe_sql_count",
+                    _predicted_sql_report.get("predicted_unsafe_sql_count", 0))
+            )
+            lifecycle_proof["controlled_predicted_sql_execution_success_rate"] = float(
+                _predicted_sql_report.get("predicted_execution_success_rate", 0.0)
+            )
+            lifecycle_proof["controlled_predicted_sql_row_count_match_rate"] = float(
+                _predicted_sql_report.get("predicted_row_count_match_rate", 0.0)
+            )
+            lifecycle_proof["controlled_predicted_sql_safe_sql_rate"] = float(
+                _predicted_sql_report.get("predicted_safe_sql_rate", 0.0)
+            )
+            lifecycle_proof["central_sql_validator_used"] = bool(
+                _predicted_sql_report.get("central_sql_validator_used", False)
             )
             lifecycle_proof["controlled_predicted_sql_passed"] = bool(
                 _predicted_sql_report.get("passed", False)
+            )
+            metrics.setdefault(
+                "controlled_predicted_sql_execution_match_rate",
+                lifecycle_proof["controlled_predicted_sql_execution_match_rate"],
+            )
+            metrics.setdefault(
+                "controlled_predicted_sql_execution_success_rate",
+                lifecycle_proof["controlled_predicted_sql_execution_success_rate"],
+            )
+            metrics.setdefault(
+                "controlled_predicted_sql_row_count_match_rate",
+                lifecycle_proof["controlled_predicted_sql_row_count_match_rate"],
+            )
+            metrics.setdefault(
+                "controlled_predicted_sql_safe_sql_rate",
+                lifecycle_proof["controlled_predicted_sql_safe_sql_rate"],
+            )
+            metrics.setdefault(
+                "controlled_predicted_sql_unsafe_sql_count",
+                lifecycle_proof["controlled_predicted_sql_unsafe_sql_count"],
             )
 
         # production_ready: split into core, controlled fixture, and full

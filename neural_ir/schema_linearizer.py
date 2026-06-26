@@ -43,13 +43,13 @@ def extract_schema_items(schema: Any) -> dict[str, Any]:
             .get("schema_context", {})
         )
         if schema_context.get("tables"):
-            return _from_tables_dict(schema_context.get("tables") or {})
+            return _from_tables_dict(schema_context.get("tables") or {}, schema_context.get("foreign_keys") or [])
         if schema.get("foreign_keys") is not None and schema.get("tables"):
-            return _from_tables_dict(schema.get("tables") or {})
+            return _from_tables_dict(schema.get("tables") or {}, schema.get("foreign_keys") or [])
         if schema.get("tables"):
             tables_value = schema.get("tables")
             if isinstance(tables_value, dict):
-                return _from_tables_dict(tables_value)
+                return _from_tables_dict(tables_value, schema.get("foreign_keys") or [])
             if isinstance(tables_value, list):
                 return _from_table_list(tables_value)
         return _from_tables_dict(schema)
@@ -78,20 +78,29 @@ def schema_from_example(row: dict[str, Any]) -> dict[str, Any]:
 def _from_schema_graph(schema: SchemaGraph) -> dict[str, Any]:
     columns = []
     for table_name, table in sorted(schema.tables.items()):
+        fk_columns = {fk.constrained_column for fk in table.foreign_keys}
+        fk_targets = {
+            fk.constrained_column: {"table": fk.referred_table, "column": fk.referred_column}
+            for fk in table.foreign_keys
+        }
         for column_name, column in sorted(table.columns.items()):
             columns.append(
                 {
                     "table": table_name,
                     "column": column_name,
                     "type": _column_type(column_name, str(column.type)),
+                    "primary_key": bool(column.primary_key),
+                    "foreign_key": column_name in fk_columns,
+                    "foreign_key_target": fk_targets.get(column_name),
                 }
             )
     return _finalize(sorted(schema.tables), columns)
 
 
-def _from_tables_dict(tables: dict[str, Any]) -> dict[str, Any]:
+def _from_tables_dict(tables: dict[str, Any], foreign_keys: list[Any] | None = None) -> dict[str, Any]:
     table_names = [str(name) for name in tables]
     columns = []
+    fk_map = _foreign_key_map(foreign_keys or [])
     for table_name in table_names:
         table_info = tables.get(table_name, {})
         if is_dataclass(table_info):
@@ -103,11 +112,20 @@ def _from_tables_dict(tables: dict[str, Any]) -> dict[str, Any]:
             iterable = [(str(_column_name(item)), item) for item in raw_columns or []]
         for column_name, raw in iterable:
             raw_dict = asdict(raw) if is_dataclass(raw) else (raw if isinstance(raw, dict) else {})
+            resolved_column = str(_column_name(raw_dict) or column_name)
+            fk_target = (
+                raw_dict.get("foreign_key_target")
+                or raw_dict.get("references")
+                or fk_map.get((str(table_name), resolved_column))
+            )
             columns.append(
                 {
                     "table": str(table_name),
-                    "column": str(_column_name(raw_dict) or column_name),
-                    "type": _column_type(str(_column_name(raw_dict) or column_name), str(raw_dict.get("type", ""))),
+                    "column": resolved_column,
+                    "type": _column_type(resolved_column, str(raw_dict.get("type", ""))),
+                    "primary_key": bool(raw_dict.get("primary_key", raw_dict.get("pk", False))),
+                    "foreign_key": bool(raw_dict.get("foreign_key", raw_dict.get("is_fk", False)) or fk_target),
+                    "foreign_key_target": fk_target,
                 }
             )
     return _finalize(table_names, columns)
@@ -130,6 +148,9 @@ def _from_table_list(tables: list[Any]) -> dict[str, Any]:
                     "table": table_name,
                     "column": column_name,
                     "type": _column_type(column_name, str(column_dict.get("type", ""))),
+                    "primary_key": bool(column_dict.get("primary_key", column_dict.get("pk", False))),
+                    "foreign_key": bool(column_dict.get("foreign_key", column_dict.get("is_fk", False))),
+                    "foreign_key_target": column_dict.get("foreign_key_target") or column_dict.get("references"),
                 }
             )
     return _finalize(table_names, columns)
@@ -157,7 +178,20 @@ def _schema_dict_from_serialized(text: str) -> dict[str, Any]:
     return {"tables": tables, "dialect": "sqlite"}
 
 
-def _finalize(tables: list[str], columns: list[dict[str, str]]) -> dict[str, Any]:
+def _foreign_key_map(foreign_keys: list[Any]) -> dict[tuple[str, str], dict[str, str]]:
+    mapped: dict[tuple[str, str], dict[str, str]] = {}
+    for raw in foreign_keys:
+        item = asdict(raw) if is_dataclass(raw) else (raw if isinstance(raw, dict) else {})
+        from_table = str(item.get("from_table") or item.get("table") or "")
+        from_column = str(item.get("from_column") or item.get("constrained_column") or "")
+        to_table = str(item.get("to_table") or item.get("referred_table") or "")
+        to_column = str(item.get("to_column") or item.get("referred_column") or "")
+        if from_table and from_column and to_table and to_column:
+            mapped[(from_table, from_column)] = {"table": to_table, "column": to_column}
+    return mapped
+
+
+def _finalize(tables: list[str], columns: list[dict[str, Any]]) -> dict[str, Any]:
     normalized_tables = list(dict.fromkeys(str(table) for table in tables if table))
     normalized_columns = []
     for item in columns:
@@ -170,6 +204,9 @@ def _finalize(tables: list[str], columns: list[dict[str, str]]) -> dict[str, Any
                 "table": str(item["table"]),
                 "column": str(item["column"]),
                 "type": str(item.get("type") or _column_type(str(item["column"]), "")),
+                "primary_key": bool(item.get("primary_key", False)),
+                "foreign_key": bool(item.get("foreign_key", False)),
+                "foreign_key_target": item.get("foreign_key_target"),
             }
         )
     return {

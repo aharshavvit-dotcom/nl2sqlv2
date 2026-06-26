@@ -4,15 +4,13 @@ Uses mock data to verify the training pipeline runs end-to-end
 without errors.
 """
 
-from __future__ import annotations
-
 import json
 from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 import pytest
 import torch
 
+from dataset_training.curriculum_builder import CurriculumBuilder
 from neural_optimization.training_config import NeuralTrainingConfig
 from neural_optimization.checkpoint_manager import CheckpointManager
 from neural_optimization.training_diagnostics import TrainingDiagnostics
@@ -83,3 +81,25 @@ class TestOptimizedTrainingSmoke:
         assert cfg.model["feed_forward_heads"] is True
         assert cfg.optimizer["name"] == "adamw"
         assert cfg.training["gradient_clipping"] == 1.0
+
+    def test_ordered_dataset_curriculum_reports_not_phased(self):
+        rows = [{"query_ir": {"intent": "show_records"}}]
+        ordered, distribution = CurriculumBuilder().order_examples(rows, mode="ordered_dataset")
+
+        assert ordered == rows
+        assert distribution["_curriculum_mode"] == "ordered_dataset"
+        assert distribution["_phased_epochs"] is False
+
+    def test_phased_epochs_curriculum_fails_without_explicit_fallback(self):
+        with pytest.raises(NotImplementedError, match="phased_epochs curriculum requested but not implemented"):
+            CurriculumBuilder().order_examples([], mode="phased_epochs")
+
+    def test_phased_epochs_curriculum_fallback_must_be_explicit(self):
+        ordered, distribution = CurriculumBuilder().order_examples(
+            [{"query_ir": {"intent": "show_records"}}],
+            mode="phased_epochs",
+            allow_ordered_dataset_fallback=True,
+        )
+
+        assert len(ordered) == 1
+        assert distribution["_curriculum_mode"] == "ordered_dataset"

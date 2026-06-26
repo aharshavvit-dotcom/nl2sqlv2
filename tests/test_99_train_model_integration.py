@@ -18,6 +18,82 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _minimal_bundle(tmp_path: Path) -> Path:
+    from model_bundle.bundle_manifest import BundleManifest, save_manifest
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    manifest = BundleManifest(
+        bundle_id="minimal",
+        status="candidate",
+        datasets=["wikisql"],
+        paths={
+            "retrieval_ir": "retrieval_ir/",
+            "evaluation": "evaluation/",
+            "generic_training": "generic_training/",
+            "configs": "configs/",
+        },
+        metrics={
+            "unsafe_sql_count": 0,
+            "sql_validation_rate": 1.0,
+            "query_ir_validity_rate": 1.0,
+            "unnecessary_join_rate": 0.0,
+            "wrong_table_rate": 0.0,
+        },
+        quality_gate={"passed": True, "required": False, "report_path": "evaluation/model_quality_gate_report.json"},
+    )
+    save_manifest(manifest, bundle / "bundle_manifest.json")
+    retrieval = bundle / "retrieval_ir"
+    retrieval.mkdir()
+    for name in ["example_index.pkl", "schema_index.pkl", "pattern_index.pkl"]:
+        (retrieval / name).write_bytes(b"")
+    (retrieval / "manifest.json").write_text(
+        json.dumps({
+            "source_train_file": "train.jsonl",
+            "total_examples": 1,
+            "by_dataset": {"wikisql": 1},
+            "intent_distribution": {"show_records": 1},
+            "sql_complexity_distribution": {"simple": 1},
+        }),
+        encoding="utf-8",
+    )
+    evaluation = bundle / "evaluation"
+    evaluation.mkdir()
+    (evaluation / "generic_model_evaluation_report.json").write_text(
+        json.dumps({"summary": {}, "is_valid_for_quality_gate": True}),
+        encoding="utf-8",
+    )
+    generic = bundle / "generic_training"
+    generic.mkdir()
+    (generic / "dataset_contribution_report.json").write_text(
+        json.dumps({
+            "datasets_requested": ["wikisql"],
+            "leakage_check_passed": True,
+            "by_dataset": {"wikisql": {"converted_to_queryir": 1}},
+        }),
+        encoding="utf-8",
+    )
+    (generic / "unsupported_sql_report.json").write_text("{}", encoding="utf-8")
+    (bundle / "configs").mkdir()
+    return bundle
+
+
+def _predicted_report(rate: float) -> dict:
+    return {
+        "evaluation_type": "controlled_predicted_sql_execution",
+        "measures_model_predictions": True,
+        "schema_graph_empty": False,
+        "predicted_execution_match_rate": rate,
+        "predicted_execution_success_rate": rate,
+        "predicted_row_count_match_rate": rate,
+        "predicted_safe_sql_rate": 1.0,
+        "predicted_unsafe_sql_count": 0,
+        "unsafe_sql_count": 0,
+        "central_sql_validator_used": True,
+        "passed": rate >= 0.7,
+    }
+
+
 @pytest.fixture(scope="module")
 def smoke_training_result():
     """Run the smoke training command once for all tests in this module."""
@@ -414,8 +490,117 @@ class TestTrainModelIntegration:
                 )
                 break
 
+    def test_predicted_sql_attachment_step_order(self):
+        """34. Predicted-SQL report attachment runs before bundle validation."""
+        sys.path.insert(0, str(ROOT))
+        from orchestration.pipeline_config import build_pipeline_steps
+
+        steps = build_pipeline_steps({
+            "bundle": {"build": True, "validate": True},
+            "execution_aware": {"controlled_predicted_sql": {"enabled": True}},
+        })
+
+        assert steps.index("build_model_bundle") < steps.index("run_controlled_predicted_sql_evaluation")
+        assert steps.index("run_controlled_predicted_sql_evaluation") < steps.index("attach_runtime_evaluation_reports_to_bundle")
+        assert steps.index("attach_runtime_evaluation_reports_to_bundle") < steps.index("validate_model_bundle")
+
+    def test_attach_runtime_evaluation_reports_to_bundle_copies_predicted_sql(self, tmp_path):
+        """35. Attachment step copies controlled predicted-SQL report into candidate/evaluation."""
+        sys.path.insert(0, str(ROOT))
+        from orchestration.pipeline_config import PipelineConfig
+        from orchestration.step_runner import StepRunner
+
+        evaluation_dir = tmp_path / "evaluation"
+        candidate_dir = tmp_path / "candidate"
+        evaluation_dir.mkdir()
+        candidate_dir.mkdir()
+        (candidate_dir / "bundle_manifest.json").write_text("{}", encoding="utf-8")
+        report = {"evaluation_type": "controlled_predicted_sql_execution", "central_sql_validator_used": True}
+        (evaluation_dir / "controlled_predicted_sql_execution_report.json").write_text(
+            json.dumps(report),
+            encoding="utf-8",
+        )
+        config = PipelineConfig(
+            pipeline_name="attach_test",
+            artifacts={"evaluation_dir": str(evaluation_dir)},
+            training={"_integrated_config": {"paths": {"candidate_bundle_dir": str(candidate_dir)}}},
+            steps=["attach_runtime_evaluation_reports_to_bundle"],
+        )
+
+        result = StepRunner().run_step("attach_runtime_evaluation_reports_to_bundle", config)
+
+        assert result["status"] == "completed"
+        assert (candidate_dir / "evaluation" / "controlled_predicted_sql_execution_report.json").exists()
+
+    def test_bundle_validator_prefers_bundle_predicted_sql_report(self, tmp_path, monkeypatch):
+        """36. Validator prefers candidate/evaluation predicted-SQL report over root fallback."""
+        sys.path.insert(0, str(ROOT))
+        import model_bundle.bundle_validator as bundle_validator
+        from model_bundle.bundle_validator import ModelBundleValidator
+
+        bundle = _minimal_bundle(tmp_path)
+        monkeypatch.setattr(bundle_validator, "ROOT", tmp_path)
+        monkeypatch.setattr(bundle_validator, "_validate_retrieval_runtime", lambda *_args, **_kwargs: {"passed": True, "calibration_loaded": False})
+        root_eval = tmp_path / "artifacts" / "evaluation"
+        root_eval.mkdir(parents=True)
+        (root_eval / "controlled_predicted_sql_execution_report.json").write_text(json.dumps(_predicted_report(0.1)), encoding="utf-8")
+        (bundle / "evaluation" / "controlled_predicted_sql_execution_report.json").write_text(json.dumps(_predicted_report(0.9)), encoding="utf-8")
+
+        result = ModelBundleValidator().validate(bundle)
+
+        proof = result["lifecycle_proof"]
+        assert proof["controlled_predicted_sql_report_location"] == "bundle"
+        assert proof["controlled_predicted_sql_execution_match_rate"] == 0.9
+
+    def test_bundle_validator_root_fallback_warns(self, tmp_path, monkeypatch):
+        """37. Validator reads root predicted-SQL fallback and warns when not attached."""
+        sys.path.insert(0, str(ROOT))
+        import model_bundle.bundle_validator as bundle_validator
+        from model_bundle.bundle_validator import ModelBundleValidator
+
+        bundle = _minimal_bundle(tmp_path)
+        monkeypatch.setattr(bundle_validator, "ROOT", tmp_path)
+        monkeypatch.setattr(bundle_validator, "_validate_retrieval_runtime", lambda *_args, **_kwargs: {"passed": True, "calibration_loaded": False})
+        root_eval = tmp_path / "artifacts" / "evaluation"
+        root_eval.mkdir(parents=True)
+        (root_eval / "controlled_predicted_sql_execution_report.json").write_text(json.dumps(_predicted_report(0.5)), encoding="utf-8")
+
+        result = ModelBundleValidator().validate(bundle)
+
+        assert result["lifecycle_proof"]["controlled_predicted_sql_report_location"] == "root_artifacts"
+        assert "controlled_predicted_sql_report_not_attached_to_bundle" in result["warnings"]
+
+    def test_bundle_validator_required_attached_mode_fails_on_root_only(self, tmp_path, monkeypatch):
+        """38. Required attachment mode fails when only root fallback exists."""
+        sys.path.insert(0, str(ROOT))
+        import model_bundle.bundle_validator as bundle_validator
+        from model_bundle.bundle_validator import ModelBundleValidator
+
+        bundle = _minimal_bundle(tmp_path)
+        monkeypatch.setattr(bundle_validator, "ROOT", tmp_path)
+        monkeypatch.setattr(bundle_validator, "_validate_retrieval_runtime", lambda *_args, **_kwargs: {"passed": True, "calibration_loaded": False})
+        root_eval = tmp_path / "artifacts" / "evaluation"
+        root_eval.mkdir(parents=True)
+        (root_eval / "controlled_predicted_sql_execution_report.json").write_text(json.dumps(_predicted_report(0.8)), encoding="utf-8")
+
+        result = ModelBundleValidator().validate(
+            bundle,
+            config={
+                "execution_aware": {
+                    "controlled_predicted_sql": {
+                        "enabled": True,
+                        "required_for_full_training": True,
+                        "require_report_attached_to_bundle": True,
+                    }
+                }
+            },
+        )
+
+        assert result["passed"] is False
+        assert "controlled_predicted_sql_report_required_but_not_attached_to_bundle" in result["blocking_issues"]
+
     def test_production_ready_requires_all_critical_fields(self):
-        """34. production_ready in lifecycle proof requires all critical conditions."""
+        """39. production_ready in lifecycle proof requires all critical conditions."""
         sys.path.insert(0, str(ROOT))
         from model_bundle.bundle_builder import ModelBundleBuilder
 

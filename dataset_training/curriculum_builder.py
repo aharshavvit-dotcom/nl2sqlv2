@@ -32,7 +32,7 @@ class CurriculumBuilder:
         examples: list[dict[str, Any]],
         phase_order: list[str] | None = None,
         mode: str = "ordered_dataset",
-        allow_ordered_dataset_fallback: bool = True,
+        allow_ordered_dataset_fallback: bool = False,
     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
         # Guard: phased_epochs is not yet implemented
         if mode == "phased_epochs":

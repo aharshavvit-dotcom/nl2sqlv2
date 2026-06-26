@@ -50,6 +50,7 @@ MODEL_INPUT_KEYS = [
     "filter_column_mask",
     "schema_link_scores",
     "relation_type_ids",
+    "schema_relation_type_ids",
 ]
 
 

@@ -109,6 +109,7 @@ The bundle contains:
 - Adaptive ranker weights (if enabled)
 - Evaluation reports
 - Classification and confusion-matrix reports
+- Controlled predicted-SQL execution reports
 - Calibration, percentile, latency, and schema-drift baselines
 - Champion/challenger statistical comparison
 - Quality gate results
@@ -129,6 +130,7 @@ Primary governance artifacts are written to:
 artifacts/evaluation/classification_metrics_report.json
 artifacts/evaluation/confusion_matrices/
 artifacts/evaluation/calibration_report.json
+artifacts/evaluation/controlled_predicted_sql_execution_report.json
 artifacts/evaluation/champion_challenger_statistical_report.json
 artifacts/generic_training/split_distribution_report.json
 ```
@@ -152,6 +154,13 @@ Every `bundle_manifest.json` includes a `lifecycle_proof` section that records:
 | `calibration_report_available` | Calibration report exists in bundle |
 | `calibration_loaded_in_runtime_smoke` | Calibration was loaded during runtime smoke test |
 | `conformal_threshold_available` | Conformal abstention threshold was computed |
+| `controlled_predicted_sql_report_attached_to_bundle` | Controlled predicted-SQL report was copied into the candidate bundle |
+| `controlled_predicted_sql_report_location` | Whether that report came from `bundle`, `root_artifacts`, or is `missing` |
+| `central_sql_validator_used` | Predicted SQL was checked by the central SQL validator before execution |
+| `predicted_safe_sql_rate` | Share of predicted SQL accepted as safe SELECT-only SQL |
+| `predicted_execution_success_rate` | Share of predicted SQL executions that completed successfully |
+| `predicted_row_count_match_rate` | Share of predicted SQL results with matching row counts |
+| `evaluation_stability_interpretation` | Explains whether seed metrics are evaluation-only stability or full training variance |
 | `quality_gate_passed` | Quality gate passed |
 | `bundle_runtime_smoke_passed` | Bundle runtime smoke test passed |
 | `production_ready` | All required fields are True — bundle is production-safe |
@@ -294,6 +303,8 @@ For detailed internal commands (individual training steps, evaluation suites, ca
 
 The `simple_query_pass` metric is **behavior-derived** — it is computed from the actual gold and predicted QueryIR structures, not from a magic metric key. A query qualifies as "simple" if the gold intent is one of `{show_records, count_records, simple_filter}` with no joins. The pass condition checks: intent match, base_table match, no predicted joins, and SQL validation. Non-simple queries receive `None` and are excluded from rate calculations.
 
+Production quality gates require the explicit `simple_query_pass_rate_production` threshold and do not fall back from `intent_accuracy_rate` when `simple_query_pass_rate` is missing. Smoke and developer runs may use the lower smoke threshold for fast feedback, but production mode fails closed.
+
 ### Multi-Seed Evaluation
 
 Two modes exist:
@@ -305,6 +316,8 @@ Two modes exist:
 
 True training variance (`is_valid_for_training_variance_governance=true`) requires full re-training per seed, which is optional and disabled by default.
 
+Evaluation-only stability reports now include `seed_runs`, the model source used for each seed, `stochastic_inference_enabled`, `stochastic_components`, and `evaluation_stability_interpretation` so the report cannot be mistaken for multi-seed re-training evidence.
+
 ### Controlled Fixture Evaluation
 
 Two types:
@@ -314,9 +327,11 @@ Two types:
 | Gold SQL validation | `controlled_gold_sql_fixture_validation` | `false` | Validates gold SQL executes correctly on fixture DB |
 | Predicted SQL execution | `controlled_predicted_sql_execution` | `true` | Loads model, generates predictions, compares with gold results |
 
+Predicted SQL is validated by the central SQL validator before any fixture execution. Production training requires `controlled_predicted_sql_execution_report.json` to be attached under the candidate bundle `evaluation/` directory before bundle validation.
+
 ### Relation-Aware Schema Attention
 
-Experimental RAT-SQL-style learnable bias per relation type. Disabled by default (`relation_aware_attention.enabled: false`). Ten relation types: `same_table`, `table_has_column`, `column_belongs_to_table`, `fk_to_pk`, `pk_to_fk`, `primary_key`, `foreign_key_column`, `same_column_name`, `same_data_type`, `unrelated`. Not used for production behavior unless explicitly enabled and validated.
+Experimental RAT-SQL-style learnable bias per relation type. Disabled by default (`relation_aware_attention.enabled: false`). Ten relation types: `same_table`, `table_has_column`, `column_belongs_to_table`, `fk_to_pk`, `pk_to_fk`, `primary_key`, `foreign_key_column`, `same_column_name`, `same_data_type`, `unrelated`. When enabled, explicit schema relation matrices preserve table, column, primary-key, and foreign-key links. Not used for production behavior unless explicitly enabled and validated.
 
 ### Curriculum Modes
 
@@ -324,6 +339,8 @@ Experimental RAT-SQL-style learnable bias per relation type. Disabled by default
 |:---|:---|
 | `ordered_dataset` | Current default: examples ordered by curriculum phase within a single pass |
 | `phased_epochs` | Future: per-epoch phase gating (not implemented in this pass) |
+
+`phased_epochs` must be implemented explicitly before it can be reported as active. Ordered-dataset fallback is disabled by default in optimized training and must be intentionally allowed in config.
 
 ### Runtime Debug Fields
 

@@ -20,6 +20,7 @@ class ModelQualityGate:
             **(thresholds.get("classification_metrics") or {}),
             **(thresholds.get("calibration_metrics") or {}),
         }
+        mode = _quality_gate_mode(evaluation_report)
         metrics, present = self._extract_metrics(evaluation_report)
         failed_checks: list[dict[str, Any]] = []
         warnings: list[str] = []
@@ -32,22 +33,41 @@ class ModelQualityGate:
 
         for key, expected in minimums.items():
             metric_key = _threshold_metric_name(key)
+            if isinstance(expected, dict):
+                expected = _threshold_value_for_mode(expected, mode)
+                if expected is None:
+                    warnings.append(f"Skipping {key}; no threshold configured for mode={mode}.")
+                    continue
             if metric_key == "model_promotion_min_improvement" and metric_key not in metrics:
                 warnings.append("Skipping model_promotion_min_improvement; it is a promotion policy threshold, not an evaluation metric.")
                 continue
             if metric_key == "execution_match_rate" and not execution_status.get("enabled") and not execution_status.get("required"):
                 warnings.append("Execution-aware evaluation disabled by config; execution_match_rate threshold skipped.")
                 continue
-            # _production suffix thresholds are aspirational warnings, not blocking
             if key.endswith("_production"):
                 base_metric = _threshold_metric_name(key.removesuffix("_production"))
                 actual = metrics.get(base_metric)
-                if actual is not None and isinstance(actual, (int, float)):
-                    if actual < expected:
-                        warnings.append(
-                            f"production_threshold_warning: {base_metric}={actual:.4f} "
-                            f"below production target {expected}"
-                        )
+                if mode in {"production", "full"} and base_metric == "simple_query_pass_rate":
+                    if actual is None:
+                        missing_metrics.append(base_metric)
+                        failed_checks.append({
+                            "metric": key,
+                            "actual": "missing",
+                            "expected": expected,
+                            "comparison": ">=",
+                        })
+                    elif isinstance(actual, (int, float)) and actual < expected:
+                        failed_checks.append({
+                            "metric": key,
+                            "actual": actual,
+                            "expected": expected,
+                            "comparison": ">=",
+                        })
+                elif actual is not None and isinstance(actual, (int, float)) and actual < expected:
+                    warnings.append(
+                        f"production_threshold_warning: {base_metric}={actual:.4f} "
+                        f"below production target {expected}"
+                    )
                 continue
             actual = metrics.get(metric_key)
             if actual is None:
@@ -130,6 +150,45 @@ class ModelQualityGate:
         elif evaluation_report.get("controlled_fixture_required", False):
             warnings.append("Controlled fixture evaluation is required but no report was found")
 
+        controlled_predicted = evaluation_report.get("controlled_predicted_sql_execution") or {}
+        if isinstance(controlled_predicted, dict) and controlled_predicted:
+            if controlled_predicted.get("error") and evaluation_report.get("controlled_predicted_sql_required", False):
+                failed_checks.append({
+                    "metric": "controlled_predicted_sql_execution",
+                    "actual": controlled_predicted.get("error"),
+                    "expected": "report without error",
+                    "comparison": "==",
+                })
+            if controlled_predicted.get("central_sql_validator_used") is False:
+                target = failed_checks if evaluation_report.get("controlled_predicted_sql_required", False) else warnings
+                message = "controlled_predicted_sql_missing_central_sql_validator"
+                if target is failed_checks:
+                    failed_checks.append({
+                        "metric": message,
+                        "actual": False,
+                        "expected": True,
+                        "comparison": "==",
+                    })
+                else:
+                    warnings.append(message)
+            if (
+                evaluation_report.get("controlled_predicted_sql_required", False)
+                and int(controlled_predicted.get("predicted_unsafe_sql_count", controlled_predicted.get("unsafe_sql_count", 0)) or 0) > 0
+            ):
+                failed_checks.append({
+                    "metric": "controlled_predicted_sql_unsafe_sql_count",
+                    "actual": controlled_predicted.get("predicted_unsafe_sql_count", controlled_predicted.get("unsafe_sql_count", 0)),
+                    "expected": 0,
+                    "comparison": "<=",
+                })
+        elif evaluation_report.get("controlled_predicted_sql_required", False):
+            failed_checks.append({
+                "metric": "controlled_predicted_sql_execution",
+                "actual": "missing",
+                "expected": "present",
+                "comparison": "exists",
+            })
+
         return {
             "passed": not failed_checks,
             "failed_checks": failed_checks,
@@ -155,9 +214,14 @@ class ModelQualityGate:
         _copy_metric(metrics, present, "sql_validation_rate", test_summary, report)
         if "simple_query_pass_rate" in test_summary or "simple_query_pass_rate" in report:
             _copy_metric(metrics, present, "simple_query_pass_rate", test_summary, report)
-        elif "intent_accuracy_rate" in test_summary:
+        elif (
+            _quality_gate_mode(report) not in {"production", "full"}
+            and bool(report.get("allow_intent_accuracy_simple_query_fallback", True))
+            and "intent_accuracy_rate" in test_summary
+        ):
             metrics["simple_query_pass_rate"] = test_summary["intent_accuracy_rate"]
             present.add("simple_query_pass_rate")
+            metrics["simple_query_pass_rate_fallback_used"] = True
         _copy_metric(metrics, present, "no_select_star_rate", report)
         _copy_metric(metrics, present, "unsafe_sql_count", summary, report)
         _copy_metric(metrics, present, "unnecessary_join_rate", test_summary, summary, report)
@@ -173,6 +237,22 @@ class ModelQualityGate:
         _copy_metric(metrics, present, "sql_structure_match_rate", summary, report)
         _copy_metric(metrics, present, "execution_match_rate", summary, report)
         _copy_metric(metrics, present, "model_promotion_min_improvement", report)
+        predicted_sql = report.get("controlled_predicted_sql_execution") or {}
+        if isinstance(predicted_sql, dict) and predicted_sql:
+            predicted_metric_map = {
+                "controlled_predicted_sql_execution_match_rate": "predicted_execution_match_rate",
+                "controlled_predicted_sql_execution_success_rate": "predicted_execution_success_rate",
+                "controlled_predicted_sql_row_count_match_rate": "predicted_row_count_match_rate",
+                "controlled_predicted_sql_safe_sql_rate": "predicted_safe_sql_rate",
+                "controlled_predicted_sql_unsafe_sql_count": "predicted_unsafe_sql_count",
+            }
+            for output_name, source_name in predicted_metric_map.items():
+                value = predicted_sql.get(source_name)
+                if value is None and output_name.endswith("_unsafe_sql_count"):
+                    value = predicted_sql.get("unsafe_sql_count")
+                if isinstance(value, (int, float, bool)):
+                    metrics[output_name] = value
+                    present.add(output_name)
         classification_map = {
             "intent_accuracy": ("intent", "accuracy"),
             "intent_macro_f1": ("intent", "macro_f1"),
@@ -286,6 +366,29 @@ def _threshold_metric_name(key: str) -> str:
     if key.endswith("_max"):
         return key[:-4]
     return key
+
+
+def _quality_gate_mode(report: dict[str, Any]) -> str:
+    mode = str(
+        report.get("quality_gate_mode")
+        or report.get("mode")
+        or report.get("training_mode")
+        or ""
+    ).lower()
+    if mode in {"production", "full", "smoke", "dev", "development"}:
+        return "dev" if mode == "development" else mode
+    pipeline_name = str(report.get("pipeline_name") or report.get("pipeline") or "").lower()
+    if "smoke" in pipeline_name:
+        return "smoke"
+    return "dev"
+
+
+def _threshold_value_for_mode(threshold: dict[str, Any], mode: str) -> Any:
+    if mode in {"production", "full"}:
+        return threshold.get("production_min", threshold.get("min"))
+    if mode == "smoke":
+        return threshold.get("smoke_min", threshold.get("warning_min", threshold.get("min")))
+    return threshold.get("warning_min", threshold.get("smoke_min", threshold.get("min")))
 
 
 def _copy_metric(metrics: dict[str, Any], present: set[str], name: str, *sources: dict[str, Any]) -> None:

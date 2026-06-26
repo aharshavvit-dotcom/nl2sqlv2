@@ -46,6 +46,7 @@ def build_pipeline_steps(config: dict[str, Any]) -> list[str]:
         controlled_predicted = execution_aware.get("controlled_predicted_sql") or {}
         if controlled_predicted.get("enabled", False):
             steps.append("run_controlled_predicted_sql_evaluation")
+            steps.append("attach_runtime_evaluation_reports_to_bundle")
         if bundle.get("validate", True):
             steps.append("validate_model_bundle")
         if bundle.get("promote_if_quality_gate_passes", False):

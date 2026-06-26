@@ -130,6 +130,8 @@ This command must generate real model predictions by loading a bundle or artifac
 
 For debugging only, pass `--allow-gold-replay-baseline`. Reports created this way are labeled with `evaluation_mode = explicit_gold_replay_baseline` and `is_valid_for_quality_gate = false`; quality gates and promotion must not consume them as model-performance evidence.
 
+When evaluating a candidate bundle, pass `--model-bundle-dir artifacts/model_bundle/candidate` so runtime reports, controlled predicted-SQL reports, and bundle validation all describe the same artifact.
+
 ### Execution-Aware Evaluation
 ```bash
 python training/run_execution_aware_evaluation.py \
@@ -165,6 +167,11 @@ The `bundle_manifest.json` `lifecycle_proof` section records:
 - `generic_eval_predictor_used` — a real predictor callable was used
 - `calibration_report_available`, `conformal_threshold_available` — calibration artifacts exist
 - `calibration_loaded_in_runtime_smoke` — calibration loaded during runtime smoke test
+- `controlled_predicted_sql_report_attached_to_bundle` — controlled predicted-SQL report was copied into the candidate bundle
+- `controlled_predicted_sql_report_location` — `bundle`, `root_artifacts`, or `missing`
+- `central_sql_validator_used` — predicted SQL used the shared validator before fixture execution
+- `predicted_safe_sql_rate`, `predicted_execution_success_rate`, `predicted_row_count_match_rate` — controlled predicted-SQL execution summary
+- `evaluation_stability_interpretation` — explains whether seed metrics are evaluation-only stability or full training variance
 - `production_ready` — all required fields are True
 
 Quality gates enforce: `real_predictions_generated > 0`, `predictor_used = true`, `rows_evaluated > 0`. Zero-prediction reports are always rejected.
@@ -185,11 +192,14 @@ python training/run_model_quality_gate.py \
   --output artifacts/evaluation/model_quality_gate_report.json
 ```
 
+Production mode enforces the production simple-query threshold and requires an explicit `simple_query_pass_rate`; it does not substitute `intent_accuracy_rate`. Smoke and developer modes may use the lower smoke threshold for fast feedback.
+
 ### Select Best Model
 ```bash
 python training/select_best_model.py \
   --evaluation-report artifacts/evaluation/generic_model_evaluation_report.json \
   --execution-report artifacts/evaluation/execution_aware_evaluation_report.json \
+  --controlled-predicted-sql-report artifacts/evaluation/controlled_predicted_sql_execution_report.json \
   --thresholds evaluation/model_quality_thresholds.yaml \
   --output artifacts/evaluation/model_selection_report.json
 ```
@@ -307,6 +317,8 @@ seeds:
 
 This re-runs the evaluation step per seed and computes metric variance. It measures **prediction stability**, not training variance. The report field `is_valid_for_training_variance_governance` will be `false`. Full per-seed re-training is a future enhancement.
 
+The variance report records `seed_runs`, model source, `stochastic_inference_enabled`, `stochastic_components`, and `evaluation_stability_interpretation`. Model selection treats these warnings as evaluation-stability signals unless the report explicitly comes from full per-seed re-training.
+
 ---
 
 ## Controlled Fixture Evaluation
@@ -315,7 +327,9 @@ This re-runs the evaluation step per seed and computes metric variance. It measu
 Validates gold SQL executes correctly on a deterministic in-memory SQLite database. Configured via `execution_aware.controlled_fixtures.enabled: true`.
 
 ### Predicted SQL Execution (experimental)
-Loads the candidate model bundle and runs predictions against fixture questions. Configured via `execution_aware.controlled_predicted_sql.enabled: true`. Non-blocking by default.
+Loads the candidate model bundle and runs predictions against fixture questions. Configured via `execution_aware.controlled_predicted_sql.enabled: true`.
+
+Predicted SQL is passed through the central SQL validator before execution. The integrated production pipeline writes `controlled_predicted_sql_execution_report.json`, copies it into the candidate bundle `evaluation/` directory, and can require that attached report before bundle validation. Standalone developer runs are advisory unless the config or promotion policy sets controlled predicted-SQL checks as required.
 
 ---
 
@@ -330,5 +344,4 @@ model:
     bias_init: 0.0
 ```
 
-This adds a lightweight RAT-SQL-style learnable bias per relation type to schema attention. **Not production behavior** unless explicitly enabled and validated via controlled experiments.
-
+This adds a lightweight RAT-SQL-style learnable bias per relation type to schema attention. When enabled, the dataset emits explicit schema relation matrices for table, column, primary-key, and foreign-key relationships instead of relying only on question-schema role tags. **Not production behavior** unless explicitly enabled and validated via controlled experiments.

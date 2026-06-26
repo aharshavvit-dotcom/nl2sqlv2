@@ -207,6 +207,22 @@ class StepRunner:
             outputs=[str(candidate / "bundle_validation_report.json")],
         )
 
+    def _contract_attach_runtime_evaluation_reports_to_bundle(self, config: PipelineConfig) -> StepContract:
+        integrated = config.training.get("_integrated_config") or {}
+        controlled_predicted = (integrated.get("execution_aware") or {}).get("controlled_predicted_sql") or {}
+        required = bool(
+            controlled_predicted.get("enabled", False)
+            and controlled_predicted.get("required_for_full_training", False)
+            and controlled_predicted.get("require_report_attached_to_bundle", True)
+        )
+        candidate = _candidate_bundle_dir(config)
+        return StepContract(
+            name="attach_runtime_evaluation_reports_to_bundle",
+            required=required,
+            inputs=[str(candidate / "bundle_manifest.json")],
+            outputs=[str(candidate / "evaluation" / "controlled_predicted_sql_execution_report.json")],
+        )
+
     def _contract_promote_model_bundle(self, config: PipelineConfig) -> StepContract:
         should_promote = (config.training.get("_integrated_config") or {}).get("bundle", {}).get("promote_if_quality_gate_passes", False)
         if not should_promote:
@@ -443,10 +459,11 @@ class StepRunner:
     def _contract_run_controlled_predicted_sql_evaluation(self, config: PipelineConfig) -> StepContract:
         integrated = config.training.get("_integrated_config") or {}
         controlled_predicted = (integrated.get("execution_aware") or {}).get("controlled_predicted_sql") or {}
+        output = Path(_artifacts(config)["evaluation_dir"]) / "controlled_predicted_sql_execution_report.json"
         if controlled_predicted.get("enabled", False):
             return StepContract(
                 name="run_controlled_predicted_sql_evaluation", required=False,
-                outputs=[str(ROOT / "artifacts/evaluation/controlled_predicted_sql_execution_report.json")],
+                outputs=[str(output)],
             )
         return StepContract(
             name="run_controlled_predicted_sql_evaluation",
@@ -458,14 +475,15 @@ class StepRunner:
         from training.run_execution_aware_evaluation import evaluate_controlled_predicted_sql
 
         integrated = config.training.get("_integrated_config") or {}
+        artifacts = _artifacts(config)
         controlled_predicted = (integrated.get("execution_aware") or {}).get("controlled_predicted_sql") or {}
-        bundle_dir = ROOT / (integrated.get("paths", {}).get("candidate_bundle_dir", "artifacts/model_bundle/candidate"))
+        bundle_dir = _candidate_bundle_dir(config)
 
         report = evaluate_controlled_predicted_sql(
             model_artifact_dir=bundle_dir,
             config=controlled_predicted,
         )
-        output = ROOT / "artifacts/evaluation/controlled_predicted_sql_execution_report.json"
+        output = Path(artifacts["evaluation_dir"]) / "controlled_predicted_sql_execution_report.json"
         output.parent.mkdir(parents=True, exist_ok=True)
         write_json(output, report)
 
@@ -484,15 +502,68 @@ class StepRunner:
             "status": "completed",
             "summary": {
                 "controlled_predicted_sql_eval": True,
+                "report_path": str(output),
                 "measures_model_predictions": True,
                 "cases_total": report.get("cases_total", 0),
                 "predictions_generated": report.get("predictions_generated", 0),
                 "predicted_execution_match_rate": report.get("predicted_execution_match_rate", 0.0),
                 "predicted_row_count_match_rate": report.get("predicted_row_count_match_rate", 0.0),
+                "predicted_safe_sql_rate": report.get("predicted_safe_sql_rate", 0.0),
                 "unsafe_sql_count": report.get("unsafe_sql_count", 0),
                 "passed": report.get("passed", False),
             },
         }
+
+    def _run_attach_runtime_evaluation_reports_to_bundle(self, config: PipelineConfig) -> dict[str, Any]:
+        import shutil
+
+        integrated = config.training.get("_integrated_config") or {}
+        controlled_predicted = (integrated.get("execution_aware") or {}).get("controlled_predicted_sql") or {}
+        artifacts = _artifacts(config)
+        candidate = _candidate_bundle_dir(config)
+        evaluation_dir = Path(artifacts["evaluation_dir"])
+        bundle_eval_dir = candidate / "evaluation"
+        bundle_eval_dir.mkdir(parents=True, exist_ok=True)
+
+        report_names = [
+            "controlled_predicted_sql_execution_report.json",
+            "controlled_fixture_evaluation_report.json",
+            "multi_seed_variance_report.json",
+            "execution_aware_evaluation_report.json",
+        ]
+        attached: list[dict[str, str]] = []
+        missing: list[str] = []
+        for name in report_names:
+            source = evaluation_dir / name
+            if not source.exists():
+                missing.append(name)
+                continue
+            target = bundle_eval_dir / name
+            shutil.copy2(source, target)
+            attached.append({"name": name, "source": str(source), "bundle_path": str(target)})
+
+        predicted_attached = any(item["name"] == "controlled_predicted_sql_execution_report.json" for item in attached)
+        required = bool(
+            controlled_predicted.get("enabled", False)
+            and controlled_predicted.get("required_for_full_training", False)
+            and controlled_predicted.get("require_report_attached_to_bundle", True)
+        )
+        summary = {
+            "attached_reports": attached,
+            "missing_optional_reports": missing,
+            "controlled_predicted_sql_report_attached_to_bundle": predicted_attached,
+            "controlled_predicted_sql_report_source": str(evaluation_dir / "controlled_predicted_sql_execution_report.json"),
+            "controlled_predicted_sql_report_bundle_path": str(bundle_eval_dir / "controlled_predicted_sql_execution_report.json"),
+        }
+        if required and not predicted_attached:
+            return {
+                "status": "failed",
+                "error": "controlled_predicted_sql_report_required_but_missing",
+                "summary": summary,
+            }
+        if controlled_predicted.get("enabled", False) and not predicted_attached:
+            summary["warning"] = "controlled_predicted_sql_report_missing_optional"
+        return {"status": "completed", "summary": summary}
 
     def _run_evaluate_generic_models(self, config: PipelineConfig) -> dict[str, Any]:
         from training.evaluate_generic_models import evaluate_generic_models
@@ -503,7 +574,7 @@ class StepRunner:
         args = argparse.Namespace(
             test=ROOT / "data/processed/generic_ir_test.jsonl",
             unseen_db_test=ROOT / "data/processed/generic_ir_unseen_db_test.jsonl",
-            model_bundle_dir=None,
+            model_bundle_dir=Path(artifacts["bundle_dir"]) if artifacts.get("bundle_dir") else None,
             retrieval_model_dir=Path(artifacts["retrieval_model_dir"]),
             neural_model_dir=Path(artifacts["neural_model_dir"]),
             output=Path(artifacts["evaluation_dir"]) / "generic_model_evaluation_report.json",
@@ -524,14 +595,25 @@ class StepRunner:
         from model_selection.model_selector import ModelSelector
         from model_selection.selection_reporter import SelectionReporter
         from quality_gates.thresholds import load_thresholds
-        from training.select_best_model import _metrics, _read
+        from training.select_best_model import _attach_predicted_sql_metrics, _metrics, _read
 
         artifacts = _artifacts(config)
-        metrics = _metrics(
-            _read(Path(artifacts["evaluation_dir"]) / "generic_model_evaluation_report.json"),
-            _read(Path(artifacts["evaluation_dir"]) / "execution_aware_evaluation_report.json"),
+        controlled_predicted_sql_report = _read(Path(artifacts["evaluation_dir"]) / "controlled_predicted_sql_execution_report.json")
+        metrics = _attach_predicted_sql_metrics(
+            _metrics(
+                _read(Path(artifacts["evaluation_dir"]) / "generic_model_evaluation_report.json"),
+                _read(Path(artifacts["evaluation_dir"]) / "execution_aware_evaluation_report.json"),
+            ),
+            controlled_predicted_sql_report,
         )
-        candidate = ModelCandidate("adaptive_router", str(ROOT / "artifacts"), "adaptive_router", metrics, datetime.now(timezone.utc).replace(microsecond=0).isoformat(), {})
+        candidate = ModelCandidate(
+            "adaptive_router",
+            str(ROOT / "artifacts"),
+            "adaptive_router",
+            metrics,
+            datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            {"controlled_predicted_sql_report": controlled_predicted_sql_report},
+        )
         report = ModelSelector().select_best([candidate], load_thresholds(ROOT / "evaluation/model_quality_thresholds.yaml"))
         SelectionReporter().write(Path(artifacts["evaluation_dir"]) / "model_selection_report.json", report)
         return {"status": "completed", "summary": {"selected": bool(report.get("selected_model")), "blocking": report.get("blocking_issues", [])}}
@@ -695,6 +777,11 @@ class StepRunner:
         if not eval_path.exists():
             return {"status": "failed", "error": f"Missing evaluation report: {eval_path}"}
         eval_report = json.loads(eval_path.read_text(encoding="utf-8"))
+        gate_cfg = integrated.get("quality_gate", {}) or {}
+        gate_mode = str(gate_cfg.get("mode") or ("production" if gate_cfg.get("required", False) and not config.smoke else "smoke"))
+        eval_report["quality_gate_mode"] = gate_mode
+        eval_report["pipeline_name"] = config.pipeline_name
+        eval_report["allow_intent_accuracy_simple_query_fallback"] = gate_mode not in {"production", "full"}
         execution_path = Path(artifacts["evaluation_dir"]) / "execution_aware_evaluation_report.json"
         if execution_path.exists():
             execution_report = json.loads(execution_path.read_text(encoding="utf-8"))
@@ -712,6 +799,18 @@ class StepRunner:
                 "enabled": False,
                 "required": required,
                 "reason": "disabled by config" if not required else f"missing report: {execution_path}",
+            }
+        predicted_sql_path = Path(artifacts["evaluation_dir"]) / "controlled_predicted_sql_execution_report.json"
+        controlled_predicted_cfg = (integrated.get("execution_aware") or {}).get("controlled_predicted_sql") or {}
+        if predicted_sql_path.exists():
+            eval_report["controlled_predicted_sql_execution"] = json.loads(predicted_sql_path.read_text(encoding="utf-8"))
+            eval_report["controlled_predicted_sql_required"] = bool(
+                controlled_predicted_cfg.get("required_for_full_training", False)
+            )
+        elif controlled_predicted_cfg.get("enabled", False):
+            eval_report["controlled_predicted_sql_execution"] = {
+                "available": False,
+                "required": bool(controlled_predicted_cfg.get("required_for_full_training", False)),
             }
         contribution_path = ROOT / "artifacts/generic_training/dataset_contribution_report.json"
         eval_report["dataset_contribution_report_required"] = True
@@ -761,7 +860,7 @@ class StepRunner:
         from model_bundle.bundle_validator import ModelBundleValidator
 
         candidate = _candidate_bundle_dir(config)
-        result = ModelBundleValidator().validate(candidate)
+        result = ModelBundleValidator().validate(candidate, config=config.training.get("_integrated_config") or {})
         (candidate / "bundle_validation_report.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
         manifest_path = candidate / "bundle_manifest.json"
         if manifest_path.exists() and result.get("lifecycle_proof"):
@@ -801,6 +900,10 @@ def _artifacts(config: PipelineConfig) -> dict[str, str]:
         "evaluation_dir": str(ROOT / "artifacts/work/evaluation"),
         "schema_dir": str(ROOT / "artifacts/schema"),
         "connected_db_regression_dir": str(ROOT / "artifacts/connected_db_regressions"),
+        "candidate_bundle_dir": str(ROOT / "artifacts/model_bundle/candidate"),
+        "current_bundle_dir": str(ROOT / "artifacts/model_bundle/current"),
+        "bundle_dir": "",
+        "calibration_report_path": str(ROOT / "artifacts/work/evaluation/calibration_report.json"),
     }
     return {**defaults, **{key: str(value) for key, value in config.artifacts.items()}}
 

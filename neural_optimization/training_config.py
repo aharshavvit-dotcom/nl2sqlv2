@@ -34,6 +34,24 @@ _DEFAULT_MODEL = {
     "max_candidate_tokens": 16,
     "max_tables": 64,
     "max_columns": 256,
+    "relation_aware_attention": {
+        "enabled": False,
+        "relation_bias_mode": "schema_pairwise_relation_bias",
+        "pairwise_relation_matrix": True,
+        "relation_types": [
+            "same_table",
+            "table_has_column",
+            "column_belongs_to_table",
+            "fk_to_pk",
+            "pk_to_fk",
+            "primary_key",
+            "foreign_key_column",
+            "same_column_name",
+            "same_data_type",
+            "unrelated",
+        ],
+        "bias_init": 0.0,
+    },
 }
 
 _DEFAULT_OPTIMIZER = {

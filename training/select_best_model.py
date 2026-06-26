@@ -39,10 +39,30 @@ def _metrics(evaluation: dict, execution: dict) -> dict:
     return metrics
 
 
+def _attach_predicted_sql_metrics(metrics: dict, predicted: dict) -> dict:
+    if not predicted:
+        return metrics
+    metrics.update({
+        "controlled_predicted_sql_execution_match_rate": predicted.get(
+            "predicted_execution_match_rate",
+            predicted.get("predicted_result_value_match_rate", 0.0),
+        ),
+        "controlled_predicted_sql_execution_success_rate": predicted.get("predicted_execution_success_rate", 0.0),
+        "controlled_predicted_sql_row_count_match_rate": predicted.get("predicted_row_count_match_rate", 0.0),
+        "controlled_predicted_sql_safe_sql_rate": predicted.get("predicted_safe_sql_rate", 0.0),
+        "controlled_predicted_sql_unsafe_sql_count": predicted.get(
+            "unsafe_sql_count",
+            predicted.get("predicted_unsafe_sql_count", 0),
+        ),
+    })
+    return metrics
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Select the best model candidate from evaluation reports.")
     parser.add_argument("--evaluation-report", type=Path, default=ROOT / "artifacts" / "evaluation" / "generic_model_evaluation_report.json")
     parser.add_argument("--execution-report", type=Path, default=ROOT / "artifacts" / "evaluation" / "execution_aware_evaluation_report.json")
+    parser.add_argument("--controlled-predicted-sql-report", type=Path, default=ROOT / "artifacts" / "evaluation" / "controlled_predicted_sql_execution_report.json")
     parser.add_argument("--thresholds", type=Path, default=ROOT / "evaluation" / "model_quality_thresholds.yaml")
     parser.add_argument("--output", type=Path, default=ROOT / "artifacts" / "evaluation" / "model_selection_report.json")
     return parser.parse_args()
@@ -50,7 +70,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    metrics = _metrics(_read(args.evaluation_report), _read(args.execution_report))
+    controlled_predicted_sql_report = _read(args.controlled_predicted_sql_report)
+    metrics = _attach_predicted_sql_metrics(
+        _metrics(_read(args.evaluation_report), _read(args.execution_report)),
+        controlled_predicted_sql_report,
+    )
     # Attach multi-seed variance report if available
     variance_path = args.evaluation_report.parent / "multi_seed_variance_report.json"
     multi_seed_report = _read(variance_path) if variance_path.exists() else None
@@ -63,6 +87,7 @@ def main() -> int:
         metadata={
             "evaluation_report": str(args.evaluation_report),
             "execution_report": str(args.execution_report),
+            "controlled_predicted_sql_report": controlled_predicted_sql_report,
             "multi_seed_report": multi_seed_report,
         },
     )

@@ -118,6 +118,9 @@ def config_to_pipeline_config(config: dict[str, Any], steps: list[str]) -> dict[
     self_training = config.get("self_training", {})
     evaluation = config.get("evaluation", {})
     quality_gate = config.get("quality_gate", {})
+    evaluation_dir = ROOT / evaluation.get("output_dir", "artifacts/evaluation")
+    candidate_bundle_dir = ROOT / paths.get("candidate_bundle_dir", "artifacts/model_bundle/candidate")
+    current_bundle_dir = ROOT / paths.get("current_bundle_dir", "artifacts/model_bundle/current")
 
     # Map to the existing PipelineConfig format
     return {
@@ -144,9 +147,13 @@ def config_to_pipeline_config(config: dict[str, Any], steps: list[str]) -> dict[
             "neural_model_dir": str(ROOT / neural.get("output_dir", "artifacts/neural_ir_model")),
             "adaptive_ranker_dir": str(ROOT / (config.get("ranker", {}).get("output_dir", "artifacts/work/adaptive_ranker"))),
             "self_training_dir": str(ROOT / "artifacts/self_training"),
-            "evaluation_dir": str(ROOT / evaluation.get("output_dir", "artifacts/evaluation")),
+            "evaluation_dir": str(evaluation_dir),
             "schema_dir": str(ROOT / "artifacts/schema"),
             "connected_db_regression_dir": str(ROOT / "artifacts/connected_db_regressions"),
+            "candidate_bundle_dir": str(candidate_bundle_dir),
+            "current_bundle_dir": str(current_bundle_dir),
+            "bundle_dir": str(candidate_bundle_dir),
+            "calibration_report_path": str(evaluation_dir / "calibration_report.json"),
         },
         "steps": steps,
         # Extended fields for new steps
@@ -350,9 +357,22 @@ def _run_multi_seed_variance(
     for metric_name, value in primary_metrics.items():
         if value is not None:
             per_seed_metrics[metric_name].append(value)
+    primary_seed = int(config.get("pipeline", {}).get("seed", 42))
+    resolved = config_to_pipeline_config(config, ["evaluate_generic_models"])
+    resolved_artifacts = dict(resolved.get("artifacts") or {})
+    model_source, model_bundle_dir = _seed_model_source(resolved_artifacts)
+    seed_runs: list[dict[str, Any]] = [{
+        "mode": "evaluation_only_stability",
+        "seed": primary_seed,
+        "input_model_source": model_source,
+        "model_bundle_dir": model_bundle_dir,
+        "evaluation_output_dir": str(resolved_artifacts.get("evaluation_dir", ROOT / "artifacts/evaluation")),
+        "used_primary_model_artifacts": True,
+        "is_primary_pipeline_run": True,
+    }]
 
     # Run evaluation-only re-runs for additional seeds
-    additional_seeds = [s for s in seed_values if s != config.get("pipeline", {}).get("seed", 42)]
+    additional_seeds = [s for s in seed_values if s != primary_seed]
     if additional_seeds:
         try:
             from orchestration.pipeline_config import PipelineConfig
@@ -372,19 +392,33 @@ def _run_multi_seed_variance(
                 child_config.setdefault("pipeline", {})["seed"] = seed_val
                 if "seeds" in child_config:
                     child_config["seeds"]["enabled"] = False  # Anti-recursion
+                child_resolved = config_to_pipeline_config(child_config, ["evaluate_generic_models"])
+                child_artifacts = dict(child_resolved.get("artifacts") or {})
+                seed_eval_dir = Path(resolved_artifacts.get("evaluation_dir", ROOT / "artifacts/evaluation")) / "seeds" / f"seed_{seed_val}"
+                child_artifacts["evaluation_dir"] = str(seed_eval_dir)
+                child_source, child_bundle_dir = _seed_model_source(child_artifacts)
                 # Build proper PipelineConfig for StepRunner
-                child_training = {**config.get("training", {}), "_integrated_config": child_config}
+                child_training = {**(child_resolved.get("training") or {}), "_integrated_config": child_config}
                 child_pipeline_config = PipelineConfig(
                     pipeline_name=f"seed_{seed_val}_eval",
                     seed=seed_val,
-                    datasets=config.get("datasets", {}),
+                    datasets=child_resolved.get("datasets", {}),
                     training=child_training,
-                    artifacts=config.get("artifacts", {}),
+                    artifacts=child_artifacts,
                     steps=["evaluate_generic_models"],
-                    smoke=bool(config.get("smoke", False)),
+                    smoke=bool(child_resolved.get("smoke", False)),
                     integrated_config=child_config,
                 )
                 runner = StepRunner()
+                seed_summary: dict[str, Any] = {
+                    "mode": "evaluation_only_stability",
+                    "seed": seed_val,
+                    "input_model_source": child_source,
+                    "model_bundle_dir": child_bundle_dir,
+                    "evaluation_output_dir": str(seed_eval_dir),
+                    "used_primary_model_artifacts": True,
+                    "is_primary_pipeline_run": False,
+                }
                 try:
                     result = runner.run_step("evaluate_generic_models", child_pipeline_config)
                     if result.get("status") == "completed":
@@ -393,10 +427,21 @@ def _run_multi_seed_variance(
                             val = child_summary.get(metric_name)
                             if val is not None:
                                 per_seed_metrics[metric_name].append(float(val))
+                        seed_summary["status"] = "completed"
+                        seed_summary["metrics"] = {
+                            metric: child_summary.get(metric)
+                            for metric in tracked_metrics
+                            if child_summary.get(metric) is not None
+                        }
                     else:
                         print(f"    Seed {seed_val} evaluation did not complete: {result.get('status')}")
+                        seed_summary["status"] = result.get("status", "unknown")
+                        seed_summary["error"] = result.get("error")
                 except Exception as exc:
                     print(f"    Seed {seed_val} evaluation failed: {exc}")
+                    seed_summary["status"] = "failed"
+                    seed_summary["error"] = str(exc)
+                seed_runs.append(seed_summary)
         except ImportError:
             print("  [Note] StepRunner not available — falling back to single-seed baseline")
 
@@ -433,6 +478,13 @@ def _run_multi_seed_variance(
         "is_valid_for_evaluation_stability": has_multi_seed,
         "is_valid_for_variance_governance": False,  # Evaluation-only, never true for governance
         "is_valid_for_training_variance_governance": False,  # Requires full re-training per seed
+        "stochastic_inference_enabled": bool((config.get("seeds") or {}).get("stochastic_inference_enabled", False)),
+        "stochastic_components": list((config.get("seeds") or {}).get("stochastic_components", [])),
+        "evaluation_stability_interpretation": (
+            "measures_inference_stability_under_stochastic_components"
+            if bool((config.get("seeds") or {}).get("stochastic_inference_enabled", False))
+            else "deterministic_path_expected_zero_variance"
+        ),
         "note": (
             "Evaluation-only stability analysis across seeds. "
             "This measures prediction stability, not training variance. "
@@ -440,6 +492,7 @@ def _run_multi_seed_variance(
         ) if has_multi_seed else (
             "Single-seed baseline. Enable multi-seed and run full pipeline for stability analysis."
         ),
+        "seed_runs": seed_runs,
         "metrics": metrics_report,
         "metric_std": metric_std_flat,  # Flat dict for backward compat with ModelSelector
         "high_variance_metrics": high_variance,
@@ -451,6 +504,22 @@ def _run_multi_seed_variance(
     )
     print(f"  Variance report written to: {report_output}")
     return variance_report
+
+
+def _seed_model_source(artifacts: dict[str, Any]) -> tuple[str, str]:
+    """Resolve which trained artifact source seed evaluations should reuse."""
+    candidate = Path(str(artifacts.get("candidate_bundle_dir") or ""))
+    current = Path(str(artifacts.get("current_bundle_dir") or ""))
+    configured_bundle = Path(str(artifacts.get("bundle_dir") or "")) if artifacts.get("bundle_dir") else None
+    preferred = configured_bundle if configured_bundle and (configured_bundle / "bundle_manifest.json").exists() else candidate
+    if preferred and (preferred / "bundle_manifest.json").exists():
+        artifacts["bundle_dir"] = str(preferred)
+        return "model_bundle_candidate", str(preferred)
+    if current and (current / "bundle_manifest.json").exists():
+        artifacts["bundle_dir"] = str(current)
+        return "model_bundle_current", str(current)
+    artifacts["bundle_dir"] = ""
+    return "artifact_dirs", ""
 
 
 def _extract_eval_metrics(

@@ -114,3 +114,35 @@ def test_bootstrap_skips_unseen_db_sql_valid_none_values() -> None:
     # If unseen_db_sql_validation_rate is missing from metrics, it fell through correctly.
     if "unseen_db_sql_validation_rate" not in report["metrics"]:
         assert "unseen_db_sql_validation_rate" in decision.get("point_estimate_fallback_checks", {}) or True
+
+
+def test_promotion_summary_includes_predicted_sql_deltas() -> None:
+    challenger = _metrics(
+        controlled_predicted_sql_execution_match_rate=0.8,
+        controlled_predicted_sql_safe_sql_rate=1.0,
+        controlled_predicted_sql_unsafe_sql_count=0,
+    )
+    champion = _metrics(
+        controlled_predicted_sql_execution_match_rate=0.6,
+        controlled_predicted_sql_safe_sql_rate=1.0,
+        controlled_predicted_sql_unsafe_sql_count=0,
+    )
+
+    decision = PromotionPolicy().can_promote(challenger, champion, THRESHOLDS)
+
+    predicted = decision["predicted_sql_execution"]
+    assert predicted["available"] is True
+    assert predicted["deltas"]["controlled_predicted_sql_execution_match_rate"]["point_delta"] > 0
+
+
+def test_required_predicted_sql_unsafe_count_blocks() -> None:
+    thresholds = {"minimums": {**THRESHOLDS["minimums"], "controlled_predicted_sql_required": True}}
+
+    decision = PromotionPolicy().can_promote(
+        _metrics(controlled_predicted_sql_safe_sql_rate=0.5, controlled_predicted_sql_unsafe_sql_count=1),
+        _metrics(),
+        thresholds,
+    )
+
+    assert decision["can_promote"] is False
+    assert "controlled_predicted_sql_unsafe_sql_count" in decision["blocking_issues"]

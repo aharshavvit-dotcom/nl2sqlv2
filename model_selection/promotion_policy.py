@@ -21,6 +21,14 @@ PROMOTION_CRITICAL_METRICS = {
     "unsafe_sql_count": False,
 }
 
+PREDICTED_SQL_METRICS = {
+    "controlled_predicted_sql_execution_match_rate": True,
+    "controlled_predicted_sql_execution_success_rate": True,
+    "controlled_predicted_sql_row_count_match_rate": True,
+    "controlled_predicted_sql_safe_sql_rate": True,
+    "controlled_predicted_sql_unsafe_sql_count": False,
+}
+
 
 class PromotionPolicy:
     def can_promote(
@@ -32,6 +40,11 @@ class PromotionPolicy:
     ) -> dict[str, Any]:
         minimums = thresholds.get("minimums") or thresholds
         blocking = _hard_blockers(challenger_metrics, minimums)
+        if bool(minimums.get("controlled_predicted_sql_required", False)):
+            if int(challenger_metrics.get("controlled_predicted_sql_unsafe_sql_count", 0) or 0) > 0:
+                blocking.append("controlled_predicted_sql_unsafe_sql_count")
+            if float(challenger_metrics.get("controlled_predicted_sql_safe_sql_rate", 1.0) or 0.0) < 1.0:
+                blocking.append("controlled_predicted_sql_safe_sql_rate")
         champion_metrics = champion_metrics or {}
         min_improvement = float(minimums.get("model_promotion_min_improvement", 0.0))
         statistical_report = self._bootstrap_report(
@@ -70,6 +83,7 @@ class PromotionPolicy:
                     blocking.append(f"{metric_name}_regression")
         else:
             warnings.append("No current champion; challenger may become initial champion if hard gates pass.")
+        predicted_sql_execution = self._predicted_sql_summary(challenger_metrics, champion_metrics)
         return {
             "can_promote": not blocking,
             "blocking_issues": list(dict.fromkeys(blocking)),
@@ -77,6 +91,7 @@ class PromotionPolicy:
             "statistical_report": statistical_report,
             "statistical_checks": statistical_checks,
             "point_estimate_fallback_checks": point_fallback_checks,
+            "predicted_sql_execution": predicted_sql_execution,
             "blocking_regressions": [item for item in list(dict.fromkeys(blocking)) if item.endswith("_regression")],
         }
 
@@ -158,6 +173,32 @@ class PromotionPolicy:
                 "regression_detected": p05 < 0.0,
             }
         return report
+
+    @staticmethod
+    def _predicted_sql_summary(
+        challenger_metrics: dict[str, Any],
+        champion_metrics: dict[str, Any],
+    ) -> dict[str, Any]:
+        checks = {}
+        for metric_name, higher_is_better in PREDICTED_SQL_METRICS.items():
+            check = PromotionPolicy._point_estimate_check(
+                metric_name,
+                challenger_metrics,
+                champion_metrics,
+                higher_is_better=higher_is_better,
+                min_improvement=0.0,
+            ) if champion_metrics else None
+            if check is not None:
+                checks[metric_name] = check
+        available = any(metric in challenger_metrics for metric in PREDICTED_SQL_METRICS)
+        return {
+            "available": available,
+            "execution_match_rate": challenger_metrics.get("controlled_predicted_sql_execution_match_rate"),
+            "safe_sql_rate": challenger_metrics.get("controlled_predicted_sql_safe_sql_rate"),
+            "unsafe_sql_count": challenger_metrics.get("controlled_predicted_sql_unsafe_sql_count"),
+            "blocking": False,
+            "deltas": checks,
+        }
 
 
 def _percentile(values: list[float], percentile: int) -> float:

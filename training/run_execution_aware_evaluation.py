@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 from dataset_training.utils import read_jsonl, write_json
 from execution_eval.execution_reporter import ExecutionReporter
 from execution_eval.sql_structure_comparator import SQLStructureComparator
+from validation.sql_validator import SQLValidator
 
 
 def _schema(row: dict[str, Any]) -> dict[str, Any]:
@@ -312,6 +313,7 @@ def evaluate_controlled_predicted_sql(
     schema_tables_available = 0
     schema_relationships_available = 0
     schema_graph_empty = True
+    sql_validator = SQLValidator()
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "controlled_predicted.db"
         conn = sqlite3.connect(str(db_path))
@@ -326,7 +328,7 @@ def evaluate_controlled_predicted_sql(
             schema_graph_empty = schema_tables_available == 0
             if schema_graph_empty:
                 return {
-                    "error": "Schema graph is empty after SQLite introspection — cannot evaluate predicted SQL",
+                    "error": "Schema graph is empty after SQLite introspection; cannot evaluate predicted SQL",
                     "evaluation_type": "controlled_predicted_sql_execution",
                     "measures_model_predictions": True,
                     "schema_graph_empty": True,
@@ -359,6 +361,11 @@ def evaluate_controlled_predicted_sql(
                     "prediction_generated": False,
                     "predicted_sql_valid": False,
                     "predicted_sql_is_select_only": False,
+                    "sql_validation_passed": False,
+                    "sql_validation_errors": [],
+                    "select_only": False,
+                    "safe_sql": False,
+                    "blocked_statement_reason": None,
                     "predicted_execution_success": False,
                     "predicted_actual_row_count": None,
                     "predicted_row_count_match": False,
@@ -376,15 +383,28 @@ def evaluate_controlled_predicted_sql(
                     entry["prediction_generated"] = bool(predicted_sql.strip())
 
                     if predicted_sql.strip():
-                        # Validate safety
-                        sql_upper = predicted_sql.strip().upper()
-                        entry["predicted_sql_is_select_only"] = sql_upper.startswith("SELECT")
-                        entry["predicted_sql_valid"] = (
-                            entry["predicted_sql_is_select_only"]
-                            and not any(kw in sql_upper for kw in ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE"])
+                        validation = sql_validator.validate(
+                            predicted_sql,
+                            schema=schema,
+                            dialect=getattr(schema, "dialect", "sqlite"),
                         )
+                        select_only = bool((validation.get("checks") or {}).get("select_only", False))
+                        validation_passed = bool(validation.get("is_valid", validation.get("ok", False)))
+                        validation_errors = [str(item) for item in validation.get("issues", [])]
+                        entry["predicted_sql_is_select_only"] = select_only
+                        entry["predicted_sql_valid"] = validation_passed
+                        entry["sql_validation_passed"] = validation_passed
+                        entry["sql_validation_errors"] = validation_errors
+                        entry["select_only"] = select_only
+                        entry["safe_sql"] = validation_passed
+                        if not validation_passed:
+                            entry["blocked_statement_reason"] = _blocked_statement_reason(
+                                validation,
+                                predicted_sql,
+                            )
+                            entry["error"] = "SQL validation failed: " + "; ".join(validation_errors)
 
-                        if entry["predicted_sql_valid"]:
+                        if validation_passed:
                             try:
                                 cursor = conn.execute(predicted_sql)
                                 pred_rows = cursor.fetchall()
@@ -410,16 +430,20 @@ def evaluate_controlled_predicted_sql(
     total = len(results)
     predictions_generated = sum(1 for r in results if r["prediction_generated"])
     valid_count = sum(1 for r in results if r["predicted_sql_valid"])
+    safe_count = sum(1 for r in results if r.get("safe_sql"))
+    select_only_count = sum(1 for r in results if r.get("select_only"))
     exec_success = sum(1 for r in results if r["predicted_execution_success"])
     exec_match = sum(1 for r in results if r["predicted_result_value_match"])
     row_match = sum(1 for r in results if r["predicted_row_count_match"])
     unordered_match = sum(1 for r in results if r.get("predicted_unordered_result_match"))
     ordered_match = sum(1 for r in results if r.get("predicted_ordered_result_match") is True)
-    unsafe = sum(1 for r in results if r["prediction_generated"] and not r["predicted_sql_is_select_only"])
+    unsafe = sum(1 for r in results if r["prediction_generated"] and not r.get("safe_sql"))
+    prediction_denominator = max(predictions_generated, 1)
 
     return {
         "evaluation_type": "controlled_predicted_sql_execution",
         "measures_model_predictions": True,
+        "central_sql_validator_used": True,
         "model_artifact_dir": str(artifact_dir),
         "fixture_sql": str(sql_path),
         "fixture_cases": str(cases_path),
@@ -433,6 +457,11 @@ def evaluate_controlled_predicted_sql(
         "predicted_execution_match_count": exec_match,
         "predicted_unordered_result_match_count": unordered_match,
         "predicted_ordered_result_match_count": ordered_match,
+        "predicted_sql_validation_success_rate": valid_count / prediction_denominator,
+        "predicted_safe_sql_rate": safe_count / prediction_denominator,
+        "predicted_select_only_rate": select_only_count / prediction_denominator,
+        "predicted_unsafe_sql_count": unsafe,
+        "predicted_execution_success_rate": exec_success / total if total else 0.0,
         "predicted_execution_match_rate": exec_match / total if total else 0.0,
         "predicted_execution_error_rate": (total - exec_success) / total if total else 0.0,
         "predicted_row_count_match_rate": row_match / total if total else 0.0,
@@ -441,6 +470,27 @@ def evaluate_controlled_predicted_sql(
         "passed": unsafe == 0 and (exec_match / total if total else 0.0) >= (config or {}).get("min_execution_match_rate", 0.0),
         "cases": results,
     }
+
+
+def _blocked_statement_reason(validation: dict[str, Any], sql: str) -> str:
+    checks = validation.get("checks") or {}
+    if not checks.get("select_only", False):
+        return "non_select_statement"
+    if not checks.get("single_statement", True):
+        return "multiple_statements"
+    if not checks.get("no_blocked_keywords", True):
+        return "blocked_keyword"
+    if not checks.get("no_comments", True):
+        return "comments_not_allowed"
+    if not checks.get("limit_present", True) or not checks.get("limit_within_bounds", True):
+        return "limit_policy_failed"
+    if not checks.get("tables_exist", True) or not checks.get("columns_exist", True):
+        return "schema_validation_failed"
+    if not checks.get("no_sensitive_columns", True):
+        return "sensitive_column"
+    if not checks.get("no_dangerous_functions", True):
+        return "dangerous_function"
+    return "sql_validation_failed"
 
 
 def parse_args() -> argparse.Namespace:

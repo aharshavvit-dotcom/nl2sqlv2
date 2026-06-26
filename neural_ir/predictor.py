@@ -13,6 +13,7 @@ from validation.sql_validator import SQLValidator
 from .candidate_builder import SchemaCandidateBuilder, build_candidate_masks, schema_link_score_vector
 from .confidence_calibrator import NeuralIRConfidenceCalibrator
 from .ir_repair import NeuralIRRepairer
+from .ir_dataset import build_question_schema_relation_type_ids, build_schema_relation_type_ids
 from .model_registry import load_model_bundle
 from .option_a_to_ir import NeuralIRToIRConverter
 from .schema_linearizer import SchemaLinearizer, extract_schema_items
@@ -62,6 +63,7 @@ class NeuralIRPredictor:
             [self.vocab.encode(tokenize(schema_text), int(self.config.get("max_schema_len", 256)))],
             dtype=torch.long,
         )
+        schema_tokens = tokenize(schema_text)
         question_mask = question_ids.ne(self.vocab.pad_id).float()
         schema_mask = schema_ids.ne(self.vocab.pad_id).float()
         tensor_masks = {
@@ -77,6 +79,18 @@ class NeuralIRPredictor:
             int(self.config.get("max_candidate_tokens", 16)),
         )
         schema_link_scores = torch.tensor([link_scores], dtype=torch.float32)
+        relation_tensors: dict[str, torch.Tensor] = {}
+        if (self.config.get("relation_aware_attention") or {}).get("enabled", False):
+            max_question_len = int(self.config.get("max_question_len", 64))
+            max_schema_len = int(self.config.get("max_schema_len", 256))
+            relation_tensors = {
+                "relation_type_ids": torch.tensor([
+                    build_question_schema_relation_type_ids(schema_items, schema_tokens, max_question_len, max_schema_len)
+                ], dtype=torch.long),
+                "schema_relation_type_ids": torch.tensor([
+                    build_schema_relation_type_ids(schema_items, schema_tokens, max_schema_len)
+                ], dtype=torch.long),
+            }
         with torch.no_grad():
             outputs = self.model(
                 question_ids=question_ids,
@@ -86,6 +100,7 @@ class NeuralIRPredictor:
                 schema_link_scores=schema_link_scores,
                 **tensor_masks,
                 **candidate_tokens,
+                **relation_tensors,
             )
         prediction_indices = _prediction_indices(outputs)
         decoded = self.label_encoder.decode(prediction_indices, schema_items)
