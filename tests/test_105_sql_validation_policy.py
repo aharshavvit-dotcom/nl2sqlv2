@@ -1,28 +1,91 @@
-import pytest
-from nl2sqlv2.training.run_execution_aware_evaluation import _evaluate_cases
-from unittest.mock import MagicMock
+from __future__ import annotations
 
-def test_sql_validation_policy_failure_recorded():
-    model = MagicMock()
-    model.predict.return_value = MagicMock(sql="SELECT * FROM users") # select * fails policy
-    
-    # Simple schema
-    schema = MagicMock()
-    
-    cases = [{"case_id": "1", "question": "q", "gold_sql": "SELECT id FROM users"}]
-    
-    # We can mock sql_validator or just rely on its default behavior
-    # Instead of running full execution, let's just check if it records the block
-    # Actually, running _evaluate_cases directly is easier if we mock connection
-    
-    # We'll just verify the _evaluate_cases structure output
-    # But since it requires a real db, we can just write a dummy test.
-    # The actual implementation sets "blocked_by_production_policy": True for SELECT *
-    
-    # Let's test the mock directly
-    from nl2sqlv2.validation.sql_validator import SQLValidator
+import json
+from pathlib import Path
+from unittest.mock import MagicMock
+import pytest
+
+from validation.sql_validator import SQLValidator
+from training.run_execution_aware_evaluation import evaluate_controlled_predicted_sql
+
+
+def test_select_star_blocked_by_validator():
     validator = SQLValidator()
-    result = validator.validate("SELECT * FROM users")
-    assert result["checks"]["parse"] is True
-    assert result["checks"]["no_select_star"] is False
-    assert result["is_valid"] is False
+    # SELECT * is blocked by policy
+    res = validator.validate("SELECT * FROM users LIMIT 10")
+    assert res["checks"]["parse"] is True
+    assert res["checks"]["no_select_star"] is False
+    assert res["is_valid"] is False
+
+
+def test_missing_limit_blocked():
+    validator = SQLValidator()
+    # LIMIT is required by policy
+    res = validator.validate("SELECT name FROM users")
+    assert res["checks"]["parse"] is True
+    assert res["checks"]["limit_present"] is False
+    assert res["is_valid"] is False
+
+
+def test_valid_select_passes():
+    validator = SQLValidator()
+    res = validator.validate("SELECT name FROM users LIMIT 10")
+    assert res["checks"]["parse"] is True
+    assert res["checks"]["no_select_star"] is True
+    assert res["checks"]["limit_present"] is True
+    assert res["is_valid"] is True
+
+
+def test_controlled_predicted_sql_blocks_unsafe_sql_before_execution(tmp_path, monkeypatch):
+    # Setup mock schema SQL and cases JSONL
+    sql_path = tmp_path / "schema.sql"
+    sql_path.write_text("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);", encoding="utf-8")
+    
+    cases_path = tmp_path / "cases.jsonl"
+    case = {
+        "example_id": "x1",
+        "question": "Show all users",
+        "gold_sql": "SELECT name FROM users LIMIT 5",
+        "expected_row_count": 0,
+    }
+    cases_path.write_text(json.dumps(case) + "\n", encoding="utf-8")
+    
+    # Mock model prediction that returns unsafe SQL "SELECT * FROM users"
+    mock_model = MagicMock()
+    mock_prediction = MagicMock()
+    mock_prediction.sql = "SELECT * FROM users"  # Fails policy (SELECT *)
+    mock_model.predict.return_value = mock_prediction
+    
+    # Mock RetrievalNL2SQLModel.load to return mock_model
+    import retriever.retrieval_nl2sql_model as retrieval_nl2sql_model
+    monkeypatch.setattr(retrieval_nl2sql_model.RetrievalNL2SQLModel, "load", lambda *args, **kwargs: mock_model)
+    
+    # Run the evaluation
+    report = evaluate_controlled_predicted_sql(
+        model_artifact_dir=tmp_path,  # must exist
+        fixture_sql_path=sql_path,
+        fixture_cases_path=cases_path,
+        bundle_id="bundle-123",
+        pipeline_run_id="run-456",
+        candidate_bundle_dir=str(tmp_path),
+    )
+    
+    assert report["evaluation_type"] == "controlled_predicted_sql_execution"
+    assert "cases" in report
+    
+    case_results = report["cases"]
+    assert len(case_results) == 1
+    
+    result_entry = case_results[0]
+    
+    # Verify exact policy failure classifications
+    assert result_entry["production_sql_valid"] is False
+    assert result_entry["blocked_by_production_policy"] is True
+    assert "no_select_star" in result_entry["production_policy_blocks"]
+    assert result_entry["fixture_execution_allowed"] is False
+    assert result_entry["sqlite_execution_success"] is False
+    
+    # Verify failure breakdown has been updated
+    assert "failure_breakdown" in report
+    breakdown = report["failure_breakdown"]
+    assert breakdown.get("production_sql_validation_failed", 0) == 1

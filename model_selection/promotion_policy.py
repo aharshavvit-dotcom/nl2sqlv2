@@ -294,5 +294,7 @@ def _compare_predicted_sql_per_case(
         "delta_p95": p95,
         "regression_detected": p05 < 0.0,
         "statistical_check_available": len(common_ids) >= 10,
+        "reason": "" if len(common_ids) >= 10 else "insufficient_common_cases",
+        "minimum_cases_required": 10,
     }
 

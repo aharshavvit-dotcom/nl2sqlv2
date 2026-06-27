@@ -1,12 +1,18 @@
+from __future__ import annotations
+
 import pytest
-from nl2sqlv2.model_selection.promotion_policy import _compare_predicted_sql_per_case
+
+from model_selection.promotion_policy import _compare_predicted_sql_per_case
+
 
 def test_predicted_sql_per_case_bootstrap():
     challenger = [
-        {"case_id": f"c_{i}", "final_execution_match": True} for i in range(20)
+        {"case_id": f"c_{i}", "final_execution_match": True, "question": f"q_{i}"}
+        for i in range(20)
     ]
     champion = [
-        {"case_id": f"c_{i}", "final_execution_match": (i % 2 == 0)} for i in range(20)
+        {"case_id": f"c_{i}", "final_execution_match": (i % 2 == 0), "question": f"q_{i}"}
+        for i in range(20)
     ]
     
     result = _compare_predicted_sql_per_case(challenger, champion)
@@ -17,19 +23,23 @@ def test_predicted_sql_per_case_bootstrap():
     assert result["regression_count"] == 0
     assert result["execution_match_delta"] == 0.5
     assert result["statistical_check_available"] is True
+    assert result["reason"] == ""
     
-    # Check that p05, p50, p95 are populated and reasonable
+    # Verify percentiles are computed and valid
     assert 0.0 <= result["delta_p05"] <= 1.0
     assert 0.0 <= result["delta_p50"] <= 1.0
     assert 0.0 <= result["delta_p95"] <= 1.0
     assert result["regression_detected"] is False
 
-def test_insufficient_cases_fallback():
+
+def test_insufficient_cases_has_reason():
     challenger = [
-        {"case_id": f"c_{i}", "final_execution_match": True} for i in range(5)
+        {"case_id": f"c_{i}", "final_execution_match": True, "question": f"q_{i}"}
+        for i in range(5)
     ]
     champion = [
-        {"case_id": f"c_{i}", "final_execution_match": (i % 2 == 0)} for i in range(5)
+        {"case_id": f"c_{i}", "final_execution_match": (i % 2 == 0), "question": f"q_{i}"}
+        for i in range(5)
     ]
     
     result = _compare_predicted_sql_per_case(challenger, champion)
@@ -37,5 +47,39 @@ def test_insufficient_cases_fallback():
     assert result["available"] is True
     assert result["common_cases"] == 5
     assert result["statistical_check_available"] is False
+    assert result["reason"] == "insufficient_common_cases"
+    assert result["minimum_cases_required"] == 10
+    
+    # Delta falls back to point estimate
     assert result["delta_p05"] == result["execution_match_delta"]
     assert result["delta_p95"] == result["execution_match_delta"]
+
+
+def test_missing_cases_do_not_crash():
+    challenger = [
+        {"case_id": "c_1", "final_execution_match": True, "question": "q1"},
+        {"case_id": "c_2", "final_execution_match": True, "question": "q2"},
+    ]
+    # champion has extra/different cases
+    champion = [
+        {"case_id": "c_2", "final_execution_match": False, "question": "q2"},
+        {"case_id": "c_3", "final_execution_match": True, "question": "q3"},
+    ]
+    
+    result = _compare_predicted_sql_per_case(challenger, champion)
+    
+    assert result["available"] is True
+    assert result["common_cases"] == 1  # Only "c_2" is common
+    assert result["statistical_check_available"] is False
+    assert result["reason"] == "insufficient_common_cases"
+
+
+def test_empty_cases():
+    # Empty lists
+    result1 = _compare_predicted_sql_per_case([], [])
+    assert result1["available"] is False
+    assert result1["reason"] == "no_challenger_cases"
+    
+    result2 = _compare_predicted_sql_per_case([{"case_id": "c1"}], None)
+    assert result2["available"] is False
+    assert result2["reason"] == "no_champion_cases"
