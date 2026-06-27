@@ -462,7 +462,8 @@ class StepRunner:
         output = Path(_artifacts(config)["evaluation_dir"]) / "controlled_predicted_sql_execution_report.json"
         if controlled_predicted.get("enabled", False):
             return StepContract(
-                name="run_controlled_predicted_sql_evaluation", required=False,
+                name="run_controlled_predicted_sql_evaluation",
+                required=bool(controlled_predicted.get("required_for_full_training", False)),
                 outputs=[str(output)],
             )
         return StepContract(
@@ -478,26 +479,41 @@ class StepRunner:
         artifacts = _artifacts(config)
         controlled_predicted = (integrated.get("execution_aware") or {}).get("controlled_predicted_sql") or {}
         bundle_dir = _candidate_bundle_dir(config)
-
-        # Phase 1: Pass identity metadata for stale-report protection
-        manifest_path = bundle_dir / "bundle_manifest.json"
-        manifest_bundle_id = config.pipeline_name
-        if manifest_path.exists():
-            try:
-                import json
-                manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
-                manifest_bundle_id = manifest_data.get("bundle_id", config.pipeline_name)
-            except Exception:
-                pass
+        required = bool(
+            controlled_predicted.get("enabled", False)
+            and controlled_predicted.get("required_for_full_training", False)
+        )
+        identity = _predicted_sql_bundle_identity(bundle_dir, config.pipeline_name, required)
+        if identity.get("error"):
+            return {
+                "status": "failed",
+                "error": identity["error"],
+                "summary": {
+                    "controlled_predicted_sql_eval": True,
+                    **{key: value for key, value in identity.items() if key != "error"},
+                    "passed": False,
+                },
+            }
 
         report = evaluate_controlled_predicted_sql(
             model_artifact_dir=bundle_dir,
             config=controlled_predicted,
-            bundle_id=manifest_bundle_id,
-            pipeline_run_id=config.pipeline_name,
+            bundle_id=identity["bundle_id"],
+            pipeline_run_id=identity["pipeline_run_id"],
             candidate_bundle_dir=str(bundle_dir),
-            commit_sha=None,  # auto-detected inside
+            commit_sha=identity.get("commit_sha"),
         )
+        report.update({
+            key: identity[key]
+            for key in (
+                "candidate_manifest_loaded",
+                "candidate_manifest_missing",
+                "candidate_manifest_unreadable",
+                "bundle_id_source",
+                "identity_strength",
+                "warnings",
+            )
+        })
         output = Path(artifacts["evaluation_dir"]) / "controlled_predicted_sql_execution_report.json"
         output.parent.mkdir(parents=True, exist_ok=True)
         write_json(output, report)
@@ -510,6 +526,14 @@ class StepRunner:
                     "error": report["error"],
                     "measures_model_predictions": True,
                     "passed": False,
+                    **{key: report.get(key) for key in (
+                        "candidate_manifest_loaded",
+                        "candidate_manifest_missing",
+                        "candidate_manifest_unreadable",
+                        "bundle_id_source",
+                        "identity_strength",
+                        "warnings",
+                    )},
                 },
             }
 
@@ -526,6 +550,13 @@ class StepRunner:
                 "predicted_safe_sql_rate": report.get("predicted_safe_sql_rate", 0.0),
                 "unsafe_sql_count": report.get("unsafe_sql_count", 0),
                 "failure_breakdown": report.get("failure_breakdown"),
+                "policy_failure_type_counts": report.get("policy_failure_type_counts"),
+                "candidate_manifest_loaded": report.get("candidate_manifest_loaded"),
+                "candidate_manifest_missing": report.get("candidate_manifest_missing"),
+                "candidate_manifest_unreadable": report.get("candidate_manifest_unreadable"),
+                "bundle_id_source": report.get("bundle_id_source"),
+                "identity_strength": report.get("identity_strength"),
+                "warnings": report.get("warnings", []),
                 "report_identity": {
                     "bundle_id": report.get("bundle_id"),
                     "pipeline_run_id": report.get("pipeline_run_id"),
@@ -925,6 +956,57 @@ def _canonical_step(step: str) -> str:
 def _candidate_bundle_dir(config: PipelineConfig) -> Path:
     integrated = config.training.get("_integrated_config") or {}
     return ROOT / integrated.get("paths", {}).get("candidate_bundle_dir", "artifacts/model_bundle/candidate")
+
+
+def _predicted_sql_bundle_identity(
+    bundle_dir: Path,
+    pipeline_name: str,
+    required: bool,
+) -> dict[str, Any]:
+    """Resolve report identity without weakening required-mode lifecycle proof."""
+    manifest_path = bundle_dir / "bundle_manifest.json"
+    payload: dict[str, Any] = {
+        "candidate_manifest_loaded": False,
+        "candidate_manifest_missing": not manifest_path.exists(),
+        "candidate_manifest_unreadable": False,
+        "bundle_id": pipeline_name,
+        "pipeline_run_id": pipeline_name,
+        "commit_sha": None,
+        "bundle_id_source": "pipeline_name_fallback",
+        "identity_strength": "weak",
+        "warnings": [],
+    }
+    failure_reason = "candidate_manifest_missing_for_predicted_sql"
+    manifest_data: dict[str, Any] = {}
+    if manifest_path.exists():
+        try:
+            loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict):
+                raise ValueError("manifest root must be an object")
+            manifest_data = loaded
+            payload["candidate_manifest_loaded"] = True
+        except Exception:
+            payload["candidate_manifest_unreadable"] = True
+            failure_reason = "candidate_manifest_unreadable_for_predicted_sql"
+
+    manifest_bundle_id = manifest_data.get("bundle_id")
+    if payload["candidate_manifest_loaded"] and not manifest_bundle_id:
+        failure_reason = "candidate_manifest_bundle_id_missing_for_predicted_sql"
+    elif manifest_bundle_id:
+        payload.update({
+            "bundle_id": str(manifest_bundle_id),
+            "pipeline_run_id": str(manifest_data.get("pipeline_run_id") or pipeline_name),
+            "commit_sha": manifest_data.get("git_commit") or None,
+            "bundle_id_source": "bundle_manifest",
+            "identity_strength": "strong",
+        })
+        return payload
+
+    if required:
+        payload["error"] = failure_reason
+    else:
+        payload["warnings"].append("candidate_manifest_missing_for_predicted_sql")
+    return payload
 
 
 def _artifacts(config: PipelineConfig) -> dict[str, str]:

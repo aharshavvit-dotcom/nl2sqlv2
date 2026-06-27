@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
 from dataset_training.utils import read_jsonl, write_json
 from execution_eval.execution_reporter import ExecutionReporter
 from execution_eval.sql_structure_comparator import SQLStructureComparator
-from validation.sql_validator import SQLValidator
+from validation.sql_validator import POLICY_FAILURE_TYPES, SQLValidator, policy_failure_type
 
 
 def _schema(row: dict[str, Any]) -> dict[str, Any]:
@@ -391,6 +391,8 @@ def evaluate_controlled_predicted_sql(
                     "production_sql_validation_warnings": [],
                     "blocked_by_production_policy": False,
                     "production_policy_blocks": [],
+                    "policy_failure_type": None,
+                    "failure_category": None,
                     "fixture_execution_allowed": False,
                     "fixture_execution_blocked_reason": None,
                     "sqlite_execution_success": False,
@@ -462,6 +464,8 @@ def evaluate_controlled_predicted_sql(
                         entry["unsafe_sql"] = not validation_passed
 
                         if not validation_passed:
+                            entry["policy_failure_type"] = policy_failure_type(validation)
+                            entry["failure_category"] = "production_sql_validation_failed"
                             entry["blocked_statement_reason"] = _blocked_statement_reason(
                                 validation, predicted_sql,
                             )
@@ -495,8 +499,10 @@ def evaluate_controlled_predicted_sql(
                                 entry["predicted_result_value_match"] = comparison["result_value_match"]
                             except Exception as exc:
                                 entry["sqlite_execution_error"] = str(exc)
+                                entry["failure_category"] = "sqlite_execution_error"
                                 entry["error"] = f"Execution error: {exc}"
                 except Exception as exc:
+                    entry["failure_category"] = "prediction_error"
                     entry["error"] = f"Prediction error: {exc}"
 
                 results.append(entry)
@@ -528,6 +534,11 @@ def evaluate_controlled_predicted_sql(
         "row_count_mismatch": row_count_mismatch,
         "value_mismatch": value_mismatch,
     }
+    policy_failure_type_counts = {name: 0 for name in POLICY_FAILURE_TYPES}
+    for result in results:
+        failure_type = result.get("policy_failure_type")
+        if failure_type in policy_failure_type_counts:
+            policy_failure_type_counts[failure_type] += 1
 
     return {
         # Phase 1: Identity metadata
@@ -553,6 +564,7 @@ def evaluate_controlled_predicted_sql(
         "predicted_unordered_result_match_count": unordered_match,
         "predicted_ordered_result_match_count": ordered_match,
         "failure_breakdown": failure_breakdown,
+        "policy_failure_type_counts": policy_failure_type_counts,
         # Rates
         "predicted_sql_valid_count": production_valid,
         "predicted_execution_success_count": sqlite_success,

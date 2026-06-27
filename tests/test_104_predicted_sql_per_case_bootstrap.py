@@ -1,8 +1,32 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from model_selection.promotion_policy import _compare_predicted_sql_per_case
+from validation.sql_validator import SQLValidator
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_controlled_predicted_sql_fixture_set_supports_bootstrap():
+    path = ROOT / "evaluation" / "fixtures" / "controlled_evaluation_cases.jsonl"
+    cases = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(cases) >= 10
+    case_ids = [case.get("case_id") for case in cases]
+    assert all(case_ids)
+    assert len(case_ids) == len(set(case_ids))
+
+    validator = SQLValidator()
+    invalid = {
+        case["case_id"]: validator.validate(case["gold_sql"])["issues"]
+        for case in cases
+        if not validator.validate(case["gold_sql"])["is_valid"]
+    }
+    assert invalid == {}
 
 
 def test_predicted_sql_per_case_bootstrap():

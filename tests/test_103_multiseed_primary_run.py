@@ -2,6 +2,84 @@ from __future__ import annotations
 
 import pytest
 
+from training.train_model import _run_multi_seed_variance
+
+
+def _primary_report(**metrics):
+    return {"steps": [{
+        "step": "evaluate_generic_models",
+        "status": "completed",
+        "summary": metrics,
+    }]}
+
+
+def _seed_config(tmp_path):
+    return {
+        "pipeline": {"seed": 42},
+        "smoke": True,
+        "artifacts": {"evaluation_dir": str(tmp_path / "evaluation")},
+        "seeds": {"enabled": True},
+    }
+
+
+def test_run_multi_seed_variance_primary_run_is_counted(tmp_path):
+    result = _run_multi_seed_variance(
+        _seed_config(tmp_path),
+        _primary_report(intent_macro_f1=0.9),
+        [42],
+        ["intent_macro_f1"],
+        tmp_path / "variance.json",
+    )
+    assert result["primary_seed_included"] is True
+    assert result["seed_runs_completed"] == 1
+    assert result["seed_runs"][0]["status"] == "completed"
+    assert result["seed_runs"][0]["is_primary_pipeline_run"] is True
+
+
+def test_run_multi_seed_variance_records_failed_child(tmp_path, monkeypatch):
+    from orchestration.step_runner import StepRunner
+
+    monkeypatch.setattr(
+        StepRunner,
+        "run_step",
+        lambda *_args, **_kwargs: {"status": "failed", "error": "synthetic failure"},
+    )
+    result = _run_multi_seed_variance(
+        _seed_config(tmp_path),
+        _primary_report(intent_macro_f1=0.9),
+        [42, 99],
+        ["intent_macro_f1"],
+        tmp_path / "variance.json",
+    )
+    assert result["seed_runs_completed"] == 1
+    assert result["seed_runs_failed"] == 1
+    assert result["seed_runs"][1]["status"] == "failed"
+
+
+def test_run_multi_seed_metric_samples_are_independent(tmp_path, monkeypatch):
+    from orchestration.step_runner import StepRunner
+
+    monkeypatch.setattr(
+        StepRunner,
+        "run_step",
+        lambda *_args, **_kwargs: {
+            "status": "completed",
+            "summary": {"intent_macro_f1": 0.8},
+        },
+    )
+    result = _run_multi_seed_variance(
+        _seed_config(tmp_path),
+        _primary_report(intent_macro_f1=0.9, sql_validation_rate=1.0),
+        [42, 99],
+        ["intent_macro_f1", "sql_validation_rate"],
+        tmp_path / "variance.json",
+    )
+    assert result["seed_runs_completed"] == 2
+    assert result["metric_sample_counts"] == {
+        "intent_macro_f1": 2,
+        "sql_validation_rate": 1,
+    }
+
 
 def test_primary_seed_status_completed():
     # Verify that the primary seed run is initialized with completed status and correct flags

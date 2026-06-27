@@ -20,7 +20,14 @@ class OptionAIREvaluator:
         self.sql_renderer = IRToSQLRenderer()
         self.sql_validator = SQLValidator()
 
-    def evaluate(self, model, data_loader, label_encoder, db_path: str | None = None) -> dict[str, Any]:
+    def evaluate(
+        self,
+        model,
+        data_loader,
+        label_encoder,
+        db_path: str | None = None,
+        diagnostics=None,
+    ) -> dict[str, Any]:
         model.eval()
         counts = defaultdict(int)
         correct = defaultdict(int)
@@ -32,6 +39,8 @@ class OptionAIREvaluator:
         with torch.no_grad():
             for batch in data_loader:
                 outputs = model(**{key: batch[key] for key in MODEL_INPUT_KEYS if key in batch})
+                if diagnostics is not None and hasattr(diagnostics, "observe_step"):
+                    diagnostics.observe_step(batch, outputs)
                 pred_indices = {head: outputs[head].argmax(dim=-1).cpu().tolist() for head in HEAD_TO_LABEL if head in outputs}
                 batch_size = len(batch["raw_examples"])
                 for idx in range(batch_size):

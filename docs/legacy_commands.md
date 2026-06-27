@@ -10,7 +10,7 @@ Both legacy full-pipeline wrappers and the preferred command now resolve their e
 
 Legacy gold-replay and comparison commands are debugging tools only. Any report that replays `query_ir` labels as predictions must be labeled as `explicit_gold_replay_baseline` and is not valid for quality gates, model promotion, or bundle validation.
 
-Legacy commands do not attach `controlled_predicted_sql_execution_report.json` to candidate bundles, do not enforce production `simple_query_pass_rate` thresholds, and do not provide the current multi-seed stability interpretation fields. Use the integrated pipeline for production lifecycle proof.
+Legacy commands do not attach `controlled_predicted_sql_execution_report.json` to candidate bundles, enforce strong candidate-manifest identity, emit normalized SQL `policy_failure_type` counts, collect observed candidate-relation mask statistics, or provide the current multi-seed stability interpretation fields. They may also bypass the integrated requirement that statistical predicted-SQL bootstrap comparisons use at least 10 common stable case IDs. Use the integrated pipeline for production lifecycle proof.
 
 ---
 

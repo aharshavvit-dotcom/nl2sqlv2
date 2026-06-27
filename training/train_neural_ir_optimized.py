@@ -290,6 +290,7 @@ def run_optimized_training(
     # Diagnostics
     diagnostics = TrainingDiagnostics(output_dir)
     diagnostics.set_config(config.to_dict())
+    diagnostics.observe_dataset_item(train_dataset[0])
     diagnostics.start_training()
 
     grad_clip = float(config.training.get("gradient_clipping", 1.0))
@@ -325,6 +326,7 @@ def run_optimized_training(
             batch = _to_device(batch, device)
             optimizer.zero_grad()
             outputs = _model_outputs(model, batch, MODEL_INPUT_KEYS)
+            diagnostics.observe_step(batch, outputs)
 
             # Per-head losses
             head_losses: dict[str, torch.Tensor] = {}
@@ -398,6 +400,7 @@ def run_optimized_training(
                 for batch in val_loader:
                     batch = _to_device(batch, device)
                     outputs = _model_outputs(model, batch, MODEL_INPUT_KEYS)
+                    diagnostics.observe_step(batch, outputs)
                     head_losses_v: dict[str, torch.Tensor] = {}
                     for head, label_key in HEAD_TO_LABEL.items():
                         target = batch["labels"][label_key]

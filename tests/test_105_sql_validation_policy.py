@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
 
-from validation.sql_validator import SQLValidator
+from validation.sql_validator import SQLValidator, policy_failure_type
 from training.run_execution_aware_evaluation import evaluate_controlled_predicted_sql
 
 
@@ -82,6 +82,8 @@ def test_controlled_predicted_sql_blocks_unsafe_sql_before_execution(tmp_path, m
     assert result_entry["production_sql_valid"] is False
     assert result_entry["blocked_by_production_policy"] is True
     assert "no_select_star" in result_entry["production_policy_blocks"]
+    assert result_entry["policy_failure_type"] == "select_star_blocked"
+    assert result_entry["failure_category"] == "production_sql_validation_failed"
     assert result_entry["fixture_execution_allowed"] is False
     assert result_entry["sqlite_execution_success"] is False
     
@@ -89,3 +91,76 @@ def test_controlled_predicted_sql_blocks_unsafe_sql_before_execution(tmp_path, m
     assert "failure_breakdown" in report
     breakdown = report["failure_breakdown"]
     assert breakdown.get("production_sql_validation_failed", 0) == 1
+    assert report["policy_failure_type_counts"]["select_star_blocked"] == 1
+
+
+def _evaluate_prediction(tmp_path, monkeypatch, predicted_sql):
+    sql_path = tmp_path / "schema.sql"
+    sql_path.write_text(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);"
+        "INSERT INTO users (id, name) VALUES (1, 'Alice'), (2, 'Bob');",
+        encoding="utf-8",
+    )
+    cases_path = tmp_path / "cases.jsonl"
+    cases_path.write_text(json.dumps({
+        "case_id": "policy_case",
+        "example_id": "x1",
+        "question": "List users",
+        "gold_sql": "SELECT id, name FROM users ORDER BY id LIMIT 10",
+        "expected_row_count": 2,
+    }) + "\n", encoding="utf-8")
+    model = MagicMock()
+    model.predict.return_value.sql = predicted_sql
+    import retriever.retrieval_nl2sql_model as retrieval_nl2sql_model
+    monkeypatch.setattr(
+        retrieval_nl2sql_model.RetrievalNL2SQLModel,
+        "load",
+        lambda *_args, **_kwargs: model,
+    )
+    return evaluate_controlled_predicted_sql(
+        model_artifact_dir=tmp_path,
+        fixture_sql_path=sql_path,
+        fixture_cases_path=cases_path,
+    )
+
+
+def test_missing_limit_maps_to_limit_policy_failed(tmp_path, monkeypatch):
+    report = _evaluate_prediction(tmp_path, monkeypatch, "SELECT id, name FROM users")
+    case = report["cases"][0]
+    assert case["policy_failure_type"] == "limit_policy_failed"
+    assert report["policy_failure_type_counts"]["limit_policy_failed"] == 1
+
+
+@pytest.mark.parametrize("sql", [
+    "DELETE FROM users WHERE id = 1",
+    "UPDATE users SET name = 'X' WHERE id = 1",
+    "INSERT INTO users (id, name) VALUES (3, 'X')",
+])
+def test_mutating_statement_maps_to_non_select(sql):
+    validation = SQLValidator().validate(sql)
+    assert policy_failure_type(validation) == "non_select_statement"
+
+
+def test_sqlite_execution_error_has_no_policy_failure_type(tmp_path, monkeypatch):
+    report = _evaluate_prediction(
+        tmp_path,
+        monkeypatch,
+        "SELECT unknown_runtime_function(id) AS value FROM users LIMIT 10",
+    )
+    case = report["cases"][0]
+    assert case["production_sql_valid"] is True
+    assert case["sqlite_execution_success"] is False
+    assert case["policy_failure_type"] is None
+    assert case["failure_category"] == "sqlite_execution_error"
+
+
+def test_value_mismatch_has_no_policy_failure_type(tmp_path, monkeypatch):
+    report = _evaluate_prediction(
+        tmp_path,
+        monkeypatch,
+        "SELECT id, name FROM users WHERE id = 1 LIMIT 10",
+    )
+    case = report["cases"][0]
+    assert case["sqlite_execution_success"] is True
+    assert case["final_execution_match"] is False
+    assert case["policy_failure_type"] is None

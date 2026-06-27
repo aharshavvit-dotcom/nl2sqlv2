@@ -357,6 +357,9 @@ class ModelBundleValidator:
                 lifecycle_proof["controlled_predicted_sql_failure_breakdown"] = dict(
                     predicted_sql_report.get("failure_breakdown") or {}
                 )
+                lifecycle_proof["controlled_predicted_sql_policy_failure_type_counts"] = dict(
+                    predicted_sql_report.get("policy_failure_type_counts") or {}
+                )
                 if predicted_sql_report.get("schema_graph_empty", True):
                     warnings.append("Controlled predicted-SQL evaluation used empty schema graph")
                 if policy["required_for_full_training"] and not predicted_sql_report.get("central_sql_validator_used", False):

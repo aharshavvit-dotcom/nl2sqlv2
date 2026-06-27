@@ -20,8 +20,12 @@ class TrainingDiagnostics:
         self.epochs: list[dict[str, Any]] = []
         self._start_time: float | None = None
         self.config_summary: dict[str, Any] = {}
+        self._candidate_counts: list[int] = []
+        self._candidate_padding_ratios: list[float] = []
 
     def set_config(self, config: dict[str, Any]) -> None:
+        self._candidate_counts = []
+        self._candidate_padding_ratios = []
         rat_config = config.get("model", {}).get("relation_aware_attention", {})
         curriculum_config = config.get("training", {}).get("curriculum", {})
         relation_enabled = bool(rat_config.get("enabled", False))
@@ -39,8 +43,13 @@ class TrainingDiagnostics:
         schema_pairwise_relation_bias_active = bool(
             relation_enabled and relation_bias_mode in ("schema_pairwise_relation_bias", "combined")
         )
-        candidate_pairwise_relation_bias_active = bool(
-            relation_enabled and relation_bias_mode in ("candidate_pairwise_relation_bias", "combined")
+        candidate_pairwise_relation_bias_configured = bool(
+            relation_enabled
+            and relation_bias_mode in (
+                "candidate_pairwise_relation_bias",
+                "schema_candidate_pairwise_relation_bias",
+                "combined",
+            )
         )
         effective_mode = "disabled"
         if relation_enabled:
@@ -50,7 +59,14 @@ class TrainingDiagnostics:
         max_columns = config.get("model", {}).get("max_columns", 0)
         padded_candidate_count = max_tables + max_columns
         candidate_matrix_size = padded_candidate_count ** 2
-        actual_candidate_count = config.get("model", {}).get("actual_candidate_count", 0)
+        candidate_graph = {
+            "actual_candidate_count_min": 0,
+            "actual_candidate_count_mean": 0.0,
+            "actual_candidate_count_max": 0,
+            "padded_candidate_count": padded_candidate_count,
+            "candidate_matrix_size": candidate_matrix_size,
+            "padding_ratio_mean": 0.0,
+        }
 
         self.config_summary = {
             "optimizer_name": config.get("optimizer", {}).get("name", "unknown"),
@@ -71,21 +87,117 @@ class TrainingDiagnostics:
             },
             "relation_aware_attention": {
                 "enabled": relation_enabled,
-                "relation_type_ids_available": True,  # Now wired in ir_dataset
-                "schema_relation_type_ids_available": True,  # Pairwise matrix wired in ir_dataset
-                "candidate_relation_type_ids_available": True, # Candidate matrix wired in ir_dataset
+                "relation_type_ids_configured": question_schema_role_bias_active,
+                "relation_type_ids_observed_in_dataset": False,
+                "relation_type_ids_observed_in_batch": False,
+                "relation_type_ids_used_in_forward": False,
+                "schema_relation_type_ids_configured": schema_pairwise_relation_bias_active,
+                "schema_relation_type_ids_observed_in_dataset": False,
+                "schema_relation_type_ids_observed_in_batch": False,
+                "schema_relation_type_ids_used_in_forward": False,
+                "candidate_relation_type_ids_configured": candidate_pairwise_relation_bias_configured,
+                "candidate_relation_type_ids_observed_in_dataset": False,
+                "candidate_relation_type_ids_observed_in_batch": False,
+                "candidate_relation_type_ids_used_in_forward": False,
+                # Compatibility fields now reflect observed evidence, not config.
+                "relation_type_ids_available": False,
+                "schema_relation_type_ids_available": False,
+                "candidate_relation_type_ids_available": False,
                 "relation_bias_mode": effective_mode,
-                "question_schema_role_bias_active": question_schema_role_bias_active,
-                "schema_pairwise_relation_bias_active": schema_pairwise_relation_bias_active,
-                "candidate_pairwise_relation_bias_active": candidate_pairwise_relation_bias_active,
+                "question_schema_role_bias_active": False,
+                "schema_pairwise_relation_bias_active": False,
+                "candidate_pairwise_relation_bias_active": False,
+                "candidate_level_relation_graph_available": False,
+                "candidate_relation_attention_uses_mask": False,
                 "pairwise_relation_matrix": bool(pairwise_relation_matrix and relation_enabled),
                 "relation_types": relation_types,
                 "relation_bias_parameters": len(relation_types) if relation_enabled else 0,
-                "actual_candidate_count": actual_candidate_count,
-                "padded_candidate_count": padded_candidate_count,
-                "candidate_matrix_size": candidate_matrix_size,
+                "candidate_relation_graph": candidate_graph,
             },
+            "candidate_relation_graph": candidate_graph,
         }
+
+    def observe_dataset_item(self, item: dict[str, Any]) -> None:
+        """Record relation tensors that an actual dataset item emitted."""
+        rat = self._relation_summary()
+        for key in ("relation_type_ids", "schema_relation_type_ids", "candidate_relation_type_ids"):
+            if key in item and item.get(key) is not None:
+                rat[f"{key}_observed_in_dataset"] = True
+
+    def observe_batch(self, batch: dict[str, Any]) -> None:
+        """Record relation tensors and candidate utilization from a collated batch."""
+        rat = self._relation_summary()
+        for key in ("relation_type_ids", "schema_relation_type_ids", "candidate_relation_type_ids"):
+            if key in batch and batch.get(key) is not None:
+                rat[f"{key}_observed_in_batch"] = True
+                rat[f"{key}_available"] = True
+
+        table_mask = batch.get("table_candidate_mask")
+        column_mask = batch.get("column_candidate_mask")
+        if table_mask is None or column_mask is None:
+            return
+        try:
+            import torch
+
+            if not torch.is_tensor(table_mask) or not torch.is_tensor(column_mask):
+                return
+            if table_mask.dim() != 2 or column_mask.dim() != 2 or table_mask.size(0) != column_mask.size(0):
+                return
+            candidate_mask = torch.cat([table_mask, column_mask], dim=1).bool()
+            padded_count = int(candidate_mask.size(1))
+            counts = candidate_mask.sum(dim=1).detach().cpu().tolist()
+        except (RuntimeError, TypeError, ValueError):
+            return
+        for count_value in counts:
+            count = int(count_value)
+            self._candidate_counts.append(count)
+            ratio = 0.0 if padded_count <= 0 else 1.0 - (count / padded_count)
+            self._candidate_padding_ratios.append(ratio)
+        self._refresh_candidate_stats(padded_count)
+
+    def observe_forward(self, outputs: dict[str, Any]) -> None:
+        """Record relation paths the model reports it actually used."""
+        rat = self._relation_summary()
+        for key in ("relation_type_ids", "schema_relation_type_ids", "candidate_relation_type_ids"):
+            used_key = f"{key}_used_in_forward"
+            if bool(outputs.get(used_key, False)):
+                rat[used_key] = True
+        for key in (
+            "question_schema_role_bias_active",
+            "schema_pairwise_relation_bias_active",
+            "candidate_pairwise_relation_bias_active",
+            "candidate_level_relation_graph_available",
+            "candidate_relation_attention_uses_mask",
+        ):
+            if bool(outputs.get(key, False)):
+                rat[key] = True
+        if outputs.get("relation_bias_mode"):
+            rat["relation_bias_mode"] = str(outputs["relation_bias_mode"])
+
+    def observe_step(self, batch: dict[str, Any], outputs: dict[str, Any]) -> None:
+        self.observe_batch(batch)
+        self.observe_forward(outputs)
+
+    def _relation_summary(self) -> dict[str, Any]:
+        return self.config_summary.setdefault("relation_aware_attention", {})
+
+    def _refresh_candidate_stats(self, padded_count: int) -> None:
+        graph = self._relation_summary().setdefault("candidate_relation_graph", {})
+        graph.update({
+            "actual_candidate_count_min": min(self._candidate_counts, default=0),
+            "actual_candidate_count_mean": (
+                sum(self._candidate_counts) / len(self._candidate_counts)
+                if self._candidate_counts else 0.0
+            ),
+            "actual_candidate_count_max": max(self._candidate_counts, default=0),
+            "padded_candidate_count": padded_count,
+            "candidate_matrix_size": padded_count ** 2,
+            "padding_ratio_mean": (
+                sum(self._candidate_padding_ratios) / len(self._candidate_padding_ratios)
+                if self._candidate_padding_ratios else 0.0
+            ),
+        })
+        self.config_summary["candidate_relation_graph"] = graph
 
     def start_training(self) -> None:
         self._start_time = time.time()

@@ -186,7 +186,7 @@ This creates a temporary database from `evaluation/fixtures/controlled_evaluatio
 
 The following are planned but deferred until baselines are trustworthy:
 
-- **Relation-Aware Attention**: Cross-table schema encoding in the neural IR model
+- **Relation-Aware Champion/Challenger Validation**: Compare the masked relation-aware encoder with the production baseline before promotion
 - **Multi-Seed Training Variance**: Automated metric stability analysis across random seeds
 - **Execution-Aware Training Signal**: Using SQL execution results as a training reward signal
 - **Schema-Conditional Calibration**: Per-schema calibration curves instead of global
@@ -330,11 +330,15 @@ Two types:
 | Gold SQL validation | `controlled_gold_sql_fixture_validation` | `false` | Validates gold SQL executes correctly on fixture DB |
 | Predicted SQL execution | `controlled_predicted_sql_execution` | `true` | Loads model, generates predictions, compares with gold results |
 
-Predicted SQL is validated by the central SQL validator before any fixture execution. Production training requires `controlled_predicted_sql_execution_report.json` to be attached under the candidate bundle `evaluation/` directory before bundle validation.
+Predicted SQL is validated by the central SQL validator before any fixture execution. Validation failures are normalized as `policy_failure_type` (`non_select_statement`, `unsafe_keyword`, `syntax_error`, `select_star_blocked`, `limit_policy_failed`, or `unknown`) and summarized in `policy_failure_type_counts`. Production training requires `controlled_predicted_sql_execution_report.json` to be attached under the candidate bundle `evaluation/` directory before bundle validation.
+
+When controlled predicted-SQL is required, the candidate `bundle_manifest.json` must be readable and contain `bundle_id`; the pipeline fails before evaluation otherwise. Optional mode may use `pipeline_name` only as an explicitly weak identity and emits `candidate_manifest_missing_for_predicted_sql`. The controlled fixture corpus contains at least 10 stable paired cases so bootstrap comparison is available at 10 or more common case IDs; smaller comparisons report `insufficient_common_cases`.
 
 ### Relation-Aware Schema Attention
 
-Experimental RAT-SQL-style learnable bias per relation type. Disabled by default (`relation_aware_attention.enabled: false`). Ten relation types: `same_table`, `table_has_column`, `column_belongs_to_table`, `fk_to_pk`, `pk_to_fk`, `primary_key`, `foreign_key_column`, `same_column_name`, `same_data_type`, `unrelated`. When enabled, explicit schema relation matrices preserve table, column, primary-key, and foreign-key links. Not used for production behavior unless explicitly enabled and validated.
+Experimental RAT-SQL-style learnable bias per relation type. Disabled by default (`relation_aware_attention.enabled: false`). Ten relation types: `same_table`, `table_has_column`, `column_belongs_to_table`, `fk_to_pk`, `pk_to_fk`, `primary_key`, `foreign_key_column`, `same_column_name`, `same_data_type`, `unrelated`. Candidate-pairwise attention concatenates table and column masks before softmax, so padded candidates cannot influence valid representations.
+
+`relation_bias_mode` reports the path actually used: `disabled`, `schema_token_role_bias`, `schema_pairwise_relation_bias`, `schema_candidate_pairwise_relation_bias`, or `combined`. Training diagnostics separately record relation IDs as `configured`, `observed_in_dataset`, `observed_in_batch`, and `used_in_forward`; candidate graph statistics report observed min/mean/max counts, padded capacity, matrix size, and mean padding ratio. These are runtime facts rather than config-only claims.
 
 ### Curriculum Modes
 

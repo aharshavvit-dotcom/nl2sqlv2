@@ -56,7 +56,7 @@ MODEL_INPUT_KEYS = [
 
 
 class OptionAIRTrainer:
-    def __init__(self, model, config):
+    def __init__(self, model, config, diagnostics=None):
         self.model = model
         self.config = config
         self.device = torch.device("cpu")
@@ -67,6 +67,7 @@ class OptionAIRTrainer:
             lr=float(config.get("learning_rate", 0.001)),
             weight_decay=float(config.get("weight_decay", 0.0)),
         )
+        self.diagnostics = diagnostics
 
     def train(self, train_loader, val_loader, output_dir=None, label_encoder=None) -> dict[str, Any]:
         import time
@@ -141,6 +142,7 @@ class OptionAIRTrainer:
             batch = _to_device(batch, self.device)
             self.optimizer.zero_grad()
             outputs = _model_outputs(self.model, batch)
+            _observe_diagnostics(self.diagnostics, batch, outputs)
             loss = self._loss(outputs, batch["labels"], batch)
             loss.backward()
             self.optimizer.step()
@@ -161,6 +163,7 @@ class OptionAIRTrainer:
             for i, batch in enumerate(loader, 1):
                 batch = _to_device(batch, self.device)
                 outputs = _model_outputs(self.model, batch)
+                _observe_diagnostics(self.diagnostics, batch, outputs)
                 loss = self._loss(outputs, batch["labels"], batch)
                 total_loss += float(loss.item()) * int(batch["question_ids"].size(0))
                 total_items += int(batch["question_ids"].size(0))
@@ -257,3 +260,8 @@ def _to_device(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
 def _model_outputs(model, batch: dict[str, Any]) -> dict[str, torch.Tensor]:
     kwargs = {key: batch[key] for key in MODEL_INPUT_KEYS if key in batch}
     return model(**kwargs)
+
+
+def _observe_diagnostics(diagnostics, batch: dict[str, Any], outputs: dict[str, Any]) -> None:
+    if diagnostics is not None and hasattr(diagnostics, "observe_step"):
+        diagnostics.observe_step(batch, outputs)

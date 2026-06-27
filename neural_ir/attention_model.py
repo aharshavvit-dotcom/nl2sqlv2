@@ -199,7 +199,8 @@ class SchemaAwareOptionAIRModel(nn.Module):
         question_out, _ = self.question_encoder(question_emb)
         schema_out, _ = self.schema_encoder(schema_emb)
 
-        # Phase 6: Track active modes independently and support combined mode
+        # Track active relation paths independently.  The effective mode is
+        # computed only after every path has had a chance to run.
         schema_pairwise_active = False
         schema_role_active = False
         candidate_pairwise_active = False
@@ -233,13 +234,6 @@ class SchemaAwareOptionAIRModel(nn.Module):
             relation_type_ids=role_bias_ids,
         )
 
-        active_relation_bias_mode = "disabled"
-        if schema_pairwise_active and schema_role_active:
-            active_relation_bias_mode = "combined"
-        elif schema_pairwise_active:
-            active_relation_bias_mode = "schema_pairwise_relation_bias"
-        elif schema_role_active:
-            active_relation_bias_mode = "schema_token_role_bias"
         fused = self.fusion(torch.cat([question_vec, schema_vec, attended_schema, question_vec * attended_schema], dim=-1))
 
         if column_candidate_token_ids is None:
@@ -247,21 +241,44 @@ class SchemaAwareOptionAIRModel(nn.Module):
         table_vectors = self._candidate_vectors(table_candidate_token_ids, self.max_tables, schema_vec)
         column_vectors = self._candidate_vectors(column_candidate_token_ids, self.max_columns, schema_vec)
         
-        # Phase 6: Apply candidate-level pairwise relation context
+        # Apply candidate-level pairwise relation context without allowing
+        # padded candidates to affect the attention normalization.
         if (
             self.relation_bias is not None
             and candidate_relation_type_ids is not None
-            and self.relation_bias_mode in ("candidate_pairwise_relation_bias", "combined")
+            and self.relation_bias_mode in (
+                "candidate_pairwise_relation_bias",
+                "schema_candidate_pairwise_relation_bias",
+                "combined",
+            )
         ):
+            candidate_mask = self._unified_candidate_mask(
+                table_candidate_mask,
+                column_candidate_mask,
+                batch_size=table_vectors.size(0),
+                device=table_vectors.device,
+            )
             unified_candidate_vectors = torch.cat([table_vectors, column_vectors], dim=1)
             unified_candidate_vectors = self._candidate_pairwise_relation_context(
                 unified_candidate_vectors,
-                candidate_mask=None,  # Or use a generic mask if available
+                candidate_mask=candidate_mask,
                 candidate_relation_type_ids=candidate_relation_type_ids,
             )
             candidate_pairwise_active = True
             table_vectors = unified_candidate_vectors[:, :self.max_tables, :]
             column_vectors = unified_candidate_vectors[:, self.max_tables:, :]
+
+        active_paths = sum((schema_pairwise_active, schema_role_active, candidate_pairwise_active))
+        if active_paths > 1:
+            active_relation_bias_mode = "combined"
+        elif candidate_pairwise_active:
+            active_relation_bias_mode = "schema_candidate_pairwise_relation_bias"
+        elif schema_pairwise_active:
+            active_relation_bias_mode = "schema_pairwise_relation_bias"
+        elif schema_role_active:
+            active_relation_bias_mode = "schema_token_role_bias"
+        else:
+            active_relation_bias_mode = "disabled"
             
         table_link_scores = schema_link_scores.new_zeros((schema_link_scores.size(0), self.max_tables)) if schema_link_scores is not None else None
 
@@ -314,6 +331,14 @@ class SchemaAwareOptionAIRModel(nn.Module):
                 "filter_column": filter_column_logits.detach(),
             },
             "relation_bias_mode": active_relation_bias_mode,
+            "question_schema_role_bias_active": schema_role_active,
+            "schema_pairwise_relation_bias_active": schema_pairwise_active,
+            "candidate_pairwise_relation_bias_active": candidate_pairwise_active,
+            "candidate_level_relation_graph_available": candidate_relation_type_ids is not None,
+            "candidate_relation_type_ids_used_in_forward": candidate_pairwise_active,
+            "schema_relation_type_ids_used_in_forward": schema_pairwise_active,
+            "relation_type_ids_used_in_forward": schema_role_active,
+            "candidate_relation_attention_uses_mask": candidate_pairwise_active,
         }
 
     def _schema_attention(
@@ -359,16 +384,62 @@ class SchemaAwareOptionAIRModel(nn.Module):
         candidate_mask: torch.Tensor | None,
         candidate_relation_type_ids: torch.Tensor,
     ) -> torch.Tensor:
+        if candidate_vectors.dim() != 3:
+            raise ValueError("candidate_vectors must have shape [batch, candidates, hidden]")
+        batch_size, candidate_count, _ = candidate_vectors.shape
+        expected_relation_shape = (batch_size, candidate_count, candidate_count)
+        if tuple(candidate_relation_type_ids.shape) != expected_relation_shape:
+            raise ValueError(
+                "candidate_relation_type_ids must have shape "
+                f"{expected_relation_shape}, got {tuple(candidate_relation_type_ids.shape)}"
+            )
+        if candidate_mask is None:
+            raise ValueError("candidate_mask is required for candidate-pairwise relation attention")
+        expected_mask_shape = (batch_size, candidate_count)
+        if tuple(candidate_mask.shape) != expected_mask_shape:
+            raise ValueError(
+                f"candidate_mask must have shape {expected_mask_shape}, got {tuple(candidate_mask.shape)}"
+            )
+
         scale = math.sqrt(max(candidate_vectors.size(-1), 1))
         scores = torch.matmul(candidate_vectors, candidate_vectors.transpose(1, 2)) / scale
         relation_bias = self.relation_bias(candidate_relation_type_ids.to(scores.device))
         scores = scores + relation_bias
-        if candidate_mask is not None:
-            mask = candidate_mask.to(scores.device).bool()
-            scores = scores.masked_fill(~mask.unsqueeze(1), -1e9)
+        mask = candidate_mask.to(scores.device).bool()
+        scores = scores.masked_fill(~mask.unsqueeze(1), torch.finfo(scores.dtype).min)
         weights = torch.softmax(scores, dim=-1)
         context = torch.matmul(weights, candidate_vectors)
-        return candidate_vectors + context
+        return (candidate_vectors + context) * mask.unsqueeze(-1).to(candidate_vectors.dtype)
+
+    def _unified_candidate_mask(
+        self,
+        table_candidate_mask: torch.Tensor | None,
+        column_candidate_mask: torch.Tensor | None,
+        *,
+        batch_size: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        if table_candidate_mask is None or column_candidate_mask is None:
+            raise ValueError(
+                "table_candidate_mask and column_candidate_mask are required "
+                "for candidate-pairwise relation attention"
+            )
+        expected_table_shape = (batch_size, self.max_tables)
+        expected_column_shape = (batch_size, self.max_columns)
+        if tuple(table_candidate_mask.shape) != expected_table_shape:
+            raise ValueError(
+                f"table_candidate_mask must have shape {expected_table_shape}, "
+                f"got {tuple(table_candidate_mask.shape)}"
+            )
+        if tuple(column_candidate_mask.shape) != expected_column_shape:
+            raise ValueError(
+                f"column_candidate_mask must have shape {expected_column_shape}, "
+                f"got {tuple(column_candidate_mask.shape)}"
+            )
+        return torch.cat(
+            [table_candidate_mask.to(device), column_candidate_mask.to(device)],
+            dim=1,
+        ).bool()
 
     def _candidate_vectors(
         self,

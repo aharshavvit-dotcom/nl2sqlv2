@@ -31,6 +31,40 @@ BLOCKED_KEYWORDS = {
 SENSITIVE_MARKERS = ("email", "phone", "password", "token", "secret", "ssn", "address", "dob", "birth_date", "credit_card", "api_key", "auth")
 DANGEROUS_FUNCTIONS = {"load_extension", "readfile", "writefile"}
 
+POLICY_FAILURE_TYPES = (
+    "select_star_blocked",
+    "limit_policy_failed",
+    "non_select_statement",
+    "unsafe_keyword",
+    "syntax_error",
+    "unknown",
+)
+
+
+def policy_failure_type(validation: dict[str, Any]) -> str | None:
+    """Map central-validator failures to stable lifecycle categories.
+
+    The ordering is intentional: a mutating statement containing a blocked
+    keyword is first classified as non-SELECT, while other unsafe keyword
+    failures outrank syntax and query-shape policy failures.
+    """
+    if bool(validation.get("is_valid", validation.get("ok", False))):
+        return None
+    checks = validation.get("checks") or {}
+    if not checks.get("select_only", False):
+        return "non_select_statement" if checks.get("parse", False) else (
+            "unsafe_keyword" if not checks.get("no_blocked_keywords", True) else "syntax_error"
+        )
+    if not checks.get("no_blocked_keywords", True):
+        return "unsafe_keyword"
+    if not checks.get("parse", False):
+        return "syntax_error"
+    if not checks.get("no_select_star", True):
+        return "select_star_blocked"
+    if not checks.get("limit_present", True) or not checks.get("limit_within_bounds", True):
+        return "limit_policy_failed"
+    return "unknown"
+
 
 class SQLValidator:
     def validate(

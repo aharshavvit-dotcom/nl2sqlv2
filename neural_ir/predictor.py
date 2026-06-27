@@ -13,7 +13,12 @@ from validation.sql_validator import SQLValidator
 from .candidate_builder import SchemaCandidateBuilder, build_candidate_masks, schema_link_score_vector
 from .confidence_calibrator import NeuralIRConfidenceCalibrator
 from .ir_repair import NeuralIRRepairer
-from .ir_dataset import build_question_schema_relation_type_ids, build_schema_relation_type_ids
+from .ir_dataset import (
+    build_candidate_metadata,
+    build_candidate_pairwise_relation_matrix,
+    build_question_schema_relation_type_ids,
+    build_schema_relation_type_ids,
+)
 from .model_registry import load_model_bundle
 from .option_a_to_ir import NeuralIRToIRConverter
 from .schema_linearizer import SchemaLinearizer, extract_schema_items
@@ -83,12 +88,20 @@ class NeuralIRPredictor:
         if (self.config.get("relation_aware_attention") or {}).get("enabled", False):
             max_question_len = int(self.config.get("max_question_len", 64))
             max_schema_len = int(self.config.get("max_schema_len", 256))
+            max_tables = int(self.config.get("max_tables", 64))
+            max_columns = int(self.config.get("max_columns", 256))
             relation_tensors = {
                 "relation_type_ids": torch.tensor([
                     build_question_schema_relation_type_ids(schema_items, schema_tokens, max_question_len, max_schema_len)
                 ], dtype=torch.long),
                 "schema_relation_type_ids": torch.tensor([
                     build_schema_relation_type_ids(schema_items, schema_tokens, max_schema_len)
+                ], dtype=torch.long),
+                "candidate_relation_type_ids": torch.tensor([
+                    build_candidate_pairwise_relation_matrix(
+                        build_candidate_metadata(candidates, schema_items, max_tables),
+                        max_tables + max_columns,
+                    )
                 ], dtype=torch.long),
             }
         with torch.no_grad():

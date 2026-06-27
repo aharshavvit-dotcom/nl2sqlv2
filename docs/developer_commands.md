@@ -331,7 +331,9 @@ Validates gold SQL executes correctly on a deterministic in-memory SQLite databa
 ### Predicted SQL Execution (experimental)
 Loads the candidate model bundle and runs predictions against fixture questions. Configured via `execution_aware.controlled_predicted_sql.enabled: true`.
 
-Predicted SQL is passed through the central SQL validator before execution. The integrated production pipeline writes `controlled_predicted_sql_execution_report.json`, copies it into the candidate bundle `evaluation/` directory, and can require that attached report before bundle validation. Standalone developer runs are advisory unless the config or promotion policy sets controlled predicted-SQL checks as required.
+Predicted SQL is passed through the central SQL validator before execution. Per-case validator failures use stable `policy_failure_type` values, and reports include `policy_failure_type_counts`. The integrated production pipeline writes `controlled_predicted_sql_execution_report.json`, copies it into the candidate bundle `evaluation/` directory, and can require that attached report before bundle validation.
+
+Required mode fails when the candidate manifest is missing, unreadable, or has no `bundle_id`. Optional mode can fall back to `pipeline_name`, but marks `bundle_id_source: pipeline_name_fallback`, `identity_strength: weak`, and emits `candidate_manifest_missing_for_predicted_sql`. Bootstrap comparison becomes statistical at 10 common stable case IDs and otherwise reports `insufficient_common_cases`.
 
 ---
 
@@ -345,5 +347,9 @@ model:
     enabled: true
     bias_init: 0.0
 ```
+
+Candidate-pairwise relation attention uses the unified table/column candidate mask, excluding padding before softmax. Runtime `relation_bias_mode` is one of `disabled`, `schema_token_role_bias`, `schema_pairwise_relation_bias`, `schema_candidate_pairwise_relation_bias`, or `combined`.
+
+`training_diagnostics.json` distinguishes relation IDs that are configured, observed in dataset items, observed in collated batches, and actually used in `model.forward`. Its candidate graph block aggregates real batch-mask counts and padding ratios. Multi-seed regression tests invoke `_run_multi_seed_variance()` directly; the report still represents evaluation-only stability, not full retraining variance.
 
 This adds a lightweight RAT-SQL-style learnable bias per relation type to schema attention. When enabled, the dataset emits explicit schema relation matrices for table, column, primary-key, and foreign-key relationships instead of relying only on question-schema role tags. **Not production behavior** unless explicitly enabled and validated via controlled experiments.
