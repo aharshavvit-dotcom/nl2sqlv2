@@ -5,6 +5,7 @@ import json
 import sqlite3
 import sys
 import tempfile
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,9 @@ if str(ROOT) not in sys.path:
 from dataset_training.utils import read_jsonl, write_json
 from execution_eval.execution_reporter import ExecutionReporter
 from execution_eval.sql_structure_comparator import SQLStructureComparator
+from inference.prediction_models import is_abstained_prediction
+from ir.query_ir_models import diff_query_ir
+from ir.sql_to_ir_converter import SQLToIRConverter
 from validation.sql_validator import POLICY_FAILURE_TYPES, SQLValidator, policy_failure_type
 
 
@@ -253,6 +257,88 @@ def _compare_results(
     }
 
 
+def _result_deltas(pred_rows: list[tuple], gold_rows: list[tuple], limit: int = 10) -> tuple[list[list[Any]], list[list[Any]]]:
+    predicted = Counter(_normalize_rows(pred_rows))
+    gold = Counter(_normalize_rows(gold_rows))
+    missing = [list(row) for row, count in (gold - predicted).items() for _ in range(count)][:limit]
+    extra = [list(row) for row, count in (predicted - gold).items() for _ in range(count)][:limit]
+    return missing, extra
+
+
+def _query_ir_from_sql(
+    converter: SQLToIRConverter,
+    question: str,
+    sql: str,
+    schema: Any,
+    case_id: str,
+) -> dict[str, Any]:
+    if not sql:
+        return {}
+    converted = converter.convert(
+        question=question,
+        sql=sql,
+        schema=schema,
+        dataset_name="controlled-fixture",
+        db_id="controlled",
+        example_id=case_id,
+        split="test",
+    )
+    return dict(converted.get("query_ir") or {}) if converted.get("success") else {}
+
+
+def _semantic_failure_category(
+    query_ir_diff: dict[str, Any],
+    predicted_sql: str,
+    gold_sql: str,
+    *,
+    row_count_match: bool,
+    result_value_match: bool,
+    ordered_result_match: bool | None,
+    dialect: str = "sqlite",
+) -> str:
+    slot = query_ir_diff.get("primary_failure_slot")
+    slot_categories = {
+        "filter_column": "filter_mismatch",
+        "filter_value": "filter_mismatch",
+        "filter_operator": "filter_mismatch",
+        "projection": "projection_mismatch",
+        "metric": "aggregation_mismatch",
+        "aggregation": "aggregation_mismatch",
+        "base_table": "join_mismatch",
+        "join": "join_mismatch",
+        "group_by": "group_by_mismatch",
+        "order_by": "order_by_mismatch",
+        "limit": "limit_mismatch",
+        "date_filter": "filter_mismatch",
+    }
+    if slot in slot_categories:
+        return slot_categories[slot]
+
+    try:
+        structure = SQLStructureComparator().compare(predicted_sql, gold_sql, dialect=dialect)
+        scores = structure.get("component_scores") or {}
+        for component, category in (
+            ("selected_columns", "projection_mismatch"),
+            ("filters", "filter_mismatch"),
+            ("aggregations", "aggregation_mismatch"),
+            ("group_by", "group_by_mismatch"),
+            ("joins", "join_mismatch"),
+            ("order_by", "order_by_mismatch"),
+            ("limit", "limit_mismatch"),
+        ):
+            if float(scores.get(component, 1.0)) < 1.0:
+                return category
+    except Exception:
+        pass
+    if not row_count_match:
+        return "row_count_mismatch"
+    if ordered_result_match is False and "order by" in gold_sql.lower():
+        return "order_by_mismatch"
+    if not result_value_match:
+        return "value_mismatch"
+    return "unknown"
+
+
 def evaluate_controlled_predicted_sql(
     model_artifact_dir: Path | None = None,
     fixture_sql_path: Path | None = None,
@@ -288,6 +374,9 @@ def evaluate_controlled_predicted_sql(
         "commit_sha": commit_sha or _git_commit_sha(),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "pipeline_run_id": pipeline_run_id,
+        "evaluation_mode": "real_model_predictions",
+        "gold_replay_used": False,
+        "is_valid_for_quality_gate": True,
     }
 
     if not sql_path.exists():
@@ -335,6 +424,7 @@ def evaluate_controlled_predicted_sql(
     schema_relationships_available = 0
     schema_graph_empty = True
     sql_validator = SQLValidator()
+    ir_converter = SQLToIRConverter()
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "controlled_predicted.db"
         conn = sqlite3.connect(str(db_path))
@@ -375,6 +465,7 @@ def evaluate_controlled_predicted_sql(
                 expected_rows = case.get("expected_row_count")
                 # Stable case_id (Phase 8)
                 case_id = case.get("case_id") or f"controlled_{case_index + 1:03d}"
+                gold_query_ir = _query_ir_from_sql(ir_converter, question, gold_sql, schema, f"{case_id}:gold")
 
                 entry: dict[str, Any] = {
                     "case_id": case_id,
@@ -384,6 +475,12 @@ def evaluate_controlled_predicted_sql(
                     "expected_row_count": expected_rows,
                     "predicted_sql": None,
                     "prediction_generated": False,
+                    "prediction_status": None,
+                    "abstained": False,
+                    "abstention_reason": None,
+                    "requires_clarification": False,
+                    "original_predicted_sql": None,
+                    "sql_repair": {},
                     # Phase 3: Separated SQL validation from execution
                     "central_sql_validator_used": True,
                     "production_sql_valid": False,
@@ -393,6 +490,7 @@ def evaluate_controlled_predicted_sql(
                     "production_policy_blocks": [],
                     "policy_failure_type": None,
                     "failure_category": None,
+                    "semantic_failure_category": None,
                     "fixture_execution_allowed": False,
                     "fixture_execution_blocked_reason": None,
                     "sqlite_execution_success": False,
@@ -402,6 +500,13 @@ def evaluate_controlled_predicted_sql(
                     "ordered_result_match": None,
                     "result_value_match": False,
                     "final_execution_match": False,
+                    "gold_result_preview": [],
+                    "predicted_result_preview": [],
+                    "missing_rows_preview": [],
+                    "extra_rows_preview": [],
+                    "predicted_query_ir": {},
+                    "gold_query_ir": gold_query_ir,
+                    "query_ir_diff": {},
                     # Legacy fields for backward compat
                     "predicted_sql_valid": False,
                     "predicted_sql_is_select_only": False,
@@ -425,8 +530,50 @@ def evaluate_controlled_predicted_sql(
                 try:
                     result = model.predict(question, schema)
                     predicted_sql = result.sql or ""
+                    result_status = getattr(result, "status", None)
+                    abstention_reason = getattr(result, "abstention_reason", None)
+                    if not isinstance(abstention_reason, str):
+                        abstention_reason = None
+                    result_debug = getattr(result, "debug", {})
+                    if not isinstance(result_debug, dict):
+                        result_debug = {}
                     entry["predicted_sql"] = predicted_sql
                     entry["prediction_generated"] = bool(predicted_sql.strip())
+                    entry["prediction_status"] = result_status if isinstance(result_status, str) else None
+                    entry["abstention_reason"] = abstention_reason
+                    entry["requires_clarification"] = bool(
+                        getattr(result, "needs_clarification", False) is True
+                    )
+                    entry["abstained"] = is_abstained_prediction(
+                        sql=predicted_sql,
+                        prediction_status=entry["prediction_status"],
+                        requires_clarification=entry["requires_clarification"],
+                    )
+                    abstained = entry["abstained"]
+                    predicted_query_ir = getattr(result, "query_ir", None) or getattr(result, "selected_query_ir", None)
+                    if not isinstance(predicted_query_ir, dict):
+                        predicted_query_ir = {}
+                    if not predicted_query_ir and predicted_sql.strip():
+                        predicted_query_ir = _query_ir_from_sql(
+                            ir_converter, question, predicted_sql, schema, f"{case_id}:predicted"
+                        )
+                    entry["predicted_query_ir"] = predicted_query_ir
+                    if predicted_query_ir and gold_query_ir:
+                        entry["query_ir_diff"] = diff_query_ir(predicted_query_ir, gold_query_ir)
+                    entry["original_predicted_sql"] = (
+                        result_debug.get("original_sql") or predicted_sql or None
+                    )
+                    entry["sql_repair"] = result_debug.get("sql_repair") or {}
+
+                    if not predicted_sql.strip():
+                        entry["failure_category"] = "abstained" if abstained else "no_prediction"
+                        entry["fixture_execution_blocked_reason"] = (
+                            abstention_reason or entry["failure_category"]
+                        )
+                        entry["error"] = (
+                            f"Prediction abstained: {abstention_reason or 'unspecified_reason'}"
+                            if abstained else "Model returned no SQL prediction"
+                        )
 
                     if predicted_sql.strip():
                         validation = sql_validator.validate(
@@ -489,6 +636,8 @@ def evaluate_controlled_predicted_sql(
                                 # Normalized result comparison
                                 gold_rows = gold_results.get(example_id, [])
                                 comparison = _compare_results(pred_rows, gold_rows, gold_sql)
+                                entry["row_count_match"] = comparison["row_count_match"]
+                                entry["predicted_row_count_match"] = comparison["row_count_match"]
                                 entry["unordered_result_match"] = comparison["unordered_result_match"]
                                 entry["ordered_result_match"] = comparison["ordered_result_match"]
                                 entry["result_value_match"] = comparison["result_value_match"]
@@ -497,6 +646,22 @@ def evaluate_controlled_predicted_sql(
                                 entry["predicted_unordered_result_match"] = comparison["unordered_result_match"]
                                 entry["predicted_ordered_result_match"] = comparison["ordered_result_match"]
                                 entry["predicted_result_value_match"] = comparison["result_value_match"]
+                                entry["gold_result_preview"] = [list(row) for row in gold_rows[:10]]
+                                entry["predicted_result_preview"] = [list(row) for row in pred_rows[:10]]
+                                missing, extra = _result_deltas(pred_rows, gold_rows)
+                                entry["missing_rows_preview"] = missing
+                                entry["extra_rows_preview"] = extra
+                                if not entry["final_execution_match"]:
+                                    entry["semantic_failure_category"] = _semantic_failure_category(
+                                        entry["query_ir_diff"],
+                                        predicted_sql,
+                                        gold_sql,
+                                        row_count_match=entry["row_count_match"],
+                                        result_value_match=entry["result_value_match"],
+                                        ordered_result_match=entry["ordered_result_match"],
+                                        dialect=getattr(schema, "dialect", "sqlite"),
+                                    )
+                                    entry["failure_category"] = entry["semantic_failure_category"]
                             except Exception as exc:
                                 entry["sqlite_execution_error"] = str(exc)
                                 entry["failure_category"] = "sqlite_execution_error"
@@ -504,6 +669,23 @@ def evaluate_controlled_predicted_sql(
                 except Exception as exc:
                     entry["failure_category"] = "prediction_error"
                     entry["error"] = f"Prediction error: {exc}"
+
+                entry["safety"] = {
+                    "production_sql_valid": entry["production_sql_valid"],
+                    "safe_sql": entry["safe_sql"],
+                    "policy_failure_type": entry["policy_failure_type"],
+                }
+                entry["execution"] = {
+                    "sqlite_execution_success": entry["sqlite_execution_success"],
+                    "execution_error": entry["sqlite_execution_error"],
+                }
+                entry["semantic_match"] = {
+                    "final_execution_match": entry["final_execution_match"],
+                    "row_count_match": entry["row_count_match"],
+                    "result_value_match": entry["result_value_match"],
+                    "unordered_result_match": entry["unordered_result_match"],
+                    "ordered_result_match": entry["ordered_result_match"],
+                }
 
                 results.append(entry)
         finally:
@@ -524,7 +706,35 @@ def evaluate_controlled_predicted_sql(
     row_count_mismatch = sum(1 for r in results if r["sqlite_execution_success"] and not r["row_count_match"])
     value_mismatch = sum(1 for r in results if r["sqlite_execution_success"] and r["row_count_match"] and not r["result_value_match"])
     unsafe = sum(1 for r in results if r["prediction_generated"] and not r.get("safe_sql"))
+    abstention_count = sum(1 for r in results if r.get("abstained"))
+    requires_clarification_count = sum(1 for r in results if r.get("requires_clarification"))
+    no_prediction_count = sum(
+        1 for r in results
+        if not r["prediction_generated"] and not r.get("abstained")
+    )
     prediction_denominator = max(predictions_generated, 1)
+    answered_count = sum(1 for r in results if r["prediction_generated"] and not r.get("abstained"))
+    answered_denominator = max(answered_count, 1)
+    safe_but_wrong_count = sum(
+        1 for r in results
+        if r.get("safe_sql") and r.get("sqlite_execution_success") and not r.get("final_execution_match")
+    )
+    semantic_categories = [
+        "projection_mismatch",
+        "filter_mismatch",
+        "aggregation_mismatch",
+        "group_by_mismatch",
+        "join_mismatch",
+        "order_by_mismatch",
+        "limit_mismatch",
+        "row_count_mismatch",
+        "value_mismatch",
+        "unknown",
+    ]
+    semantic_failure_breakdown = {
+        category: sum(1 for row in results if row.get("semantic_failure_category") == category)
+        for category in semantic_categories
+    }
 
     # Phase 3: Failure breakdown
     failure_breakdown = {
@@ -533,12 +743,26 @@ def evaluate_controlled_predicted_sql(
         "sqlite_execution_error": sqlite_error,
         "row_count_mismatch": row_count_mismatch,
         "value_mismatch": value_mismatch,
+        "abstained": abstention_count,
+        "no_prediction": no_prediction_count,
     }
     policy_failure_type_counts = {name: 0 for name in POLICY_FAILURE_TYPES}
     for result in results:
         failure_type = result.get("policy_failure_type")
         if failure_type in policy_failure_type_counts:
             policy_failure_type_counts[failure_type] += 1
+    controlled_failure_diagnosis = [
+        {
+            "case_id": row.get("case_id"),
+            "question": row.get("question"),
+            "primary_failure": row.get("semantic_failure_category") or row.get("failure_category"),
+            "primary_failure_slot": (row.get("query_ir_diff") or {}).get("primary_failure_slot"),
+            "root_cause": _root_cause(row),
+            "fix_area": _fix_area(row.get("semantic_failure_category") or row.get("failure_category")),
+        }
+        for row in results
+        if not row.get("final_execution_match")
+    ]
 
     return {
         # Phase 1: Identity metadata
@@ -552,7 +776,16 @@ def evaluate_controlled_predicted_sql(
         "schema_relationships_available": schema_relationships_available,
         "schema_graph_empty": schema_graph_empty,
         "cases_total": total,
+        "predictions_total": total,
         "predictions_generated": predictions_generated,
+        "sql_generated_count": predictions_generated,
+        "sql_evaluated_count": predictions_generated,
+        "coverage_rate": answered_count / total if total else 0.0,
+        "prediction_coverage_rate": answered_count / total if total else 0.0,
+        "abstention_count": abstention_count,
+        "abstention_rate": abstention_count / total if total else 0.0,
+        "requires_clarification_count": requires_clarification_count,
+        "no_prediction_count": no_prediction_count,
         # Phase 3: Separated counts
         "production_sql_valid_count": production_valid,
         "production_sql_validation_failure_count": production_invalid,
@@ -564,6 +797,13 @@ def evaluate_controlled_predicted_sql(
         "predicted_unordered_result_match_count": unordered_match,
         "predicted_ordered_result_match_count": ordered_match,
         "failure_breakdown": failure_breakdown,
+        "semantic_failure_breakdown": semantic_failure_breakdown,
+        "safe_but_wrong_sql_count": safe_but_wrong_count,
+        "safe_but_wrong_sql_rate": safe_but_wrong_count / production_valid if production_valid else 0.0,
+        "semantic_execution_match_rate": exec_match / answered_denominator if answered_count else 0.0,
+        "quality_on_answered_rate": exec_match / answered_denominator if answered_count else 0.0,
+        "quality_on_all_questions_rate": exec_match / total if total else 0.0,
+        "controlled_failure_diagnosis": controlled_failure_diagnosis,
         "policy_failure_type_counts": policy_failure_type_counts,
         # Rates
         "predicted_sql_valid_count": production_valid,
@@ -572,15 +812,45 @@ def evaluate_controlled_predicted_sql(
         "predicted_safe_sql_rate": production_valid / prediction_denominator,
         "predicted_select_only_rate": sum(1 for r in results if r.get("select_only")) / prediction_denominator,
         "predicted_unsafe_sql_count": unsafe,
-        "predicted_execution_success_rate": sqlite_success / total if total else 0.0,
-        "predicted_execution_match_rate": exec_match / total if total else 0.0,
-        "predicted_execution_error_rate": (total - sqlite_success) / total if total else 0.0,
-        "predicted_row_count_match_rate": row_match / total if total else 0.0,
-        "predicted_result_value_match_rate": exec_match / total if total else 0.0,
+        "predicted_execution_success_rate": sqlite_success / answered_denominator if answered_count else 0.0,
+        "predicted_execution_match_rate": exec_match / answered_denominator if answered_count else 0.0,
+        "predicted_execution_error_rate": sqlite_error / fixture_allowed if fixture_allowed else 0.0,
+        "predicted_row_count_match_rate": row_match / answered_denominator if answered_count else 0.0,
+        "predicted_result_value_match_rate": exec_match / answered_denominator if answered_count else 0.0,
         "unsafe_sql_count": unsafe,
-        "passed": unsafe == 0 and (exec_match / total if total else 0.0) >= (config or {}).get("min_execution_match_rate", 0.0),
+        "passed": bool(
+            predictions_generated > 0
+            and unsafe == 0
+            and (exec_match / answered_denominator if answered_count else 0.0)
+            >= (config or {}).get("min_execution_match_rate", 0.0)
+        ),
         "cases": results,
     }
+
+
+def _fix_area(category: str | None) -> str:
+    return {
+        "projection_mismatch": "default_projection",
+        "filter_mismatch": "filter_grounding",
+        "aggregation_mismatch": "metric_grounding",
+        "group_by_mismatch": "dimension_grounding",
+        "join_mismatch": "join_planning",
+        "order_by_mismatch": "ordering",
+        "limit_mismatch": "limit_resolution",
+        "row_count_mismatch": "filter_or_join_grounding",
+        "value_mismatch": "semantic_grounding",
+    }.get(str(category), "prediction_pipeline")
+
+
+def _root_cause(row: dict[str, Any]) -> str:
+    slot = (row.get("query_ir_diff") or {}).get("primary_failure_slot")
+    if slot:
+        return f"QueryIR {slot} differs from gold"
+    if row.get("semantic_failure_category") == "row_count_mismatch":
+        return "predicted result row count differs from gold"
+    if row.get("semantic_failure_category") == "value_mismatch":
+        return "predicted rows have different values from gold"
+    return str(row.get("error") or row.get("failure_category") or "unknown semantic mismatch")
 
 
 def _git_commit_sha() -> str | None:

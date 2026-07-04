@@ -1,17 +1,14 @@
 pipeline:
-  name: smoke_integrated_training
+  name: debug_app_training
   seed: 42
   fail_fast: true
   promote_if_passed: false
 
 datasets:
-  names:
-    - wikisql
+  names: [wikisql]
   max_examples: 100
-  max_examples_per_dataset:
-    wikisql: 100
-  min_converted_examples_required:
-    wikisql: 1
+  max_examples_per_dataset: {wikisql: 100}
+  min_converted_examples_required: {wikisql: 1}
 
 paths:
   processed_dir: data/processed
@@ -31,15 +28,9 @@ neural:
   epochs: 1
   batch_size: 4
 
-self_training:
-  enabled: false
-
-ranker:
-  enabled: false
-
-augmentation:
-  schema_renaming:
-    enabled: false
+self_training: {enabled: false}
+ranker: {enabled: false}
+augmentation: {schema_renaming: {enabled: false}}
 
 evaluation:
   enabled: true
@@ -63,9 +54,6 @@ feedback_regression:
   required_for_production: false
   report_path: artifacts/evaluation/feedback_regression_report.json
 
-app:
-  allow_candidate_bundle_debug: true
-
 bundle:
   build: true
   validate: true
@@ -74,3 +62,12 @@ bundle:
 execution_aware:
   controlled_fixtures:
     enabled: true
+    required_for_full_training: false
+  controlled_predicted_sql:
+    enabled: false
+    required_for_full_training: false
+
+app:
+  allow_candidate_bundle_debug: true
+
+seeds: {enabled: false}

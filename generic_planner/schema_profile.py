@@ -36,6 +36,12 @@ SENSITIVE_PATTERNS = (
     "api_key",
     "auth",
 )
+AUDIT_PATTERNS = ("created_at", "updated_at", "deleted_at", "internal_id")
+DEFAULT_PROJECTIONS = {
+    "users": ["id", "name", "role", "status"],
+    "terminals": ["id", "terminal_name", "location"],
+    "berths": ["id", "berth_name", "terminal_id", "status"],
+}
 
 
 class SchemaProfile:
@@ -140,29 +146,49 @@ class SchemaProfile:
 
         return sorted(matches, key=lambda item: (-item["score"], item["table"], item["column"]))
 
-    def safe_select_columns(self, table: str, max_columns: int = 12) -> list[str]:
-        columns = [column for column in self.get_columns(table) if not self.is_sensitive_column(column["name"])]
+    def safe_select_columns(self, table: str, max_columns: int = 4) -> list[str]:
+        columns = [
+            column for column in self.get_columns(table)
+            if not self.is_sensitive_column(column["name"])
+            and not self.is_audit_column(column["name"])
+        ]
         if not columns:
             id_columns = [column["name"] for column in self.get_columns(table) if self._is_id_column(column["name"])]
             return id_columns[:max_columns]
 
-        def rank(column: dict[str, Any]) -> tuple[int, str]:
+        configured = DEFAULT_PROJECTIONS.get(table)
+        if configured:
+            available = {column["name"] for column in columns}
+            selected = [column for column in configured if column in available]
+            if selected:
+                return selected[:max_columns]
+
+        def rank(column: dict[str, Any]) -> tuple[int, int]:
             name = column["name"].lower()
+            position = next(
+                (index for index, item in enumerate(self.get_columns(table)) if item["name"] == column["name"]),
+                999,
+            )
             if column.get("is_primary_key") or column.get("primary_key"):
-                return (0, name)
+                return (0, position)
             if name in {"name", "title", "label", "code", "status"}:
-                return (1, name)
-            if any(marker in name for marker in ("name", "code", "status", "type", "date", "created", "updated")):
-                return (2, name)
+                return (1, position)
+            if any(marker in name for marker in ("name", "code", "status", "type", "location", "role")):
+                return (2, position)
             if self._is_id_column(name):
-                return (4, name)
-            return (3, name)
+                return (4, position)
+            return (3, position)
 
         return [column["name"] for column in sorted(columns, key=rank)[:max_columns]]
 
     def is_sensitive_column(self, column_name: str) -> bool:
         name = normalize_identifier(column_name)
         return any(pattern in name for pattern in SENSITIVE_PATTERNS)
+
+    @staticmethod
+    def is_audit_column(column_name: str) -> bool:
+        name = normalize_identifier(column_name)
+        return any(name == marker or name.endswith(f"_{marker}") for marker in AUDIT_PATTERNS)
 
     def _apply_semantic_aliases(self) -> None:
         try:

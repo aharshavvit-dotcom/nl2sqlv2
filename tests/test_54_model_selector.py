@@ -41,3 +41,51 @@ def test_model_selector_surfaces_predicted_sql_metrics() -> None:
     assert predicted["available"] is True
     assert predicted["execution_match_rate"] == 0.7
     assert predicted["safe_sql_rate"] == 1.0
+
+
+def test_gold_baseline_is_not_promotion_eligible() -> None:
+    candidate = _candidate("gold")
+    candidate.model_artifact_source = "gold_baseline"
+    candidate.evaluation_mode = "gold_replay"
+    candidate.eligible_for_promotion = False
+    report = ModelSelector().select_best([candidate], THRESHOLDS)
+    assert report["selected_model"] is None
+    issues = report["rejected_models"][0]["blocking_issues"]
+    assert "evaluation_mode_not_real_model_predictions" in issues
+    assert "candidate_not_eligible_for_promotion" in issues
+
+
+def test_legacy_cached_report_is_not_promotion_eligible() -> None:
+    candidate = _candidate("legacy")
+    candidate.model_artifact_source = "legacy_cache"
+    report = ModelSelector().select_best([candidate], THRESHOLDS)
+    assert report["selected_model"] is None
+    assert report["selection_blocked"] is True
+    assert report["ineligible_candidates"][0]["reason"] == "stale_report"
+
+
+def test_real_candidate_with_failed_quality_gate_is_rejected() -> None:
+    candidate = _candidate("real")
+    candidate.metadata["quality_gate_passed"] = False
+    report = ModelSelector().select_best([candidate], THRESHOLDS)
+    assert report["selected_model"] is None
+    assert "quality_gate_not_passed" in report["rejected_models"][0]["blocking_issues"]
+
+
+def test_stale_or_bundle_mismatched_candidate_is_rejected() -> None:
+    candidate = _candidate("stale")
+    candidate.candidate_bundle_id = "bundle-old"
+    candidate.manifest_bundle_id = "bundle-current"
+    candidate.generated_at = "2026-06-17T00:00:00+00:00"
+    candidate.metadata.update({
+        "enforce_freshness": True,
+        "candidate_bundle_generated_at": "2026-07-04T00:00:00+00:00",
+    })
+
+    report = ModelSelector().select_best([candidate], THRESHOLDS)
+
+    assert report["selected_model"] is None
+    reasons = report["ineligible_candidates"][0]["reasons"]
+    assert "bundle_id_mismatch" in reasons
+    assert "stale_report" in reasons
+    assert report["selection_blocked_reason"] == "no_eligible_candidate"

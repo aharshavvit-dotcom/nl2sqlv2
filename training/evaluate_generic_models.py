@@ -14,7 +14,9 @@ if str(ROOT) not in sys.path:
 
 from dataset_training.dataset_evaluator import DatasetScaleEvaluator, write_confusion_matrix_csv
 from dataset_training.reporting import save_report_pair
-from dataset_training.utils import read_jsonl
+from dataset_training.utils import read_jsonl, write_jsonl
+from validation.sql_validator import POLICY_FAILURE_TYPES, SQLValidator, policy_failure_type
+from inference.prediction_models import is_abstained_prediction
 
 
 def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
@@ -38,6 +40,10 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
         model_bundle_dir=getattr(args, "model_bundle_dir", None),
         allow_gold_replay_baseline=bool(getattr(args, "allow_gold_replay_baseline", False)),
     )
+    unsafe_examples_path = args.output.parent / "unsafe_sql_examples.jsonl"
+    test_safety = _apply_sql_safety(test_evaluation_rows)
+    unseen_safety = _apply_sql_safety(unseen_evaluation_rows)
+    write_jsonl(unsafe_examples_path, test_safety["failures"])
     evaluator = DatasetScaleEvaluator()
     test_mode = "explicit_gold_replay_baseline" if test_source == "gold_replay_baseline" else "real_model_predictions"
     unseen_mode = "explicit_gold_replay_baseline" if unseen_source == "gold_replay_baseline" else "real_model_predictions"
@@ -83,6 +89,7 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
         "calibration_runtime_active": calibration_loaded,
         "is_valid_for_quality_gate": overall_valid,
         "is_valid_for_full_bundle_quality_gate": overall_valid and full_bundle_runtime_used,
+        "eligible_for_promotion": bool(overall_valid and test_mode == "real_model_predictions"),
         "rows_evaluated": int(test_eval.get("rows_evaluated", 0)),
         "real_predictions_generated": int(test_eval.get("real_predictions_generated", 0)),
         "prediction_failures": int(test_eval.get("prediction_failures", 0)),
@@ -96,6 +103,7 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
             "test_source": "real_model_predictions" if test_mode == "real_model_predictions" else "gold_replay_baseline",
             "gold_replay_used": gold_replay_used,
             "is_valid_for_quality_gate": overall_valid,
+            "eligible_for_promotion": bool(overall_valid and test_mode == "real_model_predictions"),
         },
         "test_performance": test_eval,
         "unseen_db_performance": unseen_eval,
@@ -118,8 +126,57 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
             "join_decision_macro_f1": test_summary.get("join_decision_macro_f1", 0.0),
             "router_accuracy": test_summary.get("router_accuracy", 0.0),
             "router_macro_f1": test_summary.get("router_macro_f1", 0.0),
+            "sql_validation_failure_breakdown": test_safety["failure_breakdown"],
+            "top_sql_validation_errors": test_safety["top_errors"],
+            "unsafe_sql_examples_path": str(unsafe_examples_path),
+            "sql_repair_attempt_count": test_safety["repair_attempt_count"],
+            "sql_repair_success_count": test_safety["repair_success_count"],
+            "sql_repair_success_rate": test_safety["repair_success_rate"],
+            "sql_validation_rate_before_repair": test_safety["validation_rate_before_repair"],
+            "sql_validation_rate_after_repair": test_safety["validation_rate_after_repair"],
+            "abstention_count": test_safety["abstention_count"],
+            "abstention_rate": test_safety["abstention_rate"],
+            "predictions_total": test_summary.get("predictions_total", len(test_rows)),
+            "predictions_generated": test_summary.get("predictions_generated", test_safety.get("predictions_generated", 0)),
+            "requires_clarification_count": test_summary.get("requires_clarification_count", test_safety.get("requires_clarification_count", 0)),
+            "sql_generated_count": test_summary.get("sql_generated_count", test_safety.get("sql_generated_count", 0)),
+            "sql_evaluated_count": test_summary.get("sql_evaluated_count", test_safety.get("sql_evaluated_count", 0)),
+            "coverage_rate": test_summary.get("coverage_rate", test_safety.get("coverage_rate", 0.0)),
+            "quality_on_answered_rate": test_summary.get("quality_on_answered_rate", 0.0),
+            "quality_on_all_questions_rate": test_summary.get("quality_on_all_questions_rate", 0.0),
+            "unsafe_sql_abstention_count": test_safety["unsafe_sql_abstention_count"],
+            "filter_confidence_abstention_count": test_safety["filter_confidence_abstention_count"],
+            "post_abstention_unsafe_sql_count": test_safety["post_abstention_unsafe_sql_count"],
+            "invalid_sql_count": test_safety["invalid_sql_count"],
+            "unseen_db_sql_validation_rate_before_repair": unseen_safety["validation_rate_before_repair"],
+            "unseen_db_sql_validation_rate_after_repair": unseen_safety["validation_rate_after_repair"],
         }
     )
+    for key in (
+        "sql_validation_failure_breakdown",
+        "top_sql_validation_errors",
+        "unsafe_sql_examples_path",
+        "sql_repair_attempt_count",
+        "sql_repair_success_count",
+        "sql_repair_success_rate",
+        "sql_validation_rate_before_repair",
+        "sql_validation_rate_after_repair",
+        "abstention_count",
+        "abstention_rate",
+        "predictions_total",
+        "predictions_generated",
+        "requires_clarification_count",
+        "sql_generated_count",
+        "sql_evaluated_count",
+        "coverage_rate",
+        "quality_on_answered_rate",
+        "quality_on_all_questions_rate",
+        "unsafe_sql_abstention_count",
+        "filter_confidence_abstention_count",
+        "post_abstention_unsafe_sql_count",
+        "invalid_sql_count",
+    ):
+        report[key] = report["summary"].get(key)
     thresholds = _load_thresholds(args.thresholds)
     report["thresholds"] = compare_thresholds(report, thresholds)
     save_report_pair(args.output, report, "Generic Model Evaluation Report")
@@ -200,12 +257,21 @@ def _predict_with_retrieval_model(
                 "predicted_query_ir": result.query_ir or {},
                 "predicted_sql": result.sql,
                 "rendered_sql": result.sql,
+                "original_predicted_sql": (result.debug or {}).get("original_sql") or result.sql,
                 "confidence": result.calibrated_confidence if result.calibrated_confidence is not None else result.confidence,
                 "raw_confidence": result.raw_confidence if result.raw_confidence is not None else result.confidence,
                 "calibrated_confidence": result.calibrated_confidence,
                 "prediction_latency_ms": elapsed,
                 "ir_validation": result.ir_validation or row.get("ir_validation") or {},
                 "sql_validation": result.validation or row.get("sql_validation") or {},
+                "schema_mapping": result.schema_mapping or {},
+                "slots": result.slots or {},
+                "filter_value_candidates": result.filter_value_candidates or (result.debug or {}).get("filter_value_candidates") or [],
+                "abstain": bool(result.abstain),
+                "prediction_status": result.status,
+                "abstention_reason": result.abstention_reason,
+                "requires_clarification": bool(result.needs_clarification),
+                "repair": (result.debug or {}).get("sql_repair") or {},
                 "prediction_source": result.source_model,
                 "predicted_route": (
                     "generic_direct_planner"
@@ -235,6 +301,142 @@ def _predict_with_retrieval_model(
                 "sql_validation": {"is_valid": False, "issues": [str(exc)]},
             })
     return merged, "adaptive_router", artifact_source
+
+
+def _apply_sql_safety(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    validator = SQLValidator()
+    failures: list[dict[str, Any]] = []
+    failure_breakdown = {name: 0 for name in POLICY_FAILURE_TYPES}
+    error_counts: dict[str, int] = {}
+    before_valid = 0
+    after_valid = 0
+    repair_attempts = 0
+    repair_successes = 0
+    unsafe_abstentions = 0
+    filter_abstentions = 0
+
+    for row in rows:
+        original_sql = row.get("original_predicted_sql") or row.get("predicted_sql") or row.get("rendered_sql")
+        preexisting_abstention = is_abstained_prediction(
+            sql=row.get("predicted_sql") or row.get("rendered_sql"),
+            prediction_status=row.get("prediction_status") or ("abstained" if row.get("abstain") else None),
+            requires_clarification=bool(row.get("requires_clarification")),
+        )
+        schema = row.get("schema") or {}
+        dialect = str(schema.get("dialect") or row.get("dialect") or "sqlite")
+        query_ir_valid = bool((row.get("ir_validation") or {}).get("is_valid", True))
+        repair = validator.validate_with_repair(
+            original_sql,
+            schema=schema,
+            dialect=dialect,
+            query_ir_valid=query_ir_valid,
+        )
+        original_validation = repair["original_validation"]
+        final_validation = repair["final_validation"]
+        if original_validation.get("is_valid"):
+            before_valid += 1
+        if repair.get("repair_attempted"):
+            repair_attempts += 1
+        if repair.get("repair_succeeded"):
+            repair_successes += 1
+
+        final_sql = repair.get("final_sql")
+        final_valid = bool(final_validation.get("is_valid")) and bool(final_sql)
+        if final_valid:
+            after_valid += 1
+            if not preexisting_abstention:
+                row["predicted_sql"] = final_sql
+                row["rendered_sql"] = final_sql
+            row["sql_validation"] = final_validation
+        elif original_sql:
+            failure_type = policy_failure_type(original_validation) or "unknown"
+            failure_breakdown[failure_type] = failure_breakdown.get(failure_type, 0) + 1
+            for issue in original_validation.get("issues") or []:
+                text = str(issue)
+                error_counts[text] = error_counts.get(text, 0) + 1
+            unsafe = failure_type in {"non_select_statement", "unsafe_keyword"}
+            abstention_reason = "unsafe_sql" if unsafe else "sql_validation_failed"
+            row.update({
+                "original_predicted_sql": original_sql,
+                "predicted_sql": None,
+                "rendered_sql": None,
+                "sql_validation": final_validation,
+                "abstain": preexisting_abstention,
+                "abstention_reason": abstention_reason,
+                "requires_clarification": bool(row.get("requires_clarification")) or preexisting_abstention,
+                "policy_failure_type": failure_type,
+                "sql_generated": bool(original_sql),
+                "sql_evaluated": bool(original_sql),
+            })
+            if unsafe:
+                unsafe_abstentions += 1
+            failures.append({
+                "example_id": row.get("example_id"),
+                "question": row.get("question"),
+                "predicted_sql": original_sql,
+                "predicted_query_ir": row.get("predicted_query_ir") or {},
+                "sql_validation_passed": False,
+                "validation_errors": list(original_validation.get("issues") or []),
+                "policy_failure_type": failure_type,
+                "invalid_sql": True,
+                "unsafe_sql": unsafe,
+                "repair_attempted": bool(repair.get("repair_attempted")),
+                "repair_succeeded": bool(repair.get("repair_succeeded")),
+                "repair_actions": list(repair.get("repair_actions") or []),
+                "final_sql_after_repair": repair.get("final_sql"),
+                "abstained": preexisting_abstention,
+                "abstention_reason": abstention_reason,
+            })
+        row["repair"] = {
+            "repair_attempted": bool(repair.get("repair_attempted")),
+            "repair_succeeded": bool(repair.get("repair_succeeded")),
+            "repair_actions": list(repair.get("repair_actions") or []),
+            "original_sql": original_sql,
+            "final_sql_after_repair": repair.get("final_sql"),
+        }
+        if row.get("abstention_reason") in {"low_filter_confidence", "ambiguous_filter_column"}:
+            filter_abstentions += 1
+
+    total = len(rows)
+    abstentions = sum(
+        1 for row in rows
+        if is_abstained_prediction(
+            sql=row.get("predicted_sql") or row.get("rendered_sql"),
+            prediction_status=row.get("prediction_status") or ("abstained" if row.get("abstain") else None),
+            requires_clarification=bool(row.get("requires_clarification")),
+        )
+    )
+    generated = sum(1 for row in rows if row.get("predicted_sql") or row.get("rendered_sql") or row.get("sql_generated"))
+    clarification_count = sum(1 for row in rows if row.get("requires_clarification"))
+    post_unsafe = sum(
+        1 for row in rows
+        if row.get("predicted_sql") and not (row.get("sql_validation") or {}).get("is_valid", False)
+    )
+    return {
+        "failures": failures,
+        "failure_breakdown": failure_breakdown,
+        "top_errors": [
+            {"error": error, "count": count}
+            for error, count in sorted(error_counts.items(), key=lambda item: (-item[1], item[0]))[:20]
+        ],
+        "repair_attempt_count": repair_attempts,
+        "repair_success_count": repair_successes,
+        "repair_success_rate": repair_successes / repair_attempts if repair_attempts else 0.0,
+        "validation_rate_before_repair": before_valid / total if total else 0.0,
+        "validation_rate_after_repair": after_valid / total if total else 0.0,
+        "abstention_count": abstentions,
+        "abstention_rate": abstentions / total if total else 0.0,
+        "predictions_total": total,
+        "predictions_generated": generated,
+        "requires_clarification_count": clarification_count,
+        "sql_generated_count": generated,
+        "sql_evaluated_count": generated,
+        "coverage_rate": generated / total if total else 0.0,
+        "unsafe_sql_abstention_count": unsafe_abstentions,
+        "filter_confidence_abstention_count": filter_abstentions,
+        "post_abstention_unsafe_sql_count": post_unsafe,
+        "invalid_sql_count": len(failures),
+    }
 
 
 def _schema_graph(schema: dict[str, Any]) -> Any:
@@ -279,6 +481,15 @@ def _write_governance_reports(output_dir: Path, report: dict[str, Any]) -> None:
             "query_ir_validity_rate": summary.get("query_ir_validity_rate", 0.0),
             "sql_validation_rate": summary.get("sql_validation_rate", 0.0),
             "unsafe_sql_count": summary.get("unsafe_sql_count", 0),
+            "filter_value_extraction_accuracy_rate": summary.get("filter_value_extraction_accuracy_rate", 0.0),
+            "filter_column_top1_accuracy_rate": summary.get("filter_column_top1_accuracy_rate", 0.0),
+            "filter_column_top3_accuracy_rate": summary.get("filter_column_top3_accuracy_rate", 0.0),
+            "filter_column_ambiguity_rate": summary.get("filter_column_ambiguity_rate", 0.0),
+            "filter_grounding_confidence_mean": summary.get("filter_grounding_confidence_mean", 0.0),
+            "projection_exact_match_rate": summary.get("projection_exact_match_rate", 0.0),
+            "projection_contains_gold_rate": summary.get("projection_contains_gold_rate", 0.0),
+            "extra_projection_column_rate": summary.get("extra_projection_column_rate", 0.0),
+            "default_projection_used_count": summary.get("default_projection_used_count", 0),
         },
         "intent": classification.get("intent", {}),
         "base_table": classification.get("base_table", {}),
@@ -376,12 +587,13 @@ def compare_thresholds(report: dict[str, Any], thresholds: dict[str, Any]) -> di
     values = {
         "query_ir_validity_rate": summary.get("query_ir_validity_rate", 0.0),
         "sql_validation_rate": summary.get("sql_validation_rate", 0.0),
-        "simple_query_pass_rate": summary.get("intent_accuracy_rate", 0.0),
+        "simple_query_pass_rate": summary.get("simple_query_pass_rate", summary.get("intent_accuracy_rate", 0.0)),
         "no_select_star_rate": 1.0,
         "unnecessary_join_rate_max": summary.get("unnecessary_join_rate", 0.0),
         "unseen_db_sql_validation_rate": unseen.get("sql_validation_rate", 0.0),
         "unseen_db_wrong_table_rate_max": unseen.get("wrong_table_rate", 0.0),
-        "unsafe_sql_count_max": 0,
+        "unsafe_sql_count_max": summary.get("unsafe_sql_count", 0),
+        "post_abstention_unsafe_sql_count_max": summary.get("post_abstention_unsafe_sql_count", 0),
         "intent_macro_f1": summary.get("intent_macro_f1", 0.0),
         "intent_accuracy": summary.get("intent_accuracy_rate", 0.0),
         "base_table_accuracy": summary.get("base_table_accuracy_rate", 0.0),
@@ -396,9 +608,13 @@ def compare_thresholds(report: dict[str, Any], thresholds: dict[str, Any]) -> di
     }
     results = {}
     for key, expected in minimums.items():
+        if isinstance(expected, dict):
+            expected = expected.get("warning_min", expected.get("production_min", expected.get("min", 0.0)))
         metric_key = key[:-4] if key.endswith(("_min", "_max")) else key
         actual = values.get(metric_key, values.get(key, 0.0))
-        if key.endswith("_max"):
+        if actual is None:
+            passed = False
+        elif key.endswith("_max"):
             passed = actual <= expected
         else:
             passed = actual >= expected

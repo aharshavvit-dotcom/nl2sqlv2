@@ -46,6 +46,10 @@ class SchemaMapping(BaseModel):
     date_column: str | None = None
     filter_table: str | None = None
     filter_column: str | None = None
+    filter_linking_method: str | None = None
+    dimension_linking_method: str | None = None
+    filter_ambiguous: bool = False
+    filter_alternatives: list[str] = Field(default_factory=list)
     match_scores: dict[str, float] = Field(default_factory=dict)
     mapping_reasons: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -64,6 +68,7 @@ class JoinPlan(BaseModel):
 class PredictionResult(BaseModel):
     question: str
     normalized_question: str
+    status: Literal["completed", "abstained"] = "completed"
     source_model: Literal["generic_direct_planner", "retrieval_ir", "neural_ir", "adaptive_router",
                           # Backward-compatible values:
                           "option_c", "option_a", "hybrid"] = "retrieval_ir"
@@ -97,6 +102,7 @@ class PredictionResult(BaseModel):
     selected_query_ir: dict[str, Any] | None = None
     validation_summary: dict[str, Any] = Field(default_factory=dict)
     confidence_breakdown: dict[str, Any] = Field(default_factory=dict)
+    filter_value_candidates: list[dict[str, Any]] = Field(default_factory=list)
     planner_debug: dict[str, Any] = Field(default_factory=dict)
     debug: dict[str, Any] = Field(default_factory=dict)
 
@@ -115,3 +121,20 @@ class PredictionResult(BaseModel):
     def option_c_result(self) -> dict[str, Any]:
         """Deprecated alias. Use ``retrieval_ir_result``."""
         return self.retrieval_ir_result
+
+
+def is_abstained_prediction(
+    *,
+    sql: str | None,
+    prediction_status: str | None = None,
+    requires_clarification: bool = False,
+) -> bool:
+    """Canonical abstention rule shared by runtime evaluation reports.
+
+    Once SQL is emitted it is an answered prediction, even when confidence is
+    low or validation later fails. Clarification only counts as abstention when
+    no SQL was emitted.
+    """
+    if str(sql or "").strip():
+        return False
+    return prediction_status == "abstained" or bool(requires_clarification)

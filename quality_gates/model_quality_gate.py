@@ -19,6 +19,7 @@ class ModelQualityGate:
             **(thresholds.get("minimums") or (thresholds if "classification_metrics" not in thresholds else {})),
             **(thresholds.get("classification_metrics") or {}),
             **(thresholds.get("calibration_metrics") or {}),
+            **_semantic_thresholds(thresholds),
         }
         mode = _quality_gate_mode(evaluation_report)
         metrics, present = self._extract_metrics(evaluation_report)
@@ -27,9 +28,16 @@ class ModelQualityGate:
         missing_metrics: list[str] = []
 
         execution_status = self._execution_status(evaluation_report)
+        feedback_config = evaluation_report.get("feedback_regression") or {}
         source_failures, source_warnings = self._evaluation_source_checks(evaluation_report)
         failed_checks.extend(source_failures)
         warnings.extend(source_warnings)
+
+        require_non_degenerate = bool(
+            ((thresholds.get("calibration") or {}).get("require_non_degenerate_confidence") or {}).get(
+                "production", False
+            )
+        )
 
         for key, expected in minimums.items():
             metric_key = _threshold_metric_name(key)
@@ -41,13 +49,53 @@ class ModelQualityGate:
             if metric_key == "model_promotion_min_improvement" and metric_key not in metrics:
                 warnings.append("Skipping model_promotion_min_improvement; it is a promotion policy threshold, not an evaluation metric.")
                 continue
-            if metric_key == "execution_match_rate" and not execution_status.get("enabled") and not execution_status.get("required"):
-                warnings.append("Execution-aware evaluation disabled by config; execution_match_rate threshold skipped.")
+            if metric_key in {"execution_match_rate", "final_sql_execution_accuracy"} and not execution_status.get("available"):
+                if mode in {"production", "release"} and execution_status.get("required"):
+                    failed_checks.append({
+                        "metric": "execution_unavailable",
+                        "actual": execution_status.get("unavailable_reason") or "unavailable",
+                        "expected": "execution_available",
+                        "comparison": "==",
+                    })
+                else:
+                    warnings.append(
+                        f"execution_unavailable: {execution_status.get('unavailable_reason') or 'not_configured'}; "
+                        f"{key} threshold skipped for mode={mode}."
+                    )
+                continue
+            if metric_key == "sql_structure_match_rate" and mode in {"debug", "baseline"}:
+                warnings.append(f"Skipping {key}; structure matching is advisory for mode={mode}.")
+                continue
+            if metric_key == "feedback_regression_pass_rate":
+                feedback_required = bool(
+                    feedback_config.get("enabled", False)
+                    and feedback_config.get("required_for_production", False)
+                    and mode in {"production", "release"}
+                )
+                if not feedback_required:
+                    warnings.append(f"feedback_regression_not_required_for_mode: mode={mode}")
+                    continue
+            if mode == "debug" and metric_key not in {
+                "query_ir_validity_rate",
+                "sql_validation_rate",
+                "unsafe_sql_count",
+                "no_select_star_rate",
+            }:
+                actual = metrics.get(metric_key)
+                if actual is None:
+                    warnings.append(f"Debug advisory metric missing: {metric_key}")
+                else:
+                    passed = actual <= expected if key.endswith("_max") else actual >= expected
+                    if not passed:
+                        warnings.append(
+                            f"debug_threshold_warning: {metric_key}={actual} expected "
+                            f"{'<=' if key.endswith('_max') else '>='} {expected}"
+                        )
                 continue
             if key.endswith("_production"):
                 base_metric = _threshold_metric_name(key.removesuffix("_production"))
                 actual = metrics.get(base_metric)
-                if mode in {"production", "full"} and base_metric == "simple_query_pass_rate":
+                if mode in {"production", "release"} and base_metric == "simple_query_pass_rate":
                     if actual is None:
                         missing_metrics.append(base_metric)
                         failed_checks.append({
@@ -86,12 +134,15 @@ class ModelQualityGate:
         for metric in CRITICAL_METRICS:
             if metric not in present:
                 missing_metrics.append(metric)
-                failed_checks.append({
-                    "metric": metric,
-                    "actual": "missing",
-                    "expected": "present",
-                    "comparison": "exists",
-                })
+                if mode == "debug" and metric not in {"unsafe_sql_count", "sql_validation_rate"}:
+                    warnings.append(f"Debug advisory critical metric missing: {metric}")
+                else:
+                    failed_checks.append({
+                        "metric": metric,
+                        "actual": "missing",
+                        "expected": "present",
+                        "comparison": "exists",
+                    })
 
         contribution = evaluation_report.get("dataset_contribution_report")
         if evaluation_report.get("dataset_contribution_report_required") and not contribution:
@@ -152,6 +203,9 @@ class ModelQualityGate:
 
         controlled_predicted = evaluation_report.get("controlled_predicted_sql_execution") or {}
         if isinstance(controlled_predicted, dict) and controlled_predicted:
+            controlled_required = bool(
+                evaluation_report.get("controlled_predicted_sql_required", False)
+            )
             if controlled_predicted.get("error") and evaluation_report.get("controlled_predicted_sql_required", False):
                 failed_checks.append({
                     "metric": "controlled_predicted_sql_execution",
@@ -171,8 +225,21 @@ class ModelQualityGate:
                     })
                 else:
                     warnings.append(message)
+            if controlled_required and controlled_predicted.get("passed") is not True:
+                failed_checks.append({
+                    "metric": "controlled_predicted_sql_passed",
+                    "actual": {
+                        "passed": controlled_predicted.get("passed", False),
+                        "cases_total": controlled_predicted.get("cases_total", 0),
+                        "predictions_generated": controlled_predicted.get("predictions_generated", 0),
+                        "abstention_count": controlled_predicted.get("abstention_count", 0),
+                        "execution_match_rate": controlled_predicted.get("predicted_execution_match_rate"),
+                    },
+                    "expected": True,
+                    "comparison": "==",
+                })
             if (
-                evaluation_report.get("controlled_predicted_sql_required", False)
+                controlled_required
                 and int(controlled_predicted.get("predicted_unsafe_sql_count", controlled_predicted.get("unsafe_sql_count", 0)) or 0) > 0
             ):
                 failed_checks.append({
@@ -189,14 +256,51 @@ class ModelQualityGate:
                 "comparison": "exists",
             })
 
+        calibration = evaluation_report.get("test_performance", {}).get("calibration", {})
+        if calibration.get("calibration_degenerate") is True:
+            issue = {
+                "metric": "calibration_degenerate",
+                "actual": True,
+                "expected": False,
+                "comparison": "==",
+            }
+            if require_non_degenerate and mode in {"production", "release"}:
+                failed_checks.append(issue)
+            else:
+                warnings.append("calibration_degenerate: confidence thresholds are disabled")
+
+        selection = evaluation_report.get("model_selection_report") or evaluation_report.get("model_selection") or {}
+        if selection and (
+            selection.get("selection_blocked") is True
+            or selection.get("selected_model") is None
+            or selection.get("model_selection_stale") is True
+        ):
+            target = failed_checks if mode in {"production", "release"} else None
+            if target is not None:
+                target.append({
+                    "metric": "model_selection_freshness",
+                    "actual": selection.get("selection_blocked_reason") or "stale_or_ineligible",
+                    "expected": "fresh_eligible_candidate",
+                    "comparison": "==",
+                })
+            else:
+                warnings.append("model_selection_stale_or_ineligible")
+
         return {
             "passed": not failed_checks,
+            "quality_gate_mode": mode,
+            "eligible_for_promotion": bool(not failed_checks and mode in {"production", "release"}),
             "failed_checks": failed_checks,
             "blocking_failures": failed_checks,
             "warnings": warnings,
             "missing_metrics": missing_metrics,
             "metrics": metrics,
             "execution_aware_evaluation": execution_status,
+            "feedback_regression": {
+                "enabled": bool(feedback_config.get("enabled", False)),
+                "required_for_production": bool(feedback_config.get("required_for_production", False)),
+                "available": "feedback_regression_pass_rate" in present,
+            },
         }
 
     @staticmethod
@@ -215,7 +319,7 @@ class ModelQualityGate:
         if "simple_query_pass_rate" in test_summary or "simple_query_pass_rate" in report:
             _copy_metric(metrics, present, "simple_query_pass_rate", test_summary, report)
         elif (
-            _quality_gate_mode(report) not in {"production", "full"}
+            _quality_gate_mode(report) not in {"production", "release"}
             and bool(report.get("allow_intent_accuracy_simple_query_fallback", True))
             and "intent_accuracy_rate" in test_summary
         ):
@@ -245,6 +349,8 @@ class ModelQualityGate:
                 "controlled_predicted_sql_row_count_match_rate": "predicted_row_count_match_rate",
                 "controlled_predicted_sql_safe_sql_rate": "predicted_safe_sql_rate",
                 "controlled_predicted_sql_unsafe_sql_count": "predicted_unsafe_sql_count",
+                "controlled_predicted_sql_result_value_match_rate": "predicted_result_value_match_rate",
+                "controlled_predicted_sql_safe_but_wrong_sql_rate": "safe_but_wrong_sql_rate",
             }
             for output_name, source_name in predicted_metric_map.items():
                 value = predicted_sql.get(source_name)
@@ -276,6 +382,15 @@ class ModelQualityGate:
             source_name = "sample_count" if name == "calibration_sample_count" else name
             if isinstance(calibration.get(source_name), (int, float)):
                 metrics[name] = calibration[source_name]
+                present.add(name)
+        for name in [
+            "confidence_unique_value_count",
+            "confidence_std",
+            "confidence_bucket_coverage_count",
+            "calibration_degenerate",
+        ]:
+            if isinstance(calibration.get(name), (int, float, bool)):
+                metrics[name] = calibration[name]
                 present.add(name)
         return metrics, present
 
@@ -346,17 +461,28 @@ class ModelQualityGate:
     def _execution_status(report: dict[str, Any]) -> dict[str, Any]:
         execution = report.get("execution_aware_evaluation")
         if isinstance(execution, dict):
-            if "enabled" in execution:
-                return {
-                    "enabled": bool(execution.get("enabled")),
-                    "required": bool(execution.get("required", False)),
-                    "reason": execution.get("reason", ""),
-                }
-            return {"enabled": True, "required": bool(execution.get("required", True)), "reason": ""}
+            summary = execution.get("summary") or execution
+            available_count = int(summary.get("execution_available", 0) or 0)
+            unavailable = bool(summary.get("execution_unavailable", available_count == 0))
+            return {
+                "enabled": bool(execution.get("enabled", True)),
+                "required": bool(execution.get("required", summary.get("execution_required", False))),
+                "available": available_count > 0 and not unavailable,
+                "execution_available": available_count,
+                "unavailable": unavailable,
+                "unavailable_reason": summary.get("execution_unavailable_reason") or execution.get("reason") or "not_configured",
+                "status": summary.get("execution_status") or (
+                    "execution_unavailable" if unavailable else "execution_available_but_failed"
+                ),
+            }
         return {
             "enabled": "execution_match_rate" in report or "execution_match_rate" in report.get("summary", {}),
             "required": False,
-            "reason": "disabled by config",
+            "available": False,
+            "execution_available": 0,
+            "unavailable": True,
+            "unavailable_reason": "not_configured",
+            "status": "execution_unavailable",
         }
 
 
@@ -368,6 +494,28 @@ def _threshold_metric_name(key: str) -> str:
     return key
 
 
+def _semantic_thresholds(thresholds: dict[str, Any]) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    controlled_mapping = {
+        "min_safe_sql_rate": "controlled_predicted_sql_safe_sql_rate_min",
+        "min_execution_success_rate": "controlled_predicted_sql_execution_success_rate_min",
+        "min_execution_match_rate": "controlled_predicted_sql_execution_match_rate_min",
+        "min_row_count_match_rate": "controlled_predicted_sql_row_count_match_rate_min",
+        "min_result_value_match_rate": "controlled_predicted_sql_result_value_match_rate_min",
+        "max_safe_but_wrong_sql_rate": "controlled_predicted_sql_safe_but_wrong_sql_rate_max",
+    }
+    for source, target in controlled_mapping.items():
+        if source in (thresholds.get("controlled_predicted_sql") or {}):
+            values[target] = thresholds["controlled_predicted_sql"][source]
+    for source, threshold in (thresholds.get("linking") or {}).items():
+        target = source.removeprefix("min_") + "_min" if source.startswith("min_") else source
+        values[target] = threshold
+    calibration = thresholds.get("calibration") or {}
+    if "max_expected_calibration_error" in calibration:
+        values["expected_calibration_error_max"] = calibration["max_expected_calibration_error"]
+    return values
+
+
 def _quality_gate_mode(report: dict[str, Any]) -> str:
     mode = str(
         report.get("quality_gate_mode")
@@ -375,20 +523,26 @@ def _quality_gate_mode(report: dict[str, Any]) -> str:
         or report.get("training_mode")
         or ""
     ).lower()
-    if mode in {"production", "full", "smoke", "dev", "development"}:
-        return "dev" if mode == "development" else mode
+    aliases = {
+        "full": "production",
+        "smoke": "debug",
+        "dev": "debug",
+        "development": "debug",
+    }
+    if mode in {"debug", "baseline", "production", "release", *aliases}:
+        return aliases.get(mode, mode)
     pipeline_name = str(report.get("pipeline_name") or report.get("pipeline") or "").lower()
     if "smoke" in pipeline_name:
-        return "smoke"
-    return "dev"
+        return "debug"
+    return "baseline"
 
 
 def _threshold_value_for_mode(threshold: dict[str, Any], mode: str) -> Any:
-    if mode in {"production", "full"}:
-        return threshold.get("production_min", threshold.get("min"))
-    if mode == "smoke":
-        return threshold.get("smoke_min", threshold.get("warning_min", threshold.get("min")))
-    return threshold.get("warning_min", threshold.get("smoke_min", threshold.get("min")))
+    if mode in {"production", "release"}:
+        return threshold.get("production_min", threshold.get("production_max", threshold.get("min", threshold.get("max"))))
+    if mode == "debug":
+        return threshold.get("smoke_min", threshold.get("smoke_max", threshold.get("warning_min", threshold.get("warning_max"))))
+    return threshold.get("baseline_min", threshold.get("baseline_max", threshold.get("warning_min", threshold.get("warning_max"))))
 
 
 def _copy_metric(metrics: dict[str, Any], present: set[str], name: str, *sources: dict[str, Any]) -> None:

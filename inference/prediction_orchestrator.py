@@ -14,7 +14,7 @@ from ir.ir_validator import IRValidator
 from ir.option_c_to_ir import OptionCToIRConverter
 from ir.semantic_metric_resolver import SemanticMetricResolver
 from semantic_layer import build_semantic_profile
-from validation.sql_validator import SQLValidator
+from validation.sql_validator import SQLValidator, policy_failure_type
 
 from .candidate_generator import CandidateGenerator
 from .candidate_reranker import CandidateReranker
@@ -186,8 +186,16 @@ class PredictionOrchestrator:
             dialect=schema_context.dialect,
         )
         ir_validation = self.ir_validator.validate(query_ir, schema=schema)
-        sql = self.sql_renderer.render(query_ir) if ir_validation.is_valid else None
-        sql_validation = self.sql_validator.validate(sql, schema=schema, max_limit=self.max_limit, dialect=schema_context.dialect)
+        sql, sql_validation, sql_repair = self._render_validate_repair(
+            query_ir, ir_validation, schema, schema_context.dialect,
+        )
+        forced_abstention = self._forced_abstention_reason(
+            ir_validation.is_valid,
+            sql_validation,
+            schema_mapping,
+            slots,
+            selected_template.get("template_id"),
+        )
 
         schema_drift = self._schema_drift(schema_context, question)
         confidence = self.confidence.calculate(
@@ -209,6 +217,7 @@ class PredictionOrchestrator:
                 ],
                 "calibration": self.confidence_calibration,
                 "schema_drift": schema_drift,
+                "sql_repair": sql_repair,
             }
         )
         warnings = [
@@ -220,13 +229,16 @@ class PredictionOrchestrator:
             *([] if sql_validation.get("is_valid") else sql_validation.get("issues", [])),
         ]
         clarification = self._clarification_questions(confidence["confidence"], selected_template.get("template_id"), slots)
-        if confidence.get("abstain") and not clarification:
+        abstain = bool(confidence.get("abstain") or forced_abstention)
+        abstention_reason = forced_abstention or confidence.get("abstention_reason")
+        if abstain and not clarification:
             clarification = ["I am not confident enough in the schema mapping. Which table or business field should I use?"]
 
         retrieval_ir_result = PredictionResult(
             question=question,
             normalized_question=normalized_question,
             source_model="retrieval_ir",
+            status="abstained" if abstain else "completed",
             intent=selected_template.get("intent"),
             template_id=selected_template.get("template_id"),
             slots=slots,
@@ -234,14 +246,14 @@ class PredictionOrchestrator:
             join_plan=join_plan.model_dump(),
             query_ir=query_ir.model_dump(),
             ir_validation=ir_validation.model_dump(),
-            sql=sql,
+            sql=None if abstain else sql,
             validation=sql_validation,
             confidence=confidence["confidence"],
             raw_confidence=confidence.get("raw_confidence"),
             calibrated_confidence=confidence.get("calibrated_confidence"),
             conformal_threshold=confidence.get("conformal_threshold"),
-            abstain=bool(confidence.get("abstain", False)),
-            abstention_reason=confidence.get("abstention_reason"),
+            abstain=abstain,
+            abstention_reason=abstention_reason,
             schema_drift_flags=list(schema_drift.get("flags") or []),
             confidence_tier=confidence["confidence_tier"],
             retrieved_candidates=[candidate.model_dump() for candidate in candidates],
@@ -253,6 +265,7 @@ class PredictionOrchestrator:
             selected_query_ir=query_ir.model_dump(),
             validation_summary={"ir_validation": ir_validation.model_dump(), "sql_validation": sql_validation},
             confidence_breakdown=confidence["confidence_breakdown"],
+            filter_value_candidates=list(slot_payload.get("filter_value_candidates") or []),
             debug={
                 "schema_context": schema_context.serialize_for_debug(),
                 "semantic_profile_summary": self._semantic_summary(semantic_profile),
@@ -260,6 +273,10 @@ class PredictionOrchestrator:
                 "schema_drift": schema_drift,
                 "confidence_breakdown": confidence["confidence_breakdown"],
                 "confidence_components": confidence["confidence_breakdown"],
+                "sql_repair": sql_repair,
+                "original_sql": sql_repair.get("original_sql"),
+                "forced_abstention_reason": forced_abstention,
+                "filter_value_candidates": list(slot_payload.get("filter_value_candidates") or []),
             },
         )
 
@@ -283,8 +300,16 @@ class PredictionOrchestrator:
     ) -> PredictionResult:
         query_ir = direct_result.query_ir
         ir_validation = self.ir_validator.validate(query_ir, schema=schema)
-        sql = self.sql_renderer.render(query_ir, dialect=schema_context.dialect) if ir_validation.is_valid else None
-        sql_validation = self.sql_validator.validate(sql, schema=schema, max_limit=self.max_limit, dialect=schema_context.dialect)
+        sql, sql_validation, sql_repair = self._render_validate_repair(
+            query_ir, ir_validation, schema, schema_context.dialect,
+        )
+        forced_abstention = self._forced_abstention_reason(
+            ir_validation.is_valid,
+            sql_validation,
+            None,
+            {},
+            query_ir.template_id,
+        )
 
         warnings = [
             *direct_result.warnings,
@@ -298,8 +323,10 @@ class PredictionOrchestrator:
             confidence = min(confidence, 0.59)
         schema_drift = self._schema_drift(schema_context, question)
         runtime_confidence = self._runtime_confidence(confidence)
+        abstain = bool(runtime_confidence["abstain"] or forced_abstention)
+        abstention_reason = forced_abstention or runtime_confidence["abstention_reason"]
         clarification = [] if sql_validation.get("is_valid", sql_validation.get("ok", False)) else ["Choose specific non-sensitive columns for this table."]
-        if runtime_confidence["abstain"] and not clarification:
+        if abstain and not clarification:
             clarification = ["I am not confident enough in the schema mapping. Which table or business field should I use?"]
         planner_debug = {
             **(direct_result.debug or {}),
@@ -332,6 +359,7 @@ class PredictionOrchestrator:
             question=question,
             normalized_question=normalized_question,
             source_model="generic_direct_planner",
+            status="abstained" if abstain else "completed",
             intent=query_ir.intent,
             template_id=query_ir.template_id,
             slots={},
@@ -339,14 +367,14 @@ class PredictionOrchestrator:
             join_plan=join_plan,
             query_ir=query_ir.model_dump(),
             ir_validation=ir_validation.model_dump(),
-            sql=sql,
+            sql=None if abstain else sql,
             validation=sql_validation,
             confidence=runtime_confidence["calibrated_confidence"],
             raw_confidence=runtime_confidence["raw_confidence"],
             calibrated_confidence=runtime_confidence["calibrated_confidence"],
             conformal_threshold=runtime_confidence["conformal_threshold"],
-            abstain=runtime_confidence["abstain"],
-            abstention_reason=runtime_confidence["abstention_reason"],
+            abstain=abstain,
+            abstention_reason=abstention_reason,
             schema_drift_flags=list(schema_drift.get("flags") or []),
             confidence_tier=runtime_confidence["confidence_tier"],
             retrieved_candidates=[],
@@ -384,8 +412,68 @@ class PredictionOrchestrator:
                     "selected": "generic_direct_planner",
                     "reason": direct_result.reason or "schema-safe direct query",
                 },
+                "sql_repair": sql_repair,
+                "original_sql": sql_repair.get("original_sql"),
+                "forced_abstention_reason": forced_abstention,
             },
         )
+
+    def _render_validate_repair(
+        self,
+        query_ir: Any,
+        ir_validation: Any,
+        schema: Any,
+        dialect: str,
+    ) -> tuple[str | None, dict[str, Any], dict[str, Any]]:
+        original_sql = (
+            self.sql_renderer.render(query_ir, dialect=dialect)
+            if ir_validation.is_valid else None
+        )
+        repair = self.sql_validator.validate_with_repair(
+            original_sql,
+            schema=schema,
+            max_limit=self.max_limit,
+            dialect=dialect,
+            query_ir_valid=bool(ir_validation.is_valid),
+        )
+        return repair.get("final_sql"), repair["final_validation"], {
+            "original_sql": original_sql,
+            "repair_attempted": bool(repair.get("repair_attempted")),
+            "repair_succeeded": bool(repair.get("repair_succeeded")),
+            "repair_actions": list(repair.get("repair_actions") or []),
+            "final_sql_after_repair": repair.get("final_sql"),
+            "original_validation": repair.get("original_validation") or {},
+        }
+
+    @staticmethod
+    def _forced_abstention_reason(
+        ir_valid: bool,
+        sql_validation: dict[str, Any],
+        schema_mapping: SchemaMapping | None,
+        slots: dict[str, Any],
+        template_id: str | None,
+    ) -> str | None:
+        if not ir_valid:
+            return "invalid_query_ir"
+        if not sql_validation.get("is_valid", sql_validation.get("ok", False)):
+            failure = policy_failure_type(sql_validation)
+            return "unsafe_sql" if failure in {"non_select_statement", "unsafe_keyword"} else "sql_validation_failed"
+        if schema_mapping is not None:
+            filter_value = slots.get("filter_value") or {}
+            filter_value = filter_value.get("value") if isinstance(filter_value, dict) else filter_value
+            if filter_value and schema_mapping.filter_ambiguous:
+                return "ambiguous_filter_column"
+            if filter_value and float(schema_mapping.match_scores.get("filter", 0.0) or 0.0) < 0.5:
+                return "low_filter_confidence"
+            dimension_required = template_id in {
+                "metric_by_dimension",
+                "top_n_metric_by_dimension",
+                "bottom_n_metric_by_dimension",
+                "count_by_dimension",
+            }
+            if dimension_required and not schema_mapping.dimension_column:
+                return "missing_required_output_column"
+        return None
 
     def _semantic_clarification(
         self,
@@ -440,6 +528,7 @@ class PredictionOrchestrator:
             question=question,
             normalized_question=normalized_question,
             source_model="retrieval_ir",
+            status="abstained",
             intent=None,
             template_id=None,
             sql=None,
@@ -447,6 +536,8 @@ class PredictionOrchestrator:
             ir_validation=None,
             validation={"is_valid": False, "message": "clarification_required"},
             confidence=0.0,
+            abstain=True,
+            abstention_reason="ambiguous_filter_column",
             confidence_tier="low",
             warnings=["Ambiguous schema mapping; SQL generation is paused until clarification."],
             clarification_questions=[clarification["question"]],
@@ -662,7 +753,34 @@ class PredictionOrchestrator:
             retrieval_ir_result.debug["neural_ir_error"] = str(exc)
             return retrieval_ir_result
 
-        neural_ir_validation = neural_ir_raw.get("sql_validation") or neural_ir_raw.get("validation") or {}
+        neural_query_ir = neural_ir_raw.get("query_ir") or {}
+        neural_ir_validation = neural_ir_raw.get("ir_validation") or {}
+        neural_query_ir_valid = bool(
+            neural_ir_validation.get("is_valid", bool(neural_query_ir))
+        )
+        neural_original_sql = neural_ir_raw.get("sql")
+        neural_repair = self.sql_validator.validate_with_repair(
+            neural_original_sql,
+            schema=schema,
+            max_limit=self.max_limit,
+            dialect=RuntimeSchemaContext(schema).dialect,
+            query_ir_valid=neural_query_ir_valid,
+        )
+        neural_ir_validation_sql = neural_repair["final_validation"]
+        neural_ir_raw = {
+            **neural_ir_raw,
+            "original_sql": neural_original_sql,
+            "sql": neural_repair.get("final_sql"),
+            "sql_validation": neural_ir_validation_sql,
+            "sql_repair": {
+                "repair_attempted": bool(neural_repair.get("repair_attempted")),
+                "repair_succeeded": bool(neural_repair.get("repair_succeeded")),
+                "repair_actions": list(neural_repair.get("repair_actions") or []),
+                "original_sql": neural_original_sql,
+                "final_sql_after_repair": neural_repair.get("final_sql"),
+            },
+        }
+        neural_ir_validation = neural_ir_validation_sql
         neural_ir_valid = bool(neural_ir_validation.get("is_valid", neural_ir_validation.get("ok", False)))
         neural_ir_confidence = float(neural_ir_raw.get("confidence") or 0.0)
         retrieval_ir_result.debug["neural_ir_result"] = neural_ir_raw
@@ -702,11 +820,12 @@ class PredictionOrchestrator:
                 question=question,
                 normalized_question=self._normalize_question(question),
                 source_model="neural_ir",
+                status="abstained" if runtime_confidence["abstain"] else "completed",
                 intent=query_ir.get("intent"),
                 template_id=query_ir.get("template_id"),
                 query_ir=query_ir,
                 ir_validation=ir_validation,
-                sql=neural_ir_raw.get("sql"),
+                sql=None if runtime_confidence["abstain"] else neural_ir_raw.get("sql"),
                 validation=neural_ir_validation,
                 confidence=runtime_confidence["calibrated_confidence"],
                 raw_confidence=runtime_confidence["raw_confidence"],
@@ -742,6 +861,8 @@ class PredictionOrchestrator:
                     "neural_ir_result": neural_ir_raw,
                     "schema_drift": schema_drift,
                     "router_decision": decision,
+                    "original_sql": neural_original_sql,
+                    "sql_repair": neural_ir_raw.get("sql_repair") or {},
                 },
             )
             return result
@@ -798,13 +919,19 @@ class PredictionOrchestrator:
 
     def _runtime_confidence(self, raw_confidence: float) -> dict[str, Any]:
         raw = round(max(0.0, min(1.0, float(raw_confidence or 0.0))), 4)
-        calibrated = round(self.confidence._calibrate(raw, self.confidence_calibration), 4)
+        calibration_degenerate = bool(self.confidence_calibration.get("calibration_degenerate", False))
+        calibrated = raw if calibration_degenerate else round(self.confidence._calibrate(raw, self.confidence_calibration), 4)
         threshold = self.confidence_calibration.get("conformal_confidence_threshold")
         configured_floor = self.confidence_calibration.get("abstain_when_calibrated_confidence_below")
         if isinstance(configured_floor, (int, float)):
             threshold = configured_floor
         use_conformal = bool(self.confidence_calibration.get("use_conformal_threshold", True))
-        abstain = use_conformal and isinstance(threshold, (int, float)) and calibrated < float(threshold)
+        abstain = (
+            not calibration_degenerate
+            and use_conformal
+            and isinstance(threshold, (int, float))
+            and calibrated < float(threshold)
+        )
         return {
             "raw_confidence": raw,
             "calibrated_confidence": calibrated,
@@ -812,6 +939,7 @@ class PredictionOrchestrator:
             "abstain": abstain,
             "abstention_reason": "calibrated_confidence_below_conformal_threshold" if abstain else None,
             "confidence_tier": "needs_clarification" if abstain else self._confidence_tier(calibrated),
+            "calibration_degenerate": calibration_degenerate,
         }
 
     def _schema_drift(self, schema_context: RuntimeSchemaContext, question: str) -> dict[str, Any]:

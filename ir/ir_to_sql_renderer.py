@@ -7,6 +7,7 @@ from .query_ir_models import IRDateFilter, IRFilter, IRMetric, QueryIR
 
 
 SENSITIVE_MARKERS = ("email", "phone", "password", "token", "secret", "ssn", "address", "dob", "birth_date", "credit_card", "api_key", "auth")
+AUDIT_MARKERS = ("created_at", "updated_at", "deleted_at", "internal_id")
 
 
 class IRToSQLRenderer:
@@ -207,9 +208,9 @@ class IRToSQLRenderer:
             safe = [
                 f"{self._quote_identifier(base_table)}.{self._quote_identifier(column)}"
                 for column in columns
-                if not self._is_sensitive(column)
+                if not self._is_sensitive(column) and not self._is_audit(column)
             ]
-            return safe[:5] if safe else [f"{self._quote_identifier(base_table)}.rowid"]
+            return safe[:4] if safe else [f"{self._quote_identifier(base_table)}.rowid"]
         if base_table:
             return [f"{self._quote_identifier(base_table)}.rowid"]
         return ["NULL AS no_safe_columns"]
@@ -218,3 +219,8 @@ class IRToSQLRenderer:
     def _is_sensitive(column: str) -> bool:
         name = column.lower()
         return any(marker in name for marker in SENSITIVE_MARKERS)
+
+    @staticmethod
+    def _is_audit(column: str) -> bool:
+        name = column.lower()
+        return any(name == marker or name.endswith(f"_{marker}") for marker in AUDIT_MARKERS)

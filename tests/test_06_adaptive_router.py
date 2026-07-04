@@ -10,6 +10,9 @@ from neural_ir.calibration import (
 )
 from inference.prediction_models import PredictionResult
 from inference.prediction_orchestrator import PredictionOrchestrator
+from inference.runtime_schema_context import RuntimeSchemaContext
+from inference.schema_aware_mapper import SchemaAwareMapper
+from inference.slot_resolver import SlotResolver
 
 
 class TestChooseRoute:
@@ -125,6 +128,163 @@ class TestConfidenceCaps:
             "warnings": [],
         })
         assert result["confidence"] <= 0.59
+
+    def test_unsafe_sql_forces_abstention(self) -> None:
+        reason = PredictionOrchestrator._forced_abstention_reason(
+            True,
+            {"is_valid": False, "checks": {"parse": True, "select_only": False, "no_blocked_keywords": False}},
+            None,
+            {},
+            "show_records",
+        )
+        assert reason == "unsafe_sql"
+
+    def test_confidence_components_vary_and_constant_calibration_is_degenerate(self) -> None:
+        from dataset_training.dataset_evaluator import calibration_metrics
+        from inference.prediction_confidence import PredictionConfidenceCalculator
+
+        calculator = PredictionConfidenceCalculator()
+        high = calculator.calculate({
+            "candidates": [],
+            "selected_template": {"confidence": 0.95},
+            "slots": {"metric": {"value": "amount", "confidence": 0.95}},
+            "schema_mapping": {"match_scores": {"metric": 0.95}},
+            "join_plan": {"confidence": 1.0},
+            "ir_validation": {"is_valid": True},
+            "validation": {"is_valid": True},
+        })
+        low = calculator.calculate({
+            "candidates": [],
+            "selected_template": {"confidence": 0.2},
+            "slots": {},
+            "schema_mapping": {"match_scores": {}, "filter_ambiguous": True},
+            "join_plan": {"confidence": 0.3},
+            "ir_validation": {"is_valid": False},
+            "validation": {"is_valid": False},
+        })
+        report = calibration_metrics([(0.8421, True), (0.8421, False), (0.8421, True)])
+
+        assert high["raw_confidence"] > low["raw_confidence"]
+        assert "filter_linking_confidence" in high["confidence_components"]
+        assert report["calibration_degenerate"] is True
+        assert report["confidence_threshold_usable"] is False
+        assert report["conformal_confidence_threshold"] is None
+
+    def test_ambiguous_filter_forces_clarification(self) -> None:
+        from inference.prediction_models import SchemaMapping
+        mapping = SchemaMapping(
+            filter_column="name",
+            filter_ambiguous=True,
+            filter_alternatives=["players.player_name", "coaches.name"],
+            match_scores={"filter": 0.49},
+        )
+        reason = PredictionOrchestrator._forced_abstention_reason(
+            True,
+            {"is_valid": True},
+            mapping,
+            {"filter_value": {"value": "Alex"}},
+            "simple_filter",
+        )
+        assert reason == "ambiguous_filter_column"
+
+    def test_sql_repair_failure_forces_abstention(self) -> None:
+        reason = PredictionOrchestrator._forced_abstention_reason(
+            True,
+            {"is_valid": False, "checks": {"parse": False, "select_only": False, "no_blocked_keywords": True}},
+            None,
+            {},
+            "show_records",
+        )
+        assert reason == "sql_validation_failed"
+
+
+class TestFilterDimensionLinking:
+    @staticmethod
+    def _schema() -> dict:
+        return {"tables": {"players": {"columns": {
+            "player_name": {"type": "text", "sample_values": ["Bubba Starling", "Mark Sanford"]},
+            "hometown": {"type": "text"},
+            "school_club_team": {"type": "text"},
+            "season": {"type": "integer", "sample_values": [2012]},
+            "acquisition_method": {"type": "text", "sample_values": ["trade"]},
+            "aircraft_model": {"type": "text", "sample_values": ["Robinson R-22"]},
+            "gross_weight": {"type": "numeric"},
+        }}}}
+
+    def _resolve(self, question: str, template: str = "metric_by_dimension"):
+        context = RuntimeSchemaContext(self._schema())
+        payload = SlotResolver().resolve_slots(
+            question,
+            {"template_id": template, "intent": template},
+            [],
+            context,
+        )
+        mapping = SchemaAwareMapper().map_slots_to_schema(
+            payload["slots"], context, template_id=template,
+        )
+        return payload["slots"], mapping
+
+    def test_hometown_and_person_name_link_separately(self) -> None:
+        slots, mapping = self._resolve("What is the hometown of Bubba Starling?")
+        assert slots["filter_value"]["value"] == "Bubba Starling"
+        assert mapping.filter_column == "player_name"
+        assert mapping.dimension_column == "hometown"
+        assert mapping.filter_linking_method == "value_lookup"
+
+    def test_school_team_and_named_player_link_separately(self) -> None:
+        slots, mapping = self._resolve("Which school club team has a player named Mark Sanford?")
+        assert slots["filter_value"]["value"] == "Mark Sanford"
+        assert mapping.filter_column == "player_name"
+        assert mapping.dimension_column == "school_club_team"
+
+    def test_season_value_is_not_confused_with_output_dimension(self) -> None:
+        slots, mapping = self._resolve(
+            "What was the school club team whose season was in 2012 and were acquired via trade?"
+        )
+        assert str(slots["filter_value"]["value"]) == "2012"
+        assert mapping.filter_column == "season"
+        assert mapping.dimension_column == "school_club_team"
+
+    def test_aircraft_model_filters_separately_from_weight_metric(self) -> None:
+        slots, mapping = self._resolve(
+            "What is the max gross weight of the Robinson R-22?",
+            template="metric_summary",
+        )
+        assert slots["filter_value"]["value"] == "Robinson R-22"
+        assert mapping.filter_column == "aircraft_model"
+        assert mapping.metric_column == "gross_weight"
+
+    def test_filter_value_diagnostics_include_ranked_value_lookup(self) -> None:
+        context = RuntimeSchemaContext(self._schema())
+        payload = SlotResolver().resolve_slots(
+            "What is the hometown of Bubba Starling?",
+            {"template_id": "metric_by_dimension", "intent": "metric_by_dimension"},
+            [],
+            context,
+        )
+
+        candidate = payload["filter_value_candidates"][0]
+        assert candidate["value"] == "Bubba Starling"
+        assert candidate["span"]
+        assert candidate["candidate_columns"][0]["column"] == "players.player_name"
+        assert "value_lookup" in candidate["candidate_columns"][0]["signals"]
+
+    def test_ambiguous_value_lookup_caps_filter_confidence(self) -> None:
+        schema = {"tables": {"people": {"columns": {
+            "player_name": {"type": "text", "sample_values": ["Alex Smith"]},
+            "coach_name": {"type": "text", "sample_values": ["Alex Smith"]},
+            "hometown": {"type": "text"},
+        }}}}
+        context = RuntimeSchemaContext(schema)
+        payload = SlotResolver().resolve_slots(
+            "What is the hometown of Alex Smith?",
+            {"template_id": "metric_by_dimension", "intent": "metric_by_dimension"},
+            [],
+            context,
+        )
+
+        assert payload["slots"]["filter_column"]["confidence"] < 0.5
+        assert payload["slots"]["filter_column"]["alternatives"]
 
     def test_sql_invalid_caps_confidence(self) -> None:
         from inference.prediction_confidence import PredictionConfidenceCalculator

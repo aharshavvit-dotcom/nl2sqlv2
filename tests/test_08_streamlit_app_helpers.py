@@ -6,9 +6,11 @@ import re
 from pathlib import Path
 
 import pytest
+import json
 
 from db.connection_config import DatabaseConnectionConfig, safe_config_summary
 from db.schema_reader import schema_summary
+from model_bundle.bundle_loader import inspect_bundle_status
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +66,31 @@ class TestSchemaSummary:
         assert summary["table_count"] == 1
         assert summary["column_count"] == 2
         assert "orders" in summary["tables"]
+
+
+def test_bundle_status_explains_candidate_gate_failure(tmp_path: Path) -> None:
+    current = tmp_path / "current"
+    candidate = tmp_path / "candidate"
+    (candidate / "evaluation").mkdir(parents=True)
+    (candidate / "bundle_manifest.json").write_text("{}", encoding="utf-8")
+    (candidate / "evaluation" / "model_quality_gate_report.json").write_text(
+        json.dumps({
+            "passed": False,
+            "blocking_failures": [
+                {"metric": "controlled_predicted_sql_execution_match_rate"},
+                {"metric": "filter_value_accuracy_rate"},
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    status = inspect_bundle_status(current, candidate)
+
+    assert status["current_bundle_found"] is False
+    assert status["candidate_bundle_found"] is True
+    assert status["last_quality_gate_passed"] is False
+    assert status["top_blockers"][0] == "controlled_predicted_sql_execution_match_rate"
+    assert status["candidate_debug_production_ready"] is False
 
 
 class TestUILabelNaming:

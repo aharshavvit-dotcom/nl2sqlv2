@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from difflib import SequenceMatcher
 from typing import Any
 
 from .prediction_models import RetrievedCandidate, RuntimeSlot
@@ -33,7 +34,14 @@ class SlotResolver:
         )
         slots["date_grain"] = self._date_grain_slot(q)
         slots["date_filter"] = self._date_filter_slot(q)
-        filter_column, filter_value, filter_operator = self._filter_slots(q, synonyms["dimensions"])
+        filter_value_candidates = self.extract_filter_value_candidates(question, schema_context)
+        filter_column, filter_value, filter_operator = self._filter_slots(
+            question,
+            q,
+            synonyms["dimensions"],
+            schema_context,
+            filter_value_candidates,
+        )
         slots["filter_column"] = filter_column
         slots["filter_value"] = filter_value
         slots["filter_operator"] = filter_operator
@@ -49,7 +57,53 @@ class SlotResolver:
         return {
             "slots": {key: value.model_dump() for key, value in slots.items()},
             "clarification_questions": [],
+            "filter_value_candidates": filter_value_candidates,
         }
+
+    def extract_filter_value_candidates(
+        self,
+        question: str,
+        schema_context: RuntimeSchemaContext,
+    ) -> list[dict[str, Any]]:
+        """Extract literal/entity candidates and rank the columns they may filter."""
+        patterns: list[tuple[str, str]] = [
+            (r"['\"]([^'\"]+)['\"]", "quoted_string"),
+            (r"\b(?:named|called)\s+([A-Z][\w'-]*(?:\s+[A-Z][\w'-]*){0,4})", "near_named_phrase"),
+            (r"\bseason\s+(?:was\s+)?(?:in\s+)?(\d{4})\b", "year"),
+            (r"\b(\d{4}-\d{2}-\d{2})\b", "date"),
+            (r"\bof\s+(?:the\s+)?([A-Z][\w'-]*(?:\s+[A-Z0-9][\w'-]*){0,4})[?.!]*$", "capitalized_entity"),
+        ]
+        found: dict[tuple[int, int, str], set[str]] = {}
+        for pattern, signal in patterns:
+            for match in re.finditer(pattern, question):
+                value = match.group(1).strip().rstrip("?.!,")
+                span = match.span(1)
+                if value:
+                    found.setdefault((span[0], span[1], value), set()).add(signal)
+
+        # Numeric literals and years not already captured. Limits introduced by
+        # "top/first/limit" are intentionally excluded.
+        for match in re.finditer(r"\b\d+(?:\.\d+)?\b", question):
+            prefix = question[max(0, match.start() - 12):match.start()].lower()
+            if re.search(r"\b(?:top|first|limit)\s*$", prefix):
+                continue
+            value = match.group(0)
+            signal = "year" if len(value) == 4 and value.isdigit() else "numeric_value"
+            found.setdefault((match.start(), match.end(), value), set()).add(signal)
+
+        candidates = []
+        for start, end, value in sorted(found, key=lambda item: (item[0], -(item[1] - item[0]))):
+            ranked_columns = self._score_filter_columns(question, value, (start, end), schema_context)
+            candidates.append({
+                "value": value,
+                "span": [start, end],
+                "signals": sorted(found[(start, end, value)]),
+                "candidate_columns": ranked_columns[:3],
+            })
+        return sorted(
+            candidates,
+            key=lambda item: -float((item.get("candidate_columns") or [{}])[0].get("score", 0.0)),
+        )
 
     def _metric_slot(
         self,
@@ -124,8 +178,11 @@ class SlotResolver:
 
     def _filter_slots(
         self,
+        question: str,
         q: str,
         dimension_synonyms: dict[str, list[str]],
+        schema_context: RuntimeSchemaContext,
+        filter_value_candidates: list[dict[str, Any]] | None = None,
     ) -> tuple[RuntimeSlot, RuntimeSlot, RuntimeSlot]:
         stop_words = {
             "limit",
@@ -133,6 +190,7 @@ class SlotResolver:
             "group",
             "by",
             "from",
+            "of",
             "with",
             "where",
             "show",
@@ -153,11 +211,55 @@ class SlotResolver:
                 RuntimeSlot(slot_name="filter_value", value=excluded, source="question", confidence=0.4),
                 RuntimeSlot(slot_name="filter_operator", value="not_equals", source="question", confidence=0.4),
             )
+        grounded = (filter_value_candidates or [None])[0]
+        if isinstance(grounded, dict) and grounded.get("candidate_columns"):
+            ranked = grounded["candidate_columns"]
+            best = ranked[0]
+            alternatives = [
+                item["column"] for item in ranked[1:]
+                if float(item.get("score", 0.0)) >= float(best.get("score", 0.0)) - 0.08
+                and float(item.get("score", 0.0)) >= 0.55
+            ]
+            confidence = float(best.get("score", 0.0))
+            if alternatives:
+                confidence = min(confidence, 0.49)
+            if confidence >= 0.40:
+                return (
+                    RuntimeSlot(
+                        slot_name="filter_column",
+                        value=str(best["column"]).split(".", 1)[-1],
+                        source="schema_match",
+                        confidence=confidence,
+                        alternatives=alternatives,
+                    ),
+                    RuntimeSlot(
+                        slot_name="filter_value",
+                        value=grounded["value"],
+                        source="question",
+                        confidence=0.9,
+                    ),
+                    RuntimeSlot(slot_name="filter_operator", value="equals", source="question", confidence=0.88),
+                )
+        standalone_value = self._standalone_filter_value(question)
+        if standalone_value:
+            inferred = self._infer_filter_column(q, standalone_value, schema_context)
+            if inferred.get("column"):
+                return (
+                    RuntimeSlot(
+                        slot_name="filter_column",
+                        value=inferred["column"],
+                        source="schema_match",
+                        confidence=float(inferred["confidence"]),
+                        alternatives=list(inferred.get("alternatives") or []),
+                    ),
+                    RuntimeSlot(slot_name="filter_value", value=standalone_value, source="question", confidence=0.88),
+                    RuntimeSlot(slot_name="filter_operator", value="equals", source="question", confidence=0.88),
+                )
         for dimension, aliases in dimension_synonyms.items():
             if dimension in {"month", "year"}:
                 continue
             for alias in sorted(self._aliases(dimension, aliases), key=len, reverse=True):
-                pattern = rf"(?:where|with|for|in|from)?\s*\b{re.escape(alias.lower())}\b\s*(is\s+not|!=|<>|equals|equal\s+to|is|=|as|in)?\s+([a-z0-9][a-z0-9 -]{{0,40}})"
+                pattern = rf"(?:where|with|for|in|from)?\s*\b{re.escape(alias.lower())}\b\s*(is\s+not|was\s+not|!=|<>|equals|equal\s+to|was|is|=|as|in)?\s+([a-z0-9][a-z0-9 -]{{0,60}}?)(?=\s+(?:and|with|where|who|that|were|was\s+acquired)\b|[?.!,]|$)"
                 match = re.search(pattern, q)
                 if not match:
                     continue
@@ -179,11 +281,132 @@ class SlotResolver:
                 RuntimeSlot(slot_name="filter_value", value=value, source="question", confidence=0.82),
                 RuntimeSlot(slot_name="filter_operator", value=operator, source="question", confidence=0.82),
             )
+
         return (
             RuntimeSlot(slot_name="filter_column", value=None, source="default", confidence=0.0),
             RuntimeSlot(slot_name="filter_value", value=None, source="default", confidence=0.0),
             RuntimeSlot(slot_name="filter_operator", value="equals", source="default", confidence=0.0),
         )
+
+    @staticmethod
+    def _standalone_filter_value(question: str) -> str | None:
+        patterns = [
+            r"\b(?:named|called)\s+([A-Z][\w'-]*(?:\s+[A-Z][\w'-]*){0,4})",
+            r"\bseason\s+(?:was\s+)?(?:in\s+)?(\d{4})\b",
+            r"\bof\s+(?:the\s+)?([A-Z][\w'-]*(?:\s+[A-Z0-9][\w'-]*){0,4})[?.!]*$",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, question)
+            if match:
+                return match.group(1).strip().rstrip("?.!,")
+        return None
+
+    @staticmethod
+    def _infer_filter_column(
+        question: str,
+        value: str,
+        schema_context: RuntimeSchemaContext,
+    ) -> dict[str, Any]:
+        candidates: list[tuple[float, str, str]] = []
+        value_lower = value.lower()
+        for qualified in schema_context.get_columns():
+            table, column = qualified.split(".", 1)
+            info = schema_context.column_info(table, column)
+            if info.get("is_sensitive"):
+                continue
+            score = 0.0
+            method = "fallback"
+            samples = [str(item).lower() for item in info.get("sample_values") or []]
+            if value_lower in samples:
+                score = 1.0
+                method = "value_lookup"
+            elif column.lower() in question or column.lower().replace("_", " ") in question:
+                score = 0.9
+                method = "exact"
+            elif any(marker in column.lower() for marker in ("name", "player", "person", "model", "title")):
+                score = 0.72
+                method = "fuzzy"
+            elif info.get("is_text"):
+                score = 0.45
+            if "player" in question and any(marker in column.lower() for marker in ("player", "name")):
+                score += 0.15
+            if table.lower().rstrip("s") in question:
+                score += 0.08
+            candidates.append((min(score, 1.0), qualified, method))
+        if not candidates:
+            return {"column": None, "confidence": 0.0, "method": "fallback", "alternatives": []}
+        ordered = sorted(candidates, reverse=True)
+        score, qualified, method = ordered[0]
+        alternatives = [item[1] for item in ordered[1:4] if item[0] >= score - 0.08]
+        if alternatives:
+            score = min(score, 0.49)
+        return {
+            "column": qualified.split(".", 1)[1],
+            "confidence": round(score, 4),
+            "method": "ambiguous" if alternatives else method,
+            "alternatives": alternatives,
+        }
+
+    @staticmethod
+    def _score_filter_columns(
+        question: str,
+        value: str,
+        span: tuple[int, int],
+        schema_context: RuntimeSchemaContext,
+    ) -> list[dict[str, Any]]:
+        question_lower = question.lower()
+        value_lower = value.lower().strip()
+        value_normalized = re.sub(r"[^a-z0-9]+", " ", value_lower).strip()
+        numeric_value = bool(re.fullmatch(r"\d+(?:\.\d+)?", value_lower))
+        ranked: list[dict[str, Any]] = []
+        for qualified in schema_context.get_columns():
+            table, column = qualified.split(".", 1)
+            info = schema_context.column_info(table, column)
+            if info.get("is_sensitive"):
+                continue
+            signals: list[str] = []
+            score = 0.0
+            samples = [str(item).strip().lower() for item in info.get("sample_values") or []]
+            normalized_samples = [re.sub(r"[^a-z0-9]+", " ", item).strip() for item in samples]
+            if value_lower in samples:
+                score, signals = 0.94, ["value_lookup", "exact_cell_value"]
+            elif value_normalized and value_normalized in normalized_samples:
+                score, signals = 0.88, ["value_lookup", "normalized_value_match"]
+
+            column_phrase = column.lower().replace("_", " ")
+            if column_phrase in question_lower:
+                score += 0.18
+                signals.append("column_context")
+            column_position = question_lower.find(column_phrase)
+            if column_position >= 0:
+                distance = min(abs(span[0] - column_position), 80)
+                score += max(0.0, 0.12 * (1.0 - distance / 80.0))
+                signals.append("question_phrase_proximity")
+            if numeric_value and info.get("is_numeric"):
+                score += 0.12
+                signals.append("type_compatible")
+            elif not numeric_value and info.get("is_text"):
+                score += 0.08
+                signals.append("type_compatible")
+            entity_markers = ("name", "player", "person", "model", "title", "code")
+            if not numeric_value and any(marker in column.lower() for marker in entity_markers):
+                score += 0.16
+                signals.append("entity_column")
+            context_tokens = set(re.findall(r"[a-z0-9]+", question_lower[max(0, span[0] - 30):span[1] + 30]))
+            column_tokens = set(re.findall(r"[a-z0-9]+", column_phrase))
+            if context_tokens & column_tokens:
+                score += 0.10
+                signals.append("token_overlap")
+            fuzzy = SequenceMatcher(None, value_normalized, column_phrase).ratio()
+            if fuzzy >= 0.70:
+                score += 0.05 * fuzzy
+                signals.append("fuzzy_match")
+            ranked.append({
+                "column": qualified,
+                "score": round(min(score, 1.0), 4),
+                "signals": list(dict.fromkeys(signals)) or ["fallback"],
+            })
+        return sorted(ranked, key=lambda item: (-float(item["score"]), item["column"]))
 
     @staticmethod
     def _candidate_vote(candidates: list[RetrievedCandidate], slot_name: str) -> str | None:

@@ -181,11 +181,12 @@ class StepRunner:
 
     def _contract_run_quality_gate(self, config: PipelineConfig) -> StepContract:
         required = (config.training.get("_integrated_config") or {}).get("quality_gate", {}).get("required", False)
-        if not required:
-            return StepContract(name="run_quality_gate", required=False, can_skip=True, skip_reason="quality_gate.required is false")
         return StepContract(
             name="run_quality_gate",
-            required=True,
+            # Optional gates still run so debug/baseline builds retain an
+            # actionable report. ``required`` controls whether a failed gate
+            # stops the pipeline; it does not disable evaluation.
+            required=bool(required),
             inputs=[str(Path(_artifacts(config)["evaluation_dir"]) / "generic_model_evaluation_report.json")],
             outputs=[str(Path(_artifacts(config)["evaluation_dir"]) / "model_quality_gate_report.json")],
         )
@@ -545,9 +546,21 @@ class StepRunner:
                 "measures_model_predictions": True,
                 "cases_total": report.get("cases_total", 0),
                 "predictions_generated": report.get("predictions_generated", 0),
+                "prediction_coverage_rate": report.get("prediction_coverage_rate", 0.0),
+                "abstention_count": report.get("abstention_count", 0),
+                "abstention_rate": report.get("abstention_rate", 0.0),
+                "no_prediction_count": report.get("no_prediction_count", 0),
                 "predicted_execution_match_rate": report.get("predicted_execution_match_rate", 0.0),
                 "predicted_row_count_match_rate": report.get("predicted_row_count_match_rate", 0.0),
+                "predicted_result_value_match_rate": report.get("predicted_result_value_match_rate", 0.0),
                 "predicted_safe_sql_rate": report.get("predicted_safe_sql_rate", 0.0),
+                "safe_but_wrong_sql_count": report.get("safe_but_wrong_sql_count", 0),
+                "safe_but_wrong_sql_rate": report.get("safe_but_wrong_sql_rate", 0.0),
+                "semantic_execution_match_rate": report.get("semantic_execution_match_rate", 0.0),
+                "semantic_failure_breakdown": report.get("semantic_failure_breakdown", {}),
+                "coverage_rate": report.get("coverage_rate", 0.0),
+                "quality_on_answered_rate": report.get("quality_on_answered_rate", 0.0),
+                "quality_on_all_questions_rate": report.get("quality_on_all_questions_rate", 0.0),
                 "unsafe_sql_count": report.get("unsafe_sql_count", 0),
                 "failure_breakdown": report.get("failure_breakdown"),
                 "policy_failure_type_counts": report.get("policy_failure_type_counts"),
@@ -579,12 +592,15 @@ class StepRunner:
         bundle_eval_dir = candidate / "evaluation"
         bundle_eval_dir.mkdir(parents=True, exist_ok=True)
 
-        report_names = [
-            "controlled_predicted_sql_execution_report.json",
-            "controlled_fixture_evaluation_report.json",
-            "multi_seed_variance_report.json",
-            "execution_aware_evaluation_report.json",
-        ]
+        report_names: list[str] = []
+        if controlled_predicted.get("enabled", False):
+            report_names.append("controlled_predicted_sql_execution_report.json")
+        if ((integrated.get("execution_aware") or {}).get("controlled_fixtures") or {}).get("enabled", False):
+            report_names.append("controlled_fixture_evaluation_report.json")
+        if (integrated.get("seeds") or {}).get("enabled", False):
+            report_names.append("multi_seed_variance_report.json")
+        if (integrated.get("evaluation") or {}).get("run_execution_aware", False):
+            report_names.append("execution_aware_evaluation_report.json")
         attached: list[dict[str, str]] = []
         missing: list[str] = []
         for name in report_names:
@@ -741,7 +757,9 @@ class StepRunner:
         bundle_dir = next((path for path in candidates if (path / "bundle_manifest.json").exists()), None)
         if bundle_dir is None:
             return {"status": "failed", "error": "No candidate/current model bundle available for app runtime smoke"}
-        bundle = ModelBundleLoader().load(bundle_dir)
+        # This is an explicit pipeline smoke test of a candidate artifact, not
+        # an application production load. Candidate access remains opt-in.
+        bundle = ModelBundleLoader().load(bundle_dir, allow_candidate_debug=True)
         # Load model from bundle directory (not separate retrieval/neural dirs)
         model = RetrievalNL2SQLModel.load(
             artifact_dir=str(bundle_dir),
@@ -832,7 +850,38 @@ class StepRunner:
             return {"status": "failed", "error": "; ".join(issues), "summary": summary}
         return {"status": "completed", "summary": summary}
 
+    def _run_run_feedback_regression(self, config: PipelineConfig) -> dict[str, Any]:
+        from dataset_training.utils import read_jsonl, write_json
+        from quality_gates.regression_suite import DEFAULT_CASES, RegressionSuite
+
+        integrated = config.training.get("_integrated_config") or {}
+        feedback_cfg = integrated.get("feedback_regression") or {}
+        report_path = ROOT / feedback_cfg.get(
+            "report_path", "artifacts/evaluation/feedback_regression_report.json"
+        )
+        feedback_path = ROOT / feedback_cfg.get(
+            "cases_path", "data/processed/feedback_safety_regressions.jsonl"
+        )
+        feedback_rows = read_jsonl(feedback_path) if feedback_path.exists() else []
+        report = RegressionSuite().run(
+            cases=DEFAULT_CASES,
+            feedback_safety_regressions=feedback_rows,
+        )
+        report["feedback_regression_pass_rate"] = float(
+            (report.get("summary") or {}).get("pass_rate", 0.0)
+        )
+        report["feedback_cases_available"] = len(feedback_rows)
+        report["feedback_cases_path"] = str(feedback_path)
+        write_json(report_path, report)
+        return {"status": "completed", "summary": report.get("summary") or {}}
+
     def _run_run_quality_gate(self, config: PipelineConfig) -> dict[str, Any]:
+        return self._evaluate_quality_gate(config, final_phase=False)
+
+    def _run_run_final_quality_gate(self, config: PipelineConfig) -> dict[str, Any]:
+        return self._evaluate_quality_gate(config, final_phase=True)
+
+    def _evaluate_quality_gate(self, config: PipelineConfig, final_phase: bool) -> dict[str, Any]:
         from quality_gates.model_quality_gate import ModelQualityGate
         from quality_gates.thresholds import load_thresholds
 
@@ -848,10 +897,14 @@ class StepRunner:
         gate_cfg = integrated.get("quality_gate", {}) or {}
         gate_mode = str(gate_cfg.get("mode") or ("production" if gate_cfg.get("required", False) and not config.smoke else "smoke"))
         eval_report["quality_gate_mode"] = gate_mode
+        eval_report["quality_gate_phase"] = "final" if final_phase else "pre_bundle"
         eval_report["pipeline_name"] = config.pipeline_name
         eval_report["allow_intent_accuracy_simple_query_fallback"] = gate_mode not in {"production", "full"}
         execution_path = Path(artifacts["evaluation_dir"]) / "execution_aware_evaluation_report.json"
-        if execution_path.exists():
+        execution_enabled = bool(
+            integrated.get("evaluation", {}).get("run_execution_aware", False)
+        )
+        if execution_enabled and execution_path.exists():
             execution_report = json.loads(execution_path.read_text(encoding="utf-8"))
             execution_summary = execution_report.get("summary") or {}
             if "execution_match_rate" in execution_summary:
@@ -862,24 +915,41 @@ class StepRunner:
                 "required": bool(integrated.get("evaluation", {}).get("run_execution_aware", False)),
             }
         else:
-            required = bool(integrated.get("evaluation", {}).get("run_execution_aware", False))
             eval_report["execution_aware_evaluation"] = {
                 "enabled": False,
-                "required": required,
-                "reason": "disabled by config" if not required else f"missing report: {execution_path}",
+                "required": execution_enabled,
+                "reason": "disabled by config" if not execution_enabled else f"missing report: {execution_path}",
             }
         predicted_sql_path = Path(artifacts["evaluation_dir"]) / "controlled_predicted_sql_execution_report.json"
         controlled_predicted_cfg = (integrated.get("execution_aware") or {}).get("controlled_predicted_sql") or {}
-        if predicted_sql_path.exists():
+        if controlled_predicted_cfg.get("enabled", False) and predicted_sql_path.exists():
             eval_report["controlled_predicted_sql_execution"] = json.loads(predicted_sql_path.read_text(encoding="utf-8"))
             eval_report["controlled_predicted_sql_required"] = bool(
-                controlled_predicted_cfg.get("required_for_full_training", False)
+                final_phase and controlled_predicted_cfg.get("required_for_full_training", False)
             )
-        elif controlled_predicted_cfg.get("enabled", False):
+        elif controlled_predicted_cfg.get("enabled", False) and final_phase:
             eval_report["controlled_predicted_sql_execution"] = {
                 "available": False,
                 "required": bool(controlled_predicted_cfg.get("required_for_full_training", False)),
             }
+            eval_report["controlled_predicted_sql_required"] = bool(
+                controlled_predicted_cfg.get("required_for_full_training", False)
+            )
+        elif controlled_predicted_cfg.get("enabled", False):
+            eval_report["controlled_predicted_sql_deferred_until_candidate_bundle"] = True
+
+        feedback_cfg = integrated.get("feedback_regression") or {}
+        eval_report["feedback_regression"] = feedback_cfg
+        feedback_path = ROOT / feedback_cfg.get(
+            "report_path", "artifacts/evaluation/feedback_regression_report.json"
+        )
+        if feedback_cfg.get("enabled", False) and feedback_path.exists():
+            feedback_report = json.loads(feedback_path.read_text(encoding="utf-8"))
+            feedback_rate = feedback_report.get("feedback_regression_pass_rate")
+            if feedback_rate is None:
+                feedback_rate = (feedback_report.get("summary") or {}).get("pass_rate")
+            if isinstance(feedback_rate, (int, float)):
+                eval_report["feedback_regression_pass_rate"] = float(feedback_rate)
         contribution_path = ROOT / "artifacts/generic_training/dataset_contribution_report.json"
         eval_report["dataset_contribution_report_required"] = True
         if contribution_path.exists():
@@ -895,9 +965,50 @@ class StepRunner:
         output = Path(artifacts["evaluation_dir"]) / "model_quality_gate_report.json"
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-        if not report.get("passed") and integrated.get("quality_gate", {}).get("required", False):
+
+        # The pre-bundle report is diagnostic only: a strict controlled
+        # predicted-SQL check cannot run until the candidate exists.  Once the
+        # final gate runs, synchronize its result into the candidate so bundle
+        # validation and promotion consume the same decision.
+        if final_phase:
+            candidate = _candidate_bundle_dir(config)
+            bundle_eval = candidate / "evaluation"
+            if candidate.exists():
+                bundle_eval.mkdir(parents=True, exist_ok=True)
+                (bundle_eval / "model_quality_gate_report.json").write_text(
+                    json.dumps(report, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                manifest_path = candidate / "bundle_manifest.json"
+                if manifest_path.exists():
+                    from model_bundle.bundle_manifest import load_manifest, save_manifest
+
+                    manifest = load_manifest(manifest_path)
+                    manifest.quality_gate = {
+                        **(manifest.quality_gate or {}),
+                        "passed": bool(report.get("passed", False)),
+                        "required": bool(gate_cfg.get("required", False)),
+                        "report_path": "evaluation/model_quality_gate_report.json",
+                        "mode": report.get("mode", gate_mode),
+                        "phase": "final",
+                    }
+                    save_manifest(manifest, manifest_path)
+
+        if (
+            final_phase
+            and not report.get("passed")
+            and integrated.get("quality_gate", {}).get("required", False)
+        ):
             return {"status": "failed", "error": "Quality gate failed", "summary": report}
-        return {"status": "completed", "summary": {"passed": report["passed"], "failed_checks": len(report.get("failed_checks", []))}}
+        return {
+            "status": "completed",
+            "summary": {
+                "passed": report["passed"],
+                "phase": "final" if final_phase else "pre_bundle",
+                "promotion_decision_deferred": bool(not final_phase),
+                "failed_checks": len(report.get("failed_checks", [])),
+            },
+        }
 
     def _run_build_model_bundle(self, config: PipelineConfig) -> dict[str, Any]:
         from model_bundle.bundle_builder import ModelBundleBuilder

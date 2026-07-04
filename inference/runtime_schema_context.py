@@ -53,8 +53,18 @@ class RuntimeSchemaContext:
         return self.tables[table]["columns"][column]
 
     def serialize_for_debug(self) -> dict[str, Any]:
+        safe_tables = {
+            table: {
+                **info,
+                "columns": {
+                    column: {key: value for key, value in column_info.items() if key != "sample_values"}
+                    for column, column_info in info.get("columns", {}).items()
+                },
+            }
+            for table, info in self.tables.items()
+        }
         return {
-            "tables": self.tables,
+            "tables": safe_tables,
             "foreign_keys": self.foreign_keys,
             "relationships": dict(self.relationships),
             "dialect": self.dialect,
@@ -113,11 +123,22 @@ class RuntimeSchemaContext:
                         or raw_dict.get("is_primary_key", False)
                         or column_name in primary_keys
                     ),
+                    sample_values=(
+                        raw_dict.get("sample_values")
+                        or raw_dict.get("values")
+                        or raw_dict.get("examples")
+                        or []
+                    ),
                 )
         return normalized
 
     @staticmethod
-    def _column_flags(column_name: str, column_type: str, primary_key: bool) -> dict[str, Any]:
+    def _column_flags(
+        column_name: str,
+        column_type: str,
+        primary_key: bool,
+        sample_values: list[Any] | None = None,
+    ) -> dict[str, Any]:
         name = column_name.lower()
         typ = column_type.lower()
         return {
@@ -130,6 +151,7 @@ class RuntimeSchemaContext:
             "is_date": any(marker in name for marker in DATE_MARKERS) or "date" in typ or "time" in typ,
             "is_id": name == "id" or any(marker in name for marker in ID_MARKERS),
             "is_sensitive": any(marker in name for marker in SENSITIVE_MARKERS),
+            "sample_values": [str(value) for value in (sample_values or [])[:50] if value is not None],
         }
 
     @staticmethod

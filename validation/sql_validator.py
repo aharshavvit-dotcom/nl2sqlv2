@@ -184,6 +184,97 @@ class SQLValidator:
         valid = all(checks.values())
         return self._payload(valid, checks, issues, referenced_tables, referenced_columns)
 
+    def validate_with_repair(
+        self,
+        sql: str | None,
+        schema: dict[str, Any] | SchemaGraph | None = None,
+        max_limit: int = 1000,
+        dialect: str = "sqlite",
+        default_limit: int = 100,
+        query_ir_valid: bool = True,
+    ) -> dict[str, Any]:
+        """Validate SQL and apply only deterministic, semantics-preserving repairs."""
+        original_validation = self.validate(sql, schema=schema, max_limit=max_limit, dialect=dialect)
+        result: dict[str, Any] = {
+            "original_sql": sql,
+            "original_validation": original_validation,
+            "repair_attempted": False,
+            "repair_succeeded": False,
+            "repair_actions": [],
+            "repaired_sql": None,
+            "final_sql": sql if original_validation.get("is_valid") else None,
+            "final_validation": original_validation,
+        }
+        if original_validation.get("is_valid") or not query_ir_valid or not sql or not sql.strip():
+            return result
+
+        repaired = self._safe_repair_sql(
+            sql,
+            schema=schema,
+            dialect=dialect,
+            default_limit=min(default_limit, max_limit),
+        )
+        result["repair_attempted"] = bool(repaired.get("attempted", False))
+        result["repair_actions"] = list(repaired.get("actions") or [])
+        candidate = repaired.get("sql")
+        if not candidate:
+            return result
+        repaired_validation = self.validate(candidate, schema=schema, max_limit=max_limit, dialect=dialect)
+        result["repaired_sql"] = candidate
+        result["final_validation"] = repaired_validation
+        if repaired_validation.get("is_valid"):
+            result["repair_succeeded"] = True
+            result["final_sql"] = candidate
+        return result
+
+    def _safe_repair_sql(
+        self,
+        sql: str,
+        schema: dict[str, Any] | SchemaGraph | None,
+        dialect: str,
+        default_limit: int,
+    ) -> dict[str, Any]:
+        upper_sql = sql.upper()
+        if any(re.search(rf"\b{keyword}\b", upper_sql) for keyword in BLOCKED_KEYWORDS):
+            return {"attempted": False, "sql": None, "actions": []}
+
+        actions: list[str] = []
+        candidate = sql.strip()
+        without_comments = re.sub(r"\s*(?:--[^\r\n]*|/\*.*?\*/)\s*$", "", candidate, flags=re.DOTALL).strip()
+        without_terminator = without_comments.rstrip().removesuffix(";").rstrip()
+        if without_terminator != candidate:
+            candidate = without_terminator
+            actions.append("removed_trailing_comment_or_semicolon")
+        try:
+            parsed = sqlglot.parse(candidate, read=self._sqlglot_dialect(dialect))
+        except Exception:
+            return {"attempted": bool(actions), "sql": candidate if actions else None, "actions": actions}
+        if len(parsed) != 1 or not isinstance(parsed[0], exp.Select):
+            return {"attempted": False, "sql": None, "actions": []}
+        select = parsed[0]
+
+        if self._has_select_star(select):
+            tables = [table.name for table in select.find_all(exp.Table) if table.name]
+            schema_tables = self._schema_tables(schema)
+            if len(set(tables)) != 1 or not schema_tables.get(tables[0]):
+                return {"attempted": bool(actions), "sql": candidate if actions else None, "actions": actions}
+            columns = [
+                column for column in sorted(schema_tables[tables[0]])
+                if not self._is_sensitive(column)
+            ]
+            if not columns:
+                return {"attempted": bool(actions), "sql": candidate if actions else None, "actions": actions}
+            select.set("expressions", [exp.column(column) for column in columns])
+            actions.append("replaced_select_star_with_explicit_columns")
+
+        if select.args.get("limit") is None:
+            select.set("limit", exp.Limit(expression=exp.Literal.number(default_limit)))
+            actions.append(f"added_limit_{default_limit}")
+        normalized = select.sql(dialect=self._sqlglot_dialect(dialect))
+        if normalized != candidate and not actions:
+            actions.append("normalized_identifier_quoting")
+        return {"attempted": bool(actions), "sql": normalized, "actions": actions}
+
     @staticmethod
     def _payload(
         is_valid: bool,

@@ -6,6 +6,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+from inference.prediction_models import is_abstained_prediction
+
 
 class DatasetScaleEvaluator:
     def __init__(self, predictor: Any | None = None):
@@ -91,8 +93,24 @@ class DatasetScaleEvaluator:
                 )
             else:
                 _simple_query_pass = None  # Non-simple queries excluded from simple_query_pass_rate
+            linking = _linking_diagnostics(gold, pred, row)
+            projection = _projection_diagnostics(gold, pred)
+            abstained = _row_abstained(row)
             per_example.append({
                 "example_id": row.get("example_id"),
+                "question": row.get("question"),
+                "predicted_sql": row.get("original_predicted_sql", row.get("predicted_sql")),
+                "final_sql_after_repair": row.get("predicted_sql"),
+                "predicted_query_ir": pred,
+                "sql_validation_passed": item_metrics.get("sql_validation", False),
+                "validation_errors": list((row.get("sql_validation") or {}).get("issues") or []),
+                "policy_failure_type": row.get("policy_failure_type"),
+                "repair_attempted": bool((row.get("repair") or {}).get("repair_attempted", False)),
+                "repair_succeeded": bool((row.get("repair") or {}).get("repair_succeeded", False)),
+                "abstained": abstained,
+                "abstention_reason": row.get("abstention_reason"),
+                **linking,
+                "projection": projection,
                 "intent_correct": item_metrics.get("intent_accuracy", False),
                 "base_table_correct": item_metrics.get("base_table_accuracy", False),
                 "join_correct": item_metrics.get("join_accuracy", False),
@@ -138,6 +156,52 @@ class DatasetScaleEvaluator:
             "router_macro_f1": classification.get("router", {}).get("macro_f1", 0.0),
             "unsafe_sql_count": sum(1 for row in rows if not _is_select_safe(row)),
             "execution_match_rate": _optional_rate(rows, "execution_match"),
+            "execution_available": sum(1 for row in rows if row.get("execution_available")),
+            "execution_unavailable": not any(row.get("execution_available") for row in rows),
+            "execution_unavailable_reason": (
+                "not_configured" if not any("execution_available" in row for row in rows)
+                else "no_database_connection"
+            ) if not any(row.get("execution_available") for row in rows) else None,
+            "filter_column_accuracy_rate": _diagnostic_rate(per_example, "filter_linking", "filter_column_match"),
+            "filter_value_accuracy_rate": _diagnostic_rate(per_example, "filter_linking", "filter_value_match"),
+            "dimension_column_accuracy_rate": _diagnostic_rate(per_example, "dimension_linking", "dimension_match"),
+            "value_to_column_link_success_rate": _diagnostic_rate(per_example, "filter_linking", "value_to_column_linked"),
+            "filter_value_extraction_accuracy_rate": _diagnostic_rate(per_example, "filter_linking", "filter_value_extraction_match"),
+            "filter_column_top1_accuracy_rate": _diagnostic_rate(per_example, "filter_linking", "filter_column_top1_match"),
+            "filter_column_top3_accuracy_rate": _diagnostic_rate(per_example, "filter_linking", "filter_column_top3_match"),
+            "filter_column_ambiguity_rate": _diagnostic_rate(per_example, "filter_linking", "ambiguous"),
+            "filter_grounding_confidence_mean": _diagnostic_mean(per_example, "filter_linking", "linking_confidence"),
+            "projection_exact_match_rate": _diagnostic_rate(per_example, "projection", "exact_match"),
+            "projection_contains_gold_rate": _diagnostic_rate(per_example, "projection", "contains_gold"),
+            "extra_projection_column_rate": _diagnostic_rate(per_example, "projection", "has_extra_columns"),
+            "default_projection_used_count": sum(
+                1 for item in per_example if (item.get("projection") or {}).get("default_projection_used")
+            ),
+            "low_confidence_filter_abstention_count": sum(
+                1 for row in rows
+                if row.get("abstention_reason") in {"low_filter_confidence", "ambiguous_filter_column"}
+            ),
+        })
+        predictions_total = len(rows)
+        abstention_count = sum(1 for item in per_example if item.get("abstained"))
+        generated_count = sum(
+            1 for row in rows
+            if row.get("predicted_sql") or row.get("rendered_sql") or row.get("sql_generated")
+        )
+        answered = [item for item in per_example if not item.get("abstained")]
+        answered_correct = sum(1 for item in answered if item.get("final_correct"))
+        all_correct = sum(1 for item in per_example if item.get("final_correct") and not item.get("abstained"))
+        summary.update({
+            "predictions_total": predictions_total,
+            "predictions_generated": generated_count,
+            "abstention_count": abstention_count,
+            "abstention_rate": abstention_count / predictions_total if predictions_total else 0.0,
+            "requires_clarification_count": sum(1 for row in rows if row.get("requires_clarification")),
+            "sql_generated_count": generated_count,
+            "sql_evaluated_count": generated_count,
+            "coverage_rate": len(answered) / predictions_total if predictions_total else 0.0,
+            "quality_on_answered_rate": answered_correct / len(answered) if answered else 0.0,
+            "quality_on_all_questions_rate": all_correct / predictions_total if predictions_total else 0.0,
         })
         gold_replay_used = mode in {"explicit_gold_replay_baseline", "explicit_oracle_upper_bound"}
         inferred_predictor_used = self.predictor is not None or (
@@ -350,6 +414,11 @@ def calibration_metrics(
             "use_conformal_threshold": use_conformal,
             "conformal_confidence_threshold": None,
             "isotonic_points": [],
+            "confidence_unique_value_count": 0,
+            "confidence_std": 0.0,
+            "confidence_bucket_coverage_count": 0,
+            "calibration_degenerate": True,
+            "confidence_threshold_usable": False,
         }
     brier = sum((confidence - float(correct)) ** 2 for confidence, correct in outcomes) / len(outcomes)
     ece = 0.0
@@ -383,6 +452,16 @@ def calibration_metrics(
         if bucket["count"]:
             monotonic = max(monotonic, float(bucket["avg_correctness"]))
             points.append([float(bucket["avg_confidence"]), monotonic])
+    confidences = [float(confidence) for confidence, _ in outcomes]
+    mean_confidence = sum(confidences) / len(confidences)
+    confidence_std = math.sqrt(
+        sum((confidence - mean_confidence) ** 2 for confidence in confidences) / len(confidences)
+    )
+    unique_count = len({round(confidence, 6) for confidence in confidences})
+    covered_buckets = sum(1 for bucket in reliability if bucket["count"] > 0)
+    calibration_degenerate = unique_count <= 3 or confidence_std < 0.01 or covered_buckets <= 1
+    if calibration_degenerate:
+        conformal_confidence_threshold = None
     return {
         "sample_count": len(outcomes),
         "expected_calibration_error": ece,
@@ -394,6 +473,11 @@ def calibration_metrics(
         "conformal_nonconformity_threshold": conformal_score,
         "conformal_confidence_threshold": conformal_confidence_threshold,
         "isotonic_points": points,
+        "confidence_unique_value_count": unique_count,
+        "confidence_std": confidence_std,
+        "confidence_bucket_coverage_count": covered_buckets,
+        "calibration_degenerate": calibration_degenerate,
+        "confidence_threshold_usable": not calibration_degenerate,
     }
 
 
@@ -495,9 +579,154 @@ def _percentile(values: list[float], percentile: int) -> float:
     return float(ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower))
 
 
-def _optional_rate(rows: list[dict[str, Any]], key: str) -> float:
+def _optional_rate(rows: list[dict[str, Any]], key: str) -> float | None:
     values = [bool(row[key]) for row in rows if key in row]
-    return sum(values) / len(values) if values else 0.0
+    return sum(values) / len(values) if values else None
+
+
+def _diagnostic_rate(rows: list[dict[str, Any]], section: str, key: str) -> float:
+    values = [
+        item[section][key]
+        for item in rows
+        if isinstance(item.get(section), dict) and item[section].get(key) is not None
+    ]
+    return sum(bool(value) for value in values) / len(values) if values else 0.0
+
+
+def _diagnostic_mean(rows: list[dict[str, Any]], section: str, key: str) -> float:
+    values = [
+        _number(item[section].get(key))
+        for item in rows
+        if isinstance(item.get(section), dict) and item[section].get(key) is not None
+    ]
+    numeric = [value for value in values if value is not None]
+    return sum(numeric) / len(numeric) if numeric else 0.0
+
+
+def _linking_diagnostics(
+    gold: dict[str, Any],
+    predicted: dict[str, Any],
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    gold_filter = _first_section_item(gold, "filters")
+    pred_filter = _first_section_item(predicted, "filters")
+    gold_dimension = _first_section_item(gold, "dimensions")
+    pred_dimension = _first_section_item(predicted, "dimensions")
+    mapping = row.get("schema_mapping") or {}
+    slots = row.get("slots") or {}
+    pred_filter_column = _column_identity(pred_filter) or _qualified(
+        mapping.get("filter_table"), mapping.get("filter_column")
+    )
+    gold_filter_column = _column_identity(gold_filter)
+    pred_filter_value = pred_filter.get("value") if pred_filter else _slot_value(slots.get("filter_value"))
+    gold_filter_value = gold_filter.get("value") if gold_filter else None
+    pred_dimension_column = _column_identity(pred_dimension) or _qualified(
+        mapping.get("dimension_table"), mapping.get("dimension_column")
+    )
+    gold_dimension_column = _column_identity(gold_dimension)
+    filter_confidence = float((mapping.get("match_scores") or {}).get("filter", 0.0) or 0.0)
+    dimension_confidence = float((mapping.get("match_scores") or {}).get("dimension", 0.0) or 0.0)
+    value_candidates = row.get("filter_value_candidates") or []
+    value_candidate = next(
+        (
+            item for item in value_candidates
+            if _optional_equal(item.get("value"), gold_filter_value) is True
+        ),
+        value_candidates[0] if value_candidates else {},
+    )
+    ranked_columns = value_candidate.get("candidate_columns") or []
+    ranked_names = [str(item.get("column") or "") for item in ranked_columns]
+    top_score = float((ranked_columns[0] if ranked_columns else {}).get("score", filter_confidence) or 0.0)
+    ambiguous = bool(
+        len(ranked_columns) > 1
+        and float(ranked_columns[1].get("score", 0.0) or 0.0) >= top_score - 0.08
+        and float(ranked_columns[1].get("score", 0.0) or 0.0) >= 0.55
+    )
+    return {
+        "filter_linking": {
+            "predicted_filter_column": pred_filter_column,
+            "predicted_filter_value": pred_filter_value,
+            "gold_filter_column": gold_filter_column,
+            "gold_filter_value": gold_filter_value,
+            "filter_column_match": _optional_equal(pred_filter_column, gold_filter_column),
+            "filter_value_match": _optional_equal(pred_filter_value, gold_filter_value),
+            "value_to_column_linked": bool(pred_filter_value is not None and pred_filter_column),
+            "linking_method": mapping.get("filter_linking_method") or "fallback",
+            "linking_confidence": max(filter_confidence, top_score),
+            "filter_value_extraction_match": _optional_equal(value_candidate.get("value"), gold_filter_value),
+            "filter_column_top1_match": _optional_equal(ranked_names[0] if ranked_names else None, gold_filter_column),
+            "filter_column_top3_match": (
+                None if gold_filter_column is None
+                else any(_optional_equal(name, gold_filter_column) is True for name in ranked_names[:3])
+            ),
+            "ambiguous": ambiguous,
+            "filter_value_candidates": value_candidates,
+        },
+        "dimension_linking": {
+            "predicted_dimension": pred_dimension_column,
+            "gold_dimension": gold_dimension_column,
+            "dimension_match": _optional_equal(pred_dimension_column, gold_dimension_column),
+            "linking_method": mapping.get("dimension_linking_method") or "fallback",
+            "linking_confidence": dimension_confidence,
+        },
+    }
+
+
+def _projection_diagnostics(gold: dict[str, Any], predicted: dict[str, Any]) -> dict[str, Any]:
+    gold_columns = {_column_identity(item) for item in gold.get("dimensions") or [] if isinstance(item, dict)}
+    predicted_columns = {_column_identity(item) for item in predicted.get("dimensions") or [] if isinstance(item, dict)}
+    gold_columns.discard(None)
+    predicted_columns.discard(None)
+    extra = sorted(predicted_columns - gold_columns)
+    return {
+        "gold_columns": sorted(gold_columns),
+        "predicted_columns": sorted(predicted_columns),
+        "exact_match": predicted_columns == gold_columns,
+        "contains_gold": gold_columns.issubset(predicted_columns),
+        "extra_columns": extra,
+        "has_extra_columns": bool(extra),
+        "default_projection_used": bool((predicted.get("metadata") or {}).get("default_projection_used")),
+        "projection_mode": (predicted.get("metadata") or {}).get("projection_mode"),
+    }
+
+
+def _row_abstained(row: dict[str, Any]) -> bool:
+    return is_abstained_prediction(
+        sql=row.get("predicted_sql") or row.get("rendered_sql"),
+        prediction_status=row.get("prediction_status") or ("abstained" if row.get("abstain") else None),
+        requires_clarification=bool(row.get("requires_clarification")),
+    )
+
+
+def _first_section_item(ir: dict[str, Any], section: str) -> dict[str, Any]:
+    items = ir.get(section) or []
+    return items[0] if items and isinstance(items[0], dict) else {}
+
+
+def _column_identity(item: dict[str, Any]) -> str | None:
+    if not item:
+        return None
+    table, column = item.get("table"), item.get("column")
+    if table and column:
+        return f"{table}.{column}"
+    expression = item.get("expression") or item.get("date_expression")
+    return str(expression) if expression else (str(column) if column else None)
+
+
+def _qualified(table: Any, column: Any) -> str | None:
+    if table and column:
+        return f"{table}.{column}"
+    return str(column) if column else None
+
+
+def _slot_value(slot: Any) -> Any:
+    return slot.get("value") if isinstance(slot, dict) else slot
+
+
+def _optional_equal(left: Any, right: Any) -> bool | None:
+    if left is None and right is None:
+        return None
+    return str(left or "").strip().lower() == str(right or "").strip().lower()
 
 
 def _is_select_safe(row: dict[str, Any]) -> bool:

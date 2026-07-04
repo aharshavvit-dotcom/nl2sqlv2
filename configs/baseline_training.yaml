@@ -1,17 +1,14 @@
 pipeline:
-  name: smoke_integrated_training
+  name: baseline_integrated_training
   seed: 42
   fail_fast: true
   promote_if_passed: false
 
 datasets:
-  names:
-    - wikisql
-  max_examples: 100
-  max_examples_per_dataset:
-    wikisql: 100
-  min_converted_examples_required:
-    wikisql: 1
+  names: [wikisql]
+  max_examples: 500
+  max_examples_per_dataset: {wikisql: 500}
+  min_converted_examples_required: {wikisql: 10}
 
 paths:
   processed_dir: data/processed
@@ -26,26 +23,20 @@ retrieval:
 
 neural:
   enabled: true
-  config: configs/neural_training_smoke.yaml
+  config: configs/neural_training_default.yaml
   output_dir: artifacts/work/neural_ir
-  epochs: 1
-  batch_size: 4
+  epochs: 3
+  batch_size: 8
 
-self_training:
-  enabled: false
-
-ranker:
-  enabled: false
-
-augmentation:
-  schema_renaming:
-    enabled: false
+self_training: {enabled: false}
+ranker: {enabled: false}
+augmentation: {schema_renaming: {enabled: false}}
 
 evaluation:
   enabled: true
   output_dir: artifacts/evaluation
-  run_unseen_db: false
-  run_execution_aware: false
+  run_unseen_db: true
+  run_execution_aware: true
 
 calibration:
   enabled: true
@@ -56,15 +47,12 @@ calibration:
 quality_gate:
   thresholds: evaluation/model_quality_thresholds.yaml
   required: false
-  mode: debug
+  mode: baseline
 
 feedback_regression:
   enabled: false
   required_for_production: false
   report_path: artifacts/evaluation/feedback_regression_report.json
-
-app:
-  allow_candidate_bundle_debug: true
 
 bundle:
   build: true
@@ -74,3 +62,14 @@ bundle:
 execution_aware:
   controlled_fixtures:
     enabled: true
+    required_for_full_training: false
+  controlled_predicted_sql:
+    enabled: true
+    required_for_full_training: false
+    require_report_attached_to_bundle: false
+    min_execution_match_rate: 0.0
+
+app:
+  allow_candidate_bundle_debug: true
+
+seeds: {enabled: false}

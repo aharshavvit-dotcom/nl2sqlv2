@@ -15,12 +15,23 @@ class PredictionConfidenceCalculator:
         warnings = [str(item).lower() for item in result_parts.get("warnings", [])]
 
         retrieval_conf = float(candidates[0].rerank_score or candidates[0].similarity_score) if candidates else 0.0
+        second_retrieval = float(candidates[1].rerank_score or candidates[1].similarity_score) if len(candidates) > 1 else 0.0
+        model_margin = max(0.0, retrieval_conf - second_retrieval)
         template_conf = float(selected_template.get("confidence") or 0.0)
         slot_conf = self._slot_confidence(slots)
         mapping_conf = self._mapping_confidence(mapping)
         join_conf = float(join_plan.get("confidence", 1.0)) if isinstance(join_plan, dict) else 1.0
         ir_conf = 1.0 if ir_validation.get("is_valid", False) else 0.0
         validation_conf = 1.0 if validation.get("is_valid", validation.get("ok", False)) else 0.0
+        mapping_scores = (mapping.get("match_scores") or {}) if isinstance(mapping, dict) else (mapping.match_scores if mapping else {})
+        filter_linking_conf = float(mapping_scores.get("filter", 0.0) or 0.0)
+        dimension_linking_conf = float(mapping_scores.get("dimension", 0.0) or 0.0)
+        ambiguity_penalty = 1.0 if (
+            (isinstance(mapping, dict) and mapping.get("filter_ambiguous"))
+            or (mapping is not None and getattr(mapping, "filter_ambiguous", False))
+        ) else 0.0
+        repair = result_parts.get("sql_repair") or result_parts.get("repair") or {}
+        repair_penalty = 0.15 if repair.get("repair_attempted") else 0.0
 
         confidence = (
             0.20 * retrieval_conf
@@ -30,6 +41,9 @@ class PredictionConfidenceCalculator:
             + 0.10 * join_conf
             + 0.10 * ir_conf
             + 0.10 * validation_conf
+            + 0.05 * model_margin
+            - 0.10 * ambiguity_penalty
+            - repair_penalty
         )
         caps_applied: list[str] = []
 
@@ -69,12 +83,18 @@ class PredictionConfidenceCalculator:
 
         raw = round(max(0.0, min(1.0, confidence)), 4)
         calibration = result_parts.get("calibration") or {}
-        calibrated = round(self._calibrate(raw, calibration), 4)
+        calibration_degenerate = bool(calibration.get("calibration_degenerate", False))
+        calibrated = raw if calibration_degenerate else round(self._calibrate(raw, calibration), 4)
         conformal_threshold = calibration.get("conformal_confidence_threshold")
         use_conformal = bool(calibration.get("use_conformal_threshold", True))
         configured_floor = calibration.get("abstain_when_calibrated_confidence_below")
         threshold = configured_floor if isinstance(configured_floor, (int, float)) else conformal_threshold
-        abstain = use_conformal and isinstance(threshold, (int, float)) and calibrated < float(threshold)
+        abstain = (
+            not calibration_degenerate
+            and use_conformal
+            and isinstance(threshold, (int, float))
+            and calibrated < float(threshold)
+        )
         reason = "calibrated_confidence_below_conformal_threshold" if abstain else None
         tier = "needs_clarification" if abstain else "high" if calibrated >= 0.80 else "medium" if calibrated >= 0.60 else "low"
         breakdown = {
@@ -85,6 +105,15 @@ class PredictionConfidenceCalculator:
             "join_planning": round(join_conf, 4),
             "ir_validation": ir_conf,
             "sql_validation": validation_conf,
+            "model_margin": round(model_margin, 4),
+            "route_confidence": round(template_conf, 4),
+            "query_ir_validity": ir_conf,
+            "filter_linking_confidence": round(filter_linking_conf, 4),
+            "dimension_linking_confidence": round(dimension_linking_conf, 4),
+            "schema_candidate_score": round(mapping_conf, 4),
+            "repair_penalty": repair_penalty,
+            "ambiguity_penalty": ambiguity_penalty,
+            "calibration_degenerate": calibration_degenerate,
             "caps_applied": caps_applied,
             "raw_confidence": raw,
             "calibrated_confidence": calibrated,
@@ -104,6 +133,7 @@ class PredictionConfidenceCalculator:
             "confidence_tier": tier,
             "components": breakdown,
             "confidence_breakdown": breakdown,
+            "confidence_components": breakdown,
         }
 
     @staticmethod

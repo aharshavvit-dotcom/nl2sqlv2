@@ -18,6 +18,7 @@ from .query_ir_models import (
     IRValidationIssue,
     IRValidationResult,
     QueryIR,
+    diff_query_ir,
 )
 
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
     "RetrievalIRConverter",
     "OptionCToIRConverter",  # Deprecated alias
     "QueryIR",
+    "diff_query_ir",
     "SemanticMetricResolver",
     "SQLToIRConverter",
     "SQLToIRError",

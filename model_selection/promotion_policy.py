@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 from typing import Any
 
-from .model_selector import _hard_blockers
+from .model_selector import _hard_blockers, _timestamp
 
 
 PROMOTION_CRITICAL_METRICS = {
@@ -37,9 +37,36 @@ class PromotionPolicy:
         champion_metrics: dict[str, Any] | None,
         thresholds: dict[str, Any],
         bootstrap_iterations: int = 1000,
+        challenger_metadata: dict[str, Any] | None = None,
+        champion_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         minimums = thresholds.get("minimums") or thresholds
         blocking = _hard_blockers(challenger_metrics, minimums)
+        metadata_supplied = challenger_metadata is not None
+        challenger_metadata = challenger_metadata or {}
+        evaluation_mode = challenger_metadata.get("evaluation_mode")
+        if evaluation_mode and evaluation_mode != "real_model_predictions":
+            blocking.append("evaluation_mode_not_real_model_predictions")
+        if challenger_metadata.get("eligible_for_promotion") is False:
+            blocking.append("candidate_not_eligible_for_promotion")
+        if challenger_metadata.get("quality_gate_passed") is False:
+            blocking.append("quality_gate_not_passed")
+        artifact_source = challenger_metadata.get("model_artifact_source", "legacy_cache")
+        if metadata_supplied and artifact_source not in {"model_bundle", "artifact_dirs", "model_bundle_candidate"}:
+            blocking.append("ineligible_model_artifact_source")
+        if challenger_metadata.get("enforce_freshness"):
+            candidate_bundle_id = challenger_metadata.get("candidate_bundle_id")
+            manifest_bundle_id = challenger_metadata.get("manifest_bundle_id")
+            if not candidate_bundle_id or not manifest_bundle_id:
+                blocking.append("bundle_id_missing")
+            elif candidate_bundle_id != manifest_bundle_id:
+                blocking.append("bundle_id_mismatch")
+            generated_at = challenger_metadata.get("generated_at")
+            manifest_generated_at = challenger_metadata.get("candidate_bundle_generated_at")
+            if not generated_at or (
+                manifest_generated_at and _timestamp(str(generated_at)) < _timestamp(str(manifest_generated_at))
+            ):
+                blocking.append("stale_report")
         if bool(minimums.get("controlled_predicted_sql_required", False)):
             if int(challenger_metrics.get("controlled_predicted_sql_unsafe_sql_count", 0) or 0) > 0:
                 blocking.append("controlled_predicted_sql_unsafe_sql_count")
@@ -93,6 +120,9 @@ class PromotionPolicy:
             "point_estimate_fallback_checks": point_fallback_checks,
             "predicted_sql_execution": predicted_sql_execution,
             "blocking_regressions": [item for item in list(dict.fromkeys(blocking)) if item.endswith("_regression")],
+            "evaluation_mode": evaluation_mode or "legacy_unspecified",
+            "model_artifact_source": challenger_metadata.get("model_artifact_source", "legacy_cache"),
+            "eligible_for_promotion": not blocking,
         }
 
     @staticmethod
@@ -297,4 +327,3 @@ def _compare_predicted_sql_per_case(
         "reason": "" if len(common_ids) >= 10 else "insufficient_common_cases",
         "minimum_cases_required": 10,
     }
-

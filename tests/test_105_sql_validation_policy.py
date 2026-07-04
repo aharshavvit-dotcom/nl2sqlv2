@@ -7,6 +7,7 @@ import pytest
 
 from validation.sql_validator import SQLValidator, policy_failure_type
 from training.run_execution_aware_evaluation import evaluate_controlled_predicted_sql
+from training.evaluate_generic_models import _apply_sql_safety
 
 
 def test_select_star_blocked_by_validator():
@@ -164,3 +165,69 @@ def test_value_mismatch_has_no_policy_failure_type(tmp_path, monkeypatch):
     assert case["sqlite_execution_success"] is True
     assert case["final_execution_match"] is False
     assert case["policy_failure_type"] is None
+
+
+def test_missing_limit_is_repaired_and_revalidated():
+    result = SQLValidator().validate_with_repair("SELECT id FROM users")
+    assert result["repair_attempted"] is True
+    assert result["repair_succeeded"] is True
+    assert "LIMIT 100" in result["final_sql"].upper()
+    assert result["final_validation"]["is_valid"] is True
+
+
+def test_select_star_repair_requires_schema_columns():
+    validator = SQLValidator()
+    schema = {"tables": {"users": {"columns": {
+        "id": {"type": "integer"},
+        "name": {"type": "text"},
+    }}}}
+    repaired = validator.validate_with_repair("SELECT * FROM users", schema=schema)
+    assert repaired["repair_succeeded"] is True
+    assert "*" not in repaired["final_sql"]
+    assert "id" in repaired["final_sql"] and "name" in repaired["final_sql"]
+
+    unavailable = validator.validate_with_repair("SELECT * FROM users", schema=None)
+    assert unavailable["repair_succeeded"] is False
+    assert unavailable["final_sql"] is None
+
+
+def test_unsafe_dml_is_never_repaired():
+    result = SQLValidator().validate_with_repair("DELETE FROM users WHERE id = 1")
+    assert result["repair_attempted"] is False
+    assert result["repair_succeeded"] is False
+    assert result["final_sql"] is None
+
+
+def test_generic_sql_safety_counts_failures_and_abstains(tmp_path):
+    rows = [
+        {
+            "example_id": "repairable",
+            "question": "list ids",
+            "predicted_sql": "SELECT id FROM users",
+            "schema": {"tables": {"users": {"columns": {"id": {"type": "integer"}}}}},
+            "ir_validation": {"is_valid": True},
+        },
+        {
+            "example_id": "unsafe",
+            "question": "delete users",
+            "predicted_sql": "DELETE FROM users",
+            "schema": {"tables": {"users": {"columns": {"id": {"type": "integer"}}}}},
+            "ir_validation": {"is_valid": True},
+        },
+    ]
+    summary = _apply_sql_safety(rows)
+    assert summary["repair_attempt_count"] == 1
+    assert summary["repair_success_count"] == 1
+    assert summary["failure_breakdown"]["non_select_statement"] == 1
+    assert summary["invalid_sql_count"] == 1
+    assert summary["unsafe_sql_abstention_count"] == 1
+    assert summary["post_abstention_unsafe_sql_count"] == 0
+    assert rows[1]["predicted_sql"] is None
+    assert rows[1]["abstention_reason"] == "unsafe_sql"
+    assert summary["failures"][0]["invalid_sql"] is True
+    assert summary["failures"][0]["unsafe_sql"] is True
+    from dataset_training.utils import write_jsonl
+    output = tmp_path / "unsafe_sql_examples.jsonl"
+    write_jsonl(output, summary["failures"])
+    saved = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert saved[0]["policy_failure_type"] == "non_select_statement"

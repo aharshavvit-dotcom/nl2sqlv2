@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from pathlib import Path
 from typing import Any
 
@@ -12,10 +13,40 @@ from .bundle_validator import ModelBundleValidator
 logger = logging.getLogger(__name__)
 
 
+def inspect_bundle_status(current_dir: str | Path, candidate_dir: str | Path) -> dict[str, Any]:
+    """Return user-facing production/candidate and quality-gate status."""
+    current = Path(current_dir)
+    candidate = Path(candidate_dir)
+    gate_path = candidate / "evaluation" / "model_quality_gate_report.json"
+    gate = {}
+    if gate_path.exists():
+        try:
+            gate = json.loads(gate_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            gate = {}
+    blockers = gate.get("blocking_failures") or gate.get("failed_checks") or []
+    blocker_names = [
+        str(item.get("metric") if isinstance(item, dict) else item)
+        for item in blockers
+    ]
+    return {
+        "current_bundle_found": (current / "bundle_manifest.json").exists(),
+        "candidate_bundle_found": (candidate / "bundle_manifest.json").exists(),
+        "last_quality_gate_passed": gate.get("passed"),
+        "top_blockers": blocker_names[:5],
+        "candidate_debug_production_ready": False,
+    }
+
+
 class ModelBundleLoader:
     """Loads a validated model bundle, resolving all artifact paths."""
 
-    def load(self, bundle_dir: str | Path) -> dict[str, Any]:
+    def load(
+        self,
+        bundle_dir: str | Path,
+        *,
+        allow_candidate_debug: bool = False,
+    ) -> dict[str, Any]:
         """Load a bundle and return resolved artifact paths.
 
         Rules:
@@ -40,7 +71,17 @@ class ModelBundleLoader:
             )
 
         manifest = load_manifest(manifest_path)
-        validation = ModelBundleValidator().validate(path)
+        if manifest.status == "candidate" and not allow_candidate_debug:
+            raise ValueError(
+                "Candidate bundle loading is disabled. Set "
+                "NL2SQL_ALLOW_CANDIDATE_BUNDLE=1 only for explicit debugging."
+            )
+        validation = ModelBundleValidator().validate(
+            path,
+            allow_failed_quality_gate_debug=bool(
+                manifest.status == "candidate" and allow_candidate_debug
+            ),
+        )
         if not validation.get("passed"):
             issues = validation.get("blocking_issues", [])
             raise ValueError(
@@ -74,6 +115,26 @@ class ModelBundleLoader:
             "evaluation_dir": evaluation_dir,
             "calibration_dir": evaluation_dir,
             "calibration_report_path": calibration_report_path if Path(calibration_report_path).exists() else None,
+            "bundle_source": "candidate_debug" if manifest.status == "candidate" else "current",
+            "quality_gate_passed": bool((manifest.quality_gate or {}).get("passed", False)),
+            "production_ready": bool((manifest.lifecycle_proof or {}).get("production_ready", False)),
+            "loaded_for_debug": bool(manifest.status == "candidate" and allow_candidate_debug),
+            "bundle_validation": validation,
         }
 
         return result
+
+    def load_preferred(
+        self,
+        current_dir: str | Path,
+        candidate_dir: str | Path,
+        *,
+        allow_candidate_debug: bool = False,
+    ) -> dict[str, Any]:
+        """Load current first; candidate fallback requires an explicit debug flag."""
+        try:
+            return self.load(current_dir)
+        except (FileNotFoundError, ValueError) as current_error:
+            if not allow_candidate_debug:
+                raise current_error
+        return self.load(candidate_dir, allow_candidate_debug=True)

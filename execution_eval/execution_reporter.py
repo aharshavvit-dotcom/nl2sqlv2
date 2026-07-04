@@ -16,7 +16,15 @@ class ExecutionReporter:
             "summary": {
                 "total_examples": total,
                 "execution_available": execution_available,
-                "execution_match_rate": execution_matches / execution_available if execution_available else 0.0,
+                "execution_required": False,
+                "execution_unavailable": execution_available == 0,
+                "execution_unavailable_reason": "no_database_connection" if execution_available == 0 else None,
+                "execution_status": (
+                    "execution_unavailable" if execution_available == 0
+                    else "execution_available_and_passed" if execution_matches == execution_available
+                    else "execution_available_but_failed"
+                ),
+                "execution_match_rate": execution_matches / execution_available if execution_available else None,
                 "structure_match_rate": structure_matches / total if total else 0.0,
                 "unnecessary_join_rate": unnecessary / total if total else 0.0,
                 "wrong_table_rate": wrong_table / total if total else 0.0,

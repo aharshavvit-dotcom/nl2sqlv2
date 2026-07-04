@@ -196,6 +196,19 @@ python training/run_model_quality_gate.py \
 
 Production mode enforces the production simple-query threshold and requires an explicit `simple_query_pass_rate`; it does not substitute `intent_accuracy_rate`. Smoke and developer modes may use the lower smoke threshold for fast feedback.
 
+Quality gate modes are explicit:
+
+| Mode | Candidate bundle | Missing execution/feedback | Promotion |
+|:---|:---|:---|:---|
+| `debug` | Built when artifacts are complete | Warning | Never |
+| `baseline` | Built and validated for diagnostics | Warning when unavailable | Never |
+| `production` | Built only after core gate; final gate includes controlled predictions | Blocking when configured as required | Only after all checks |
+| `release` | Same as production plus release evidence | Blocking | Champion/challenger policy also applies |
+
+Run `configs/debug_training.yaml` for app testing, `configs/baseline_training.yaml` for actionable model diagnostics, and `configs/training.yaml` for strict production promotion. A successful neural training step does not imply that a current bundle exists.
+
+The generic evaluation writes `unsafe_sql_examples.jsonl`, `sql_validation_failure_breakdown`, repair metrics, filter/dimension linking diagnostics, and abstention metrics. `execution_match_rate` is `null` when execution did not run; baseline/debug gates warn, while production fails with `execution_unavailable` only when execution is configured as required.
+
 ### Select Best Model
 ```bash
 python training/select_best_model.py \
@@ -334,6 +347,27 @@ Loads the candidate model bundle and runs predictions against fixture questions.
 Predicted SQL is passed through the central SQL validator before execution. Per-case validator failures use stable `policy_failure_type` values, and reports include `policy_failure_type_counts`. The integrated production pipeline writes `controlled_predicted_sql_execution_report.json`, copies it into the candidate bundle `evaluation/` directory, and can require that attached report before bundle validation.
 
 Required mode fails when the candidate manifest is missing, unreadable, or has no `bundle_id`. Optional mode can fall back to `pipeline_name`, but marks `bundle_id_source: pipeline_name_fallback`, `identity_strength: weak`, and emits `candidate_manifest_missing_for_predicted_sql`. Bootstrap comparison becomes statistical at 10 common stable case IDs and otherwise reports `insufficient_common_cases`.
+
+To inspect a failed candidate in Streamlit without weakening production loading:
+
+```powershell
+$env:NL2SQL_ALLOW_CANDIDATE_BUNDLE = "1"
+streamlit run app/streamlit_app.py
+```
+
+Candidate debug loading is opt-in, visibly labeled, and exposes `bundle_source: candidate_debug`, `quality_gate_passed: false`, `production_ready: false`, and `loaded_for_debug: true`.
+
+### Semantic Correctness Reports
+
+Safety and correctness are separate. `sql_validation_rate` measures whether SQL is safe and valid; execution success measures whether it runs; execution/value match measures whether it answers the question. A high `safe_but_wrong_sql_rate` therefore remains a release blocker.
+
+- `model_quality_gate_report.json`: blocking thresholds and promotion eligibility.
+- `controlled_predicted_sql_execution_report.json`: per-case results, QueryIR diffs, semantic failure categories, and safe-but-wrong counts.
+- `classification_metrics_report.json`: intent, table, linking, and projection metrics.
+- `calibration_report.json`: ECE, confidence diversity, and `calibration_degenerate`.
+- `model_selection_report.json`: fresh eligible candidates plus rejected stale/gold/oracle reports.
+
+Common failures: low `filter_value_accuracy_rate` or `dimension_column_accuracy_rate` indicates grounding errors; `execution_unavailable` means no result comparison was possible; `calibration_degenerate` disables confidence-driven abstention; `model_selection_stale` blocks release because evidence is not tied to the current bundle.
 
 ---
 

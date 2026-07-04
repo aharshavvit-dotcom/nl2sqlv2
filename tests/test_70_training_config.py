@@ -80,3 +80,18 @@ class TestNeuralTrainingConfig:
         loaded = yaml.safe_load(out.read_text(encoding="utf-8"))
         assert loaded["model"]["activation"] == "gelu"
         assert loaded["optimizer"]["name"] == "adamw"
+
+
+def test_integrated_training_modes_are_explicit_and_safe():
+    root = Path(__file__).resolve().parents[1]
+    expected = {
+        "debug_training.yaml": "debug",
+        "baseline_training.yaml": "baseline",
+        "training.yaml": "production",
+    }
+    for name, mode in expected.items():
+        payload = yaml.safe_load((root / "configs" / name).read_text(encoding="utf-8"))
+        assert payload["quality_gate"]["mode"] == mode
+        if mode != "production":
+            assert payload["bundle"]["promote_if_quality_gate_passes"] is False
+            assert payload["pipeline"]["promote_if_passed"] is False

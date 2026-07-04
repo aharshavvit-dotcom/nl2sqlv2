@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -25,6 +26,7 @@ from connected_db_testing.schema_case_generator import SchemaCaseGenerator, writ
 from semantic_layer import build_semantic_profile
 from semantic_layer.semantic_profile_store import SemanticProfileStore
 from scripts.verify_datasets import verify_all
+from model_bundle.bundle_loader import ModelBundleLoader, inspect_bundle_status
 
 # ──────────────────── Developer Config Flag ────────────────────
 # Set to True to show training UI in the app (developer mode only).
@@ -40,6 +42,7 @@ MODEL_PATH = ROOT / "models" / "tfidf_retriever.joblib"
 
 # Default bundle path
 DEFAULT_BUNDLE_DIR = ROOT / "artifacts" / "model_bundle" / "current"
+DEFAULT_CANDIDATE_BUNDLE_DIR = ROOT / "artifacts" / "model_bundle" / "candidate"
 
 ARTIFACT_DIR = ROOT / "artifacts" / "work" / "retrieval_ir"
 NEURAL_IR_ARTIFACT_DIR = ROOT / "artifacts" / "work" / "neural_ir"
@@ -75,13 +78,16 @@ def _schema_fingerprint(schema_payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _try_load_bundle(bundle_dir: Path) -> dict[str, Any] | None:
+def _try_load_bundle(
+    bundle_dir: Path,
+    *,
+    allow_candidate_debug: bool = False,
+) -> dict[str, Any] | None:
     """Try to load a model bundle. Returns bundle info or None."""
     st.session_state.pop("bundle_load_error", None)
     try:
-        from model_bundle.bundle_loader import ModelBundleLoader
         loader = ModelBundleLoader()
-        return loader.load(bundle_dir)
+        return loader.load(bundle_dir, allow_candidate_debug=allow_candidate_debug)
     except (FileNotFoundError, ValueError) as exc:
         st.session_state["bundle_load_error"] = _format_bundle_load_error(exc)
         return None
@@ -184,20 +190,47 @@ st.title("QueryIR NL-to-SQL")
 # ───────────────────────── Model Bundle ─────────────────────────
 with st.sidebar:
     st.subheader("Model Bundle")
+    bundle_status = inspect_bundle_status(DEFAULT_BUNDLE_DIR, DEFAULT_CANDIDATE_BUNDLE_DIR)
+    st.caption(
+        "Production bundle status: "
+        f"current={'found' if bundle_status['current_bundle_found'] else 'not found'}, "
+        f"candidate={'found' if bundle_status['candidate_bundle_found'] else 'not found'}"
+    )
+    if bundle_status["last_quality_gate_passed"] is False:
+        st.warning("Last candidate quality gate failed.")
+        for index, blocker in enumerate(bundle_status["top_blockers"], start=1):
+            st.caption(f"{index}. {blocker}")
     bundle_path_input = st.text_input(
         "Model Bundle Path",
         value=str(DEFAULT_BUNDLE_DIR),
         help="Path to a validated model bundle directory",
     )
     bundle_dir = Path(bundle_path_input)
-    bundle_info = _try_load_bundle(bundle_dir)
+    env_candidate_debug = os.getenv("NL2SQL_ALLOW_CANDIDATE_BUNDLE", "0") == "1"
+    allow_candidate_debug = st.checkbox(
+        "Use candidate bundle for debugging",
+        value=env_candidate_debug,
+        help="Never promotes the candidate or marks it production-ready.",
+    )
+    bundle_info = _try_load_bundle(
+        bundle_dir,
+        allow_candidate_debug=allow_candidate_debug,
+    )
+    if bundle_info is None and allow_candidate_debug and bundle_dir == DEFAULT_BUNDLE_DIR:
+        bundle_info = _try_load_bundle(
+            DEFAULT_CANDIDATE_BUNDLE_DIR,
+            allow_candidate_debug=True,
+        )
 
     if bundle_info:
         manifest = bundle_info.get("manifest", {})
         st.success(f"Bundle loaded: {manifest.get('bundle_id', 'unknown')}")
         st.caption(f"Status: {manifest.get('status', 'unknown')}")
-        if manifest.get("status") == "candidate":
-            st.warning("This is a candidate bundle (not yet promoted).")
+        if bundle_info.get("loaded_for_debug"):
+            st.warning(
+                "Warning: Candidate bundle loaded for debugging only. "
+                "This model did not pass production quality gate."
+            )
     else:
         st.warning(
             "No validated model bundle found.\n\n"

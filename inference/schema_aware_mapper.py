@@ -89,6 +89,7 @@ class SchemaAwareMapper:
             mapping.dimension_table = dimension_match.get("table")
             mapping.dimension_column = dimension_match.get("column")
             mapping.match_scores["dimension"] = dimension_match.get("score", 0.0)
+            mapping.dimension_linking_method = dimension_match.get("method", "fuzzy")
             mapping.warnings.extend(dimension_match.get("warnings", []))
 
         filter_column = slot_values.get("filter_column")
@@ -97,6 +98,7 @@ class SchemaAwareMapper:
             if not filter_match:
                 filter_match = self._map_filter(
                     str(filter_column),
+                    slot_values.get("filter_value"),
                     schema_context,
                     str(entity) if entity else None,
                     mapping.metric_table,
@@ -105,6 +107,13 @@ class SchemaAwareMapper:
             mapping.filter_table = filter_match.get("table")
             mapping.filter_column = filter_match.get("column")
             mapping.match_scores["filter"] = filter_match.get("score", 0.0)
+            mapping.filter_linking_method = filter_match.get("method", "fuzzy")
+            filter_slot = slots.get("filter_column") or {}
+            mapping.filter_alternatives = list(filter_slot.get("alternatives") or []) if isinstance(filter_slot, dict) else []
+            mapping.filter_ambiguous = bool(
+                mapping.filter_alternatives
+                and float(filter_slot.get("confidence", 0.0) or 0.0) < 0.5
+            )
             mapping.warnings.extend(filter_match.get("warnings", []))
 
         if template_id not in {"show_records", "simple_filter", "count_records"}:
@@ -122,7 +131,7 @@ class SchemaAwareMapper:
     def _map_entity_semantic(entity: str, mapper: Any) -> dict[str, Any] | None:
         result = mapper.map_table(entity)
         if result.get("matched") and result.get("score", 0.0) >= 0.70:
-            return {"table": result.get("target"), "score": result.get("score")}
+            return {"table": result.get("target"), "score": result.get("score"), "method": "synonym"}
         return None
 
     @staticmethod
@@ -140,7 +149,7 @@ class SchemaAwareMapper:
         if result.get("matched") and result.get("score", 0.0) >= 0.70:
             target = str(result.get("target"))
             item = mapper.profile.get("dimensions", {}).get(target, {})
-            return {"table": item.get("table"), "column": item.get("column"), "score": result.get("score"), "warnings": []}
+            return {"table": item.get("table"), "column": item.get("column"), "score": result.get("score"), "warnings": [], "method": "synonym"}
         return None
 
     @staticmethod
@@ -228,18 +237,36 @@ class SchemaAwareMapper:
             return {"table": None, "column": None, "score": 0.0, "warnings": ["low dimension match"]}
         score, table, column = max(candidates, key=lambda item: item[0])
         warnings = [] if score >= 0.5 else ["low dimension match"]
-        return {"table": table, "column": column, "score": round(min(score, 1.0), 4), "warnings": warnings}
+        normalized_aliases = {alias.lower().replace(" ", "_") for alias in aliases}
+        method = "exact" if column.lower() in normalized_aliases else "synonym" if score >= 0.75 else "fuzzy"
+        return {"table": table, "column": column, "score": round(min(score, 1.0), 4), "warnings": warnings, "method": method}
 
     def _map_filter(
         self,
         filter_name: str,
+        filter_value: Any,
         schema_context: RuntimeSchemaContext,
         entity: str | None,
         metric_table: str | None,
         dimension_synonyms: dict[str, list[str]],
     ) -> dict[str, Any]:
+        if filter_value is not None:
+            value = str(filter_value).strip().lower()
+            value_matches = []
+            for qualified in schema_context.get_columns():
+                table, column = qualified.split(".", 1)
+                info = schema_context.column_info(table, column)
+                if info.get("is_sensitive"):
+                    continue
+                samples = [str(item).strip().lower() for item in info.get("sample_values") or []]
+                if value in samples:
+                    value_matches.append((table, column))
+            if len(value_matches) == 1:
+                table, column = value_matches[0]
+                return {"table": table, "column": column, "score": 1.0, "warnings": [], "method": "value_lookup"}
         deterministic = self._deterministic_filter(filter_name, schema_context, entity)
         if deterministic:
+            deterministic["method"] = "exact"
             return deterministic
         return self._map_dimension(filter_name, schema_context, metric_table, dimension_synonyms)
 

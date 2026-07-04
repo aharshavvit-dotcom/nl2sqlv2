@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timezone
 from typing import Any
 
 from .model_candidate import ModelCandidate
@@ -13,14 +14,34 @@ class ModelSelector:
         rejected = []
         blocking_issues = []
         for candidate in candidates:
-            issues = _hard_blockers(candidate.metrics, minimums)
+            issues = _eligibility_issues(candidate)
+            if candidate.evaluation_mode != "real_model_predictions":
+                issues.append("evaluation_mode_not_real_model_predictions")
+            if not candidate.eligible_for_promotion:
+                issues.append("candidate_not_eligible_for_promotion")
+            if (candidate.metadata or {}).get("quality_gate_passed") is False:
+                issues.append("quality_gate_not_passed")
+            issues.extend(_hard_blockers(candidate.metrics, minimums))
             if issues:
-                rejected.append({"model": asdict(candidate), "blocking_issues": issues})
+                rejected.append({"model": asdict(candidate), "blocking_issues": list(dict.fromkeys(issues))})
             else:
                 accepted.append(candidate)
         if not accepted:
             blocking_issues.append("No candidate passed hard blockers.")
-            return {"selected_model": None, "rejected_models": rejected, "selection_reason": "all_candidates_rejected", "blocking_issues": blocking_issues, "warnings": []}
+            return {
+                "selected_model": None,
+                "eligible_candidates": [],
+                "ineligible_candidates": [
+                    {"name": item["model"]["name"], "reason": item["blocking_issues"][0], "reasons": item["blocking_issues"]}
+                    for item in rejected
+                ],
+                "rejected_models": rejected,
+                "selection_reason": "all_candidates_rejected",
+                "selection_blocked": True,
+                "selection_blocked_reason": "no_eligible_candidate",
+                "blocking_issues": blocking_issues,
+                "warnings": [],
+            }
         selected = sorted(accepted, key=lambda item: _selection_score(item.metrics), reverse=True)[0]
         warnings: list[str] = []
         # Multi-seed variance check (when available and valid for governance)
@@ -82,6 +103,11 @@ class ModelSelector:
         metric_sample_counts = multi_seed_report.get("metric_sample_counts", {}) if multi_seed_report else {}
         return {
             "selected_model": asdict(selected),
+            "eligible_candidates": [asdict(item) for item in accepted],
+            "ineligible_candidates": [
+                {"name": item["model"]["name"], "reason": item["blocking_issues"][0], "reasons": item["blocking_issues"]}
+                for item in rejected
+            ],
             "rejected_models": rejected,
             "selection_reason": f"highest quality score {_selection_score(selected.metrics):.4f}",
             "blocking_issues": [],
@@ -89,7 +115,41 @@ class ModelSelector:
             "metric_sample_counts": metric_sample_counts,
             "predicted_sql_execution": predicted_sql_execution,
             "warnings": warnings,
+            "selection_blocked": False,
+            "selection_blocked_reason": None,
         }
+
+
+def _eligibility_issues(candidate: ModelCandidate) -> list[str]:
+    issues: list[str] = []
+    if candidate.model_artifact_source not in {"model_bundle", "artifact_dirs", "model_bundle_candidate"}:
+        issues.append("gold_or_oracle_report" if candidate.model_artifact_source == "gold_baseline" else "stale_report")
+    metadata = candidate.metadata or {}
+    enforce_freshness = bool(
+        metadata.get("enforce_freshness")
+        or candidate.candidate_bundle_id
+        or candidate.manifest_bundle_id
+        or metadata.get("candidate_bundle_generated_at")
+    )
+    if enforce_freshness:
+        if not candidate.candidate_bundle_id or not candidate.manifest_bundle_id:
+            issues.append("bundle_id_missing")
+        elif candidate.candidate_bundle_id != candidate.manifest_bundle_id:
+            issues.append("bundle_id_mismatch")
+        manifest_generated = metadata.get("candidate_bundle_generated_at")
+        if not candidate.generated_at:
+            issues.append("report_generated_at_missing")
+        elif manifest_generated and _timestamp(candidate.generated_at) < _timestamp(str(manifest_generated)):
+            issues.append("stale_report")
+    return issues
+
+
+def _timestamp(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return datetime.min.replace(tzinfo=timezone.utc)
 
 
 def _selection_score(metrics: dict[str, Any]) -> float:

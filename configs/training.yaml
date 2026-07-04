@@ -9,7 +9,7 @@ datasets:
     - wikisql
     - spider
     - bird-mini
-  max_examples: 5000
+  max_examples: 15000
   max_examples_per_dataset:
     wikisql: 5000
     spider: 5000
@@ -71,6 +71,15 @@ quality_gate:
   required: true
   mode: production
 
+feedback_regression:
+  enabled: true
+  required_for_production: true
+  report_path: artifacts/evaluation/feedback_regression_report.json
+  cases_path: data/processed/feedback_safety_regressions.jsonl
+
+app:
+  allow_candidate_bundle_debug: false
+
 bundle:
   build: true
   validate: true
@@ -82,8 +91,8 @@ execution_aware:
     required_for_full_training: true
     output: artifacts/evaluation/controlled_fixture_evaluation_report.json
   controlled_predicted_sql:
-    enabled: false
-    required_for_full_training: false
+    enabled: true
+    required_for_full_training: true
     require_report_attached_to_bundle: true
     min_execution_match_rate: 0.70
 
@@ -92,7 +101,7 @@ execution_aware:
 # This does NOT affect the primary training run — it adds a post-training
 # variance analysis step for monitoring metric stability.
 seeds:
-  enabled: false
+  enabled: true
   values: [42, 123, 456]
   report_output: artifacts/evaluation/multi_seed_variance_report.json
   metrics:

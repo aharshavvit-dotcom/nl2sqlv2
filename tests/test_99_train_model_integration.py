@@ -502,7 +502,57 @@ class TestTrainModelIntegration:
 
         assert steps.index("build_model_bundle") < steps.index("run_controlled_predicted_sql_evaluation")
         assert steps.index("run_controlled_predicted_sql_evaluation") < steps.index("attach_runtime_evaluation_reports_to_bundle")
+        assert steps.index("run_quality_gate") < steps.index("build_model_bundle")
+        assert steps.index("attach_runtime_evaluation_reports_to_bundle") < steps.index("run_final_quality_gate")
+        assert steps.index("run_final_quality_gate") < steps.index("validate_model_bundle")
         assert steps.index("attach_runtime_evaluation_reports_to_bundle") < steps.index("validate_model_bundle")
+
+    def test_optional_quality_gate_still_runs_for_debug_diagnostics(self):
+        """An optional gate emits a report; required=false must not disable it."""
+        sys.path.insert(0, str(ROOT))
+        from orchestration.pipeline_config import PipelineConfig
+        from orchestration.step_runner import StepRunner
+
+        config = PipelineConfig(
+            pipeline_name="debug",
+            artifacts={"evaluation_dir": str(ROOT / "artifacts" / "evaluation")},
+            training={"_integrated_config": {"quality_gate": {"required": False}}},
+        )
+        contract = StepRunner().get_contract("run_quality_gate", config)
+
+        assert contract.required is False
+        assert contract.can_skip is False
+
+    def test_bundle_prunes_reports_disabled_in_active_mode(self, tmp_path):
+        from model_bundle.bundle_builder import ModelBundleBuilder
+
+        evaluation = tmp_path / "evaluation"
+        evaluation.mkdir()
+        names = [
+            "feedback_regression_report.json",
+            "execution_aware_evaluation_report.json",
+            "controlled_fixture_evaluation_report.json",
+            "controlled_predicted_sql_execution_report.json",
+            "multi_seed_variance_report.json",
+        ]
+        for name in names:
+            (evaluation / name).write_text("{}", encoding="utf-8")
+
+        ModelBundleBuilder._prune_disabled_evaluation_reports(
+            evaluation,
+            {
+                "execution_aware": {"controlled_fixtures": {"enabled": True}},
+                "evaluation": {"run_execution_aware": False},
+                "feedback_regression": {"enabled": False},
+                "seeds": {"enabled": False},
+            },
+        )
+
+        assert (evaluation / "controlled_fixture_evaluation_report.json").exists()
+        assert not (evaluation / "feedback_regression_report.json").exists()
+        assert not (evaluation / "execution_aware_evaluation_report.json").exists()
+        assert not (evaluation / "controlled_predicted_sql_execution_report.json").exists()
+        assert not (evaluation / "multi_seed_variance_report.json").exists()
 
     def test_attach_runtime_evaluation_reports_to_bundle_copies_predicted_sql(self, tmp_path):
         """35. Attachment step copies controlled predicted-SQL report into candidate/evaluation."""
@@ -523,7 +573,12 @@ class TestTrainModelIntegration:
         config = PipelineConfig(
             pipeline_name="attach_test",
             artifacts={"evaluation_dir": str(evaluation_dir)},
-            training={"_integrated_config": {"paths": {"candidate_bundle_dir": str(candidate_dir)}}},
+            training={"_integrated_config": {
+                "paths": {"candidate_bundle_dir": str(candidate_dir)},
+                "execution_aware": {
+                    "controlled_predicted_sql": {"enabled": True},
+                },
+            }},
             steps=["attach_runtime_evaluation_reports_to_bundle"],
         )
 

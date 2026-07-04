@@ -89,3 +89,14 @@ def test_simple_table_questions_build_direct_queryir(question: str, table: str) 
     assert "LIMIT" in sql.upper()
     assert "SELECT *" not in sql.upper()
     assert "password_hash" not in sql
+
+
+def test_users_default_projection_is_bounded_and_excludes_audit_columns() -> None:
+    result = TableIntentResolver(SchemaProfile(GENERIC_POSTGRES_SCHEMA)).resolve("list all users")
+
+    projected = [item.column for item in result.query_ir.dimensions]
+    assert projected == ["id", "name", "role"]
+    assert "created_at" not in projected
+    assert "password_hash" not in projected
+    assert result.query_ir.metadata["projection_mode"] == "list_all_records"
+    assert result.query_ir.metadata["default_projection_used"] is True

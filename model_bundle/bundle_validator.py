@@ -32,7 +32,20 @@ class ModelBundleValidator:
     )
     _CREDENTIAL_URL = re.compile(r"[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s:@]+@", re.IGNORECASE)
 
-    def validate(self, bundle_dir: str | Path, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    def validate(
+        self,
+        bundle_dir: str | Path,
+        config: dict[str, Any] | None = None,
+        *,
+        allow_failed_quality_gate_debug: bool = False,
+    ) -> dict[str, Any]:
+        """Validate bundle structure and production policy.
+
+        ``allow_failed_quality_gate_debug`` downgrades quality/promotion
+        failures to warnings for an explicitly requested candidate debug load.
+        Artifact integrity, secret checks, model loading, and a manifest status
+        of ``failed`` remain blocking.
+        """
         path = Path(bundle_dir)
         issues: list[str] = []
         warnings: list[str] = []
@@ -51,6 +64,12 @@ class ModelBundleValidator:
             return _result(issues, warnings, checked)
 
         policy = _controlled_predicted_sql_policy(path, config)
+        if allow_failed_quality_gate_debug:
+            policy = {
+                **policy,
+                "required_for_full_training": False,
+                "require_report_attached_to_bundle": False,
+            }
 
         if manifest.status == "failed":
             issues.append("Bundle status is failed")
@@ -111,7 +130,7 @@ class ModelBundleValidator:
             checked.append(str(unsupported_path))
 
         qg = manifest.quality_gate or {}
-        qg_required = bool(qg.get("required", False))
+        qg_required = bool(qg.get("required", False)) and not allow_failed_quality_gate_debug
         qg_path = path / qg.get("report_path", "evaluation/model_quality_gate_report.json")
         checked.append(str(qg_path))
 

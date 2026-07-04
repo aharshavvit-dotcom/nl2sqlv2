@@ -77,6 +77,7 @@ class ModelBundleBuilder:
             paths["semantic_defaults"] = "semantic_defaults/"
         if eval_src and eval_src.exists():
             self._copy_dir(eval_src, out / "evaluation")
+            self._prune_disabled_evaluation_reports(out / "evaluation", config)
             paths["evaluation"] = "evaluation/"
         if generic_training_src and generic_training_src.exists():
             self._copy_dir(generic_training_src, out / "generic_training")
@@ -281,6 +282,12 @@ class ModelBundleBuilder:
             lifecycle_proof["controlled_predicted_sql_safe_sql_rate"] = float(
                 _predicted_sql_report.get("predicted_safe_sql_rate", 0.0)
             )
+            lifecycle_proof["controlled_predicted_sql_result_value_match_rate"] = float(
+                _predicted_sql_report.get("predicted_result_value_match_rate", 0.0)
+            )
+            lifecycle_proof["controlled_predicted_sql_safe_but_wrong_sql_rate"] = float(
+                _predicted_sql_report.get("safe_but_wrong_sql_rate", 0.0)
+            )
             lifecycle_proof["central_sql_validator_used"] = bool(
                 _predicted_sql_report.get("central_sql_validator_used", False)
             )
@@ -302,6 +309,14 @@ class ModelBundleBuilder:
             metrics.setdefault(
                 "controlled_predicted_sql_safe_sql_rate",
                 lifecycle_proof["controlled_predicted_sql_safe_sql_rate"],
+            )
+            metrics.setdefault(
+                "controlled_predicted_sql_result_value_match_rate",
+                lifecycle_proof["controlled_predicted_sql_result_value_match_rate"],
+            )
+            metrics.setdefault(
+                "controlled_predicted_sql_safe_but_wrong_sql_rate",
+                lifecycle_proof["controlled_predicted_sql_safe_but_wrong_sql_rate"],
             )
             metrics.setdefault(
                 "controlled_predicted_sql_unsafe_sql_count",
@@ -404,6 +419,31 @@ class ModelBundleBuilder:
         if dst.exists():
             shutil.rmtree(dst)
         shutil.copytree(src, dst, dirs_exist_ok=True)
+
+    @staticmethod
+    def _prune_disabled_evaluation_reports(evaluation_dir: Path, config: dict[str, Any]) -> None:
+        """Prevent disabled-mode reports from leaking in from an earlier run."""
+        enabled_by_report = {
+            "feedback_regression_report.json": bool(
+                (config.get("feedback_regression") or {}).get("enabled", False)
+            ),
+            "execution_aware_evaluation_report.json": bool(
+                (config.get("evaluation") or {}).get("run_execution_aware", False)
+            ),
+            "controlled_fixture_evaluation_report.json": bool(
+                ((config.get("execution_aware") or {}).get("controlled_fixtures") or {}).get("enabled", False)
+            ),
+            "controlled_predicted_sql_execution_report.json": bool(
+                ((config.get("execution_aware") or {}).get("controlled_predicted_sql") or {}).get("enabled", False)
+            ),
+            "multi_seed_variance_report.json": bool(
+                (config.get("seeds") or {}).get("enabled", False)
+            ),
+        }
+        for name, enabled in enabled_by_report.items():
+            path = evaluation_dir / name
+            if not enabled and path.exists():
+                path.unlink()
 
     @staticmethod
     def _git_commit() -> str:

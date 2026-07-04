@@ -245,6 +245,58 @@ class TestBundleLoaderCalibration:
         assert "calibration_dir" in source
         assert "calibration_report_path" in source
 
+    def test_candidate_bundle_requires_explicit_debug_flag(self, tmp_path, monkeypatch) -> None:
+        from model_bundle.bundle_loader import ModelBundleLoader
+        from model_bundle.bundle_manifest import BundleManifest, save_manifest
+
+        candidate = tmp_path / "candidate"
+        candidate.mkdir()
+        save_manifest(BundleManifest(
+            bundle_id="candidate-1",
+            status="candidate",
+            paths={"evaluation": "evaluation/"},
+            quality_gate={"passed": False, "required": False},
+            lifecycle_proof={"production_ready": False},
+        ), candidate / "bundle_manifest.json")
+        monkeypatch.setattr(
+            "model_bundle.bundle_loader.ModelBundleValidator.validate",
+            lambda *_args, **_kwargs: {"passed": True, "blocking_issues": []},
+        )
+        loader = ModelBundleLoader()
+        with pytest.raises(ValueError, match="Candidate bundle loading is disabled"):
+            loader.load(candidate)
+
+        loaded = loader.load(candidate, allow_candidate_debug=True)
+        assert loaded["bundle_source"] == "candidate_debug"
+        assert loaded["quality_gate_passed"] is False
+        assert loaded["production_ready"] is False
+        assert loaded["loaded_for_debug"] is True
+
+    def test_current_bundle_is_preferred_over_candidate_debug(self, tmp_path, monkeypatch) -> None:
+        from model_bundle.bundle_loader import ModelBundleLoader
+        from model_bundle.bundle_manifest import BundleManifest, save_manifest
+
+        current = tmp_path / "current"
+        candidate = tmp_path / "candidate"
+        current.mkdir()
+        candidate.mkdir()
+        save_manifest(BundleManifest(bundle_id="current-1", status="current"), current / "bundle_manifest.json")
+        save_manifest(BundleManifest(bundle_id="candidate-1", status="candidate"), candidate / "bundle_manifest.json")
+        monkeypatch.setattr(
+            "model_bundle.bundle_loader.ModelBundleValidator.validate",
+            lambda *_args, **_kwargs: {"passed": True, "blocking_issues": []},
+        )
+        loaded = ModelBundleLoader().load_preferred(
+            current, candidate, allow_candidate_debug=True,
+        )
+        assert loaded["bundle_source"] == "current"
+        assert loaded["loaded_for_debug"] is False
+
+    def test_streamlit_candidate_debug_warning_is_explicit(self) -> None:
+        source = (ROOT / "app" / "streamlit_app.py").read_text(encoding="utf-8")
+        assert "NL2SQL_ALLOW_CANDIDATE_BUNDLE" in source
+        assert "Candidate bundle loaded for debugging only" in source
+
 
 class TestPreciseRuntimeSource:
     """Verify runtime_source produces precise labels."""
@@ -536,4 +588,3 @@ class TestProductionReadySplit:
             # No fixture step means controlled_fixture_eval_passed = False
             assert lp.get("controlled_fixture_ready") is False
             assert lp.get("production_ready_full") is False
-

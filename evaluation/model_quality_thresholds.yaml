@@ -5,13 +5,20 @@ minimums:
   simple_query_pass_rate_production: 0.95
   no_select_star_rate: 1.00
   unsafe_sql_count_max: 0
+  post_abstention_unsafe_sql_count_max: 0
   unnecessary_join_rate_max: 0.05
   wrong_table_rate_max: 0.15
   unseen_db_sql_validation_rate: 0.80
-  feedback_regression_pass_rate: 0.95
+  feedback_regression_pass_rate:
+    warning_min: 0.0
+    production_min: 0.95
   gold_comparison_score_min: 0.75
-  sql_structure_match_rate_min: 0.70
-  execution_match_rate_min: 0.60
+  sql_structure_match_rate_min:
+    warning_min: 0.0
+    production_min: 0.70
+  execution_match_rate_min:
+    warning_min: 0.0
+    production_min: 0.60
   model_promotion_min_improvement: 0.01
 
 classification_metrics:
@@ -22,7 +29,9 @@ classification_metrics:
   join_decision_macro_f1_min: 0.85
   router_accuracy_min: 0.85
   router_macro_f1_min: 0.80
-  final_sql_execution_accuracy_min: 0.70
+  final_sql_execution_accuracy_min:
+    warning_min: 0.0
+    production_min: 0.70
   sql_validation_rate_min: 0.90
   query_ir_validity_rate_min: 0.90
   unsafe_sql_count_max: 0
@@ -32,3 +41,26 @@ calibration_metrics:
   calibration_sample_count_min: 1
   expected_calibration_error_max: 0.15
   brier_score_max: 0.25
+
+controlled_predicted_sql:
+  min_safe_sql_rate: {baseline_min: 1.0, production_min: 1.0}
+  min_execution_success_rate: {baseline_min: 1.0, production_min: 1.0}
+  min_execution_match_rate: {baseline_min: 0.40, production_min: 0.60}
+  min_row_count_match_rate: {baseline_min: 0.70, production_min: 0.85}
+  min_result_value_match_rate: {baseline_min: 0.50, production_min: 0.70}
+  max_safe_but_wrong_sql_rate: {baseline_max: 0.60, production_max: 0.40}
+
+linking:
+  min_filter_column_accuracy_rate: {baseline_min: 0.40, production_min: 0.70}
+  min_filter_value_accuracy_rate: {baseline_min: 0.35, production_min: 0.70}
+  min_dimension_column_accuracy_rate: {baseline_min: 0.45, production_min: 0.75}
+
+calibration:
+  max_expected_calibration_error: {production_max: 0.08}
+  require_non_degenerate_confidence: {production: true}
+
+quality_gate_modes:
+  debug: "Build candidate artifacts; never promotion-eligible. Missing execution/feedback is advisory."
+  baseline: "Run full diagnostics; unavailable execution and feedback are advisory."
+  production: "Require configured execution, feedback, SQL safety, and controlled predicted-SQL proof."
+  release: "Production requirements plus release regression and comparison evidence."

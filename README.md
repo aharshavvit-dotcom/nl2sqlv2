@@ -61,11 +61,35 @@ This single command internally runs:
 - Evaluation & quality gates
 - Model bundle creation & promotion
 
+Training completion and production availability are separate outcomes. A trained model is promoted to `artifacts/model_bundle/current/` only after the production quality gate, controlled predicted-SQL proof, and bundle validation pass.
+
+Use the lifecycle configs deliberately:
+
+```bash
+python training/train_model.py --config configs/debug_training.yaml
+python training/train_model.py --config configs/baseline_training.yaml
+python training/train_model.py --config configs/training.yaml
+```
+
+- `debug`: small, fast, builds a non-promoted candidate; missing execution/feedback evidence is advisory.
+- `baseline`: runs full diagnostics and optional controlled predictions without treating unavailable execution as a failed execution.
+- `production`: requires configured SQL, feedback, controlled prediction, and execution evidence before promotion.
+- `release`: production semantics plus release/regression and champion/challenger evidence when invoked by release tooling.
+
 Full training builds a dataset-balanced generic QueryIR corpus. WikiSQL, Spider, and BIRD Mini each receive their own sampling cap, and the run fails if any requested full-training dataset does not contribute the configured minimum number of converted QueryIR examples. Unsupported SQL is written to `artifacts/generic_training/unsupported_sql_report.json` so current QueryIR coverage gaps are visible.
 
 The connected-database runtime is schema-neutral. Bundled `orders` / `customers` / `products` mappings are enabled only when the complete sample-retail schema signature is present. Other databases derive table, metric, dimension, and filter vocabulary from their own schema; simple single-table questions bypass retrieval and neural routing and cannot add joins.
 
 Evaluation is multi-level: intent, base table, slots, join decisions, router decisions, QueryIR validity, SQL validation, structural/execution match, and safety. Reports include accuracy, macro/micro/weighted F1, confusion matrices, p50/p95/p99 loss/confidence/latency/drift statistics, ECE/Brier calibration, and a conformal abstention threshold. Evaluation reports are valid for quality gates only when `evaluation_mode = real_model_predictions`, `gold_replay_used = false`, and `is_valid_for_quality_gate = true`. Gold replay is a debug baseline only and cannot be promoted.
+
+These statuses are deliberately different:
+
+- **SQL valid/safe**: the central validator allows the read-only statement.
+- **SQL executable**: the database runs it without an error.
+- **SQL semantically correct**: its rows and values match the expected answer.
+- **SQL production-ready**: semantic, linking, calibration, freshness, safety, and release gates all pass.
+
+An executable query with incorrect rows is reported as safe-but-wrong and cannot pass production. Inspect `model_quality_gate_report.json`, `controlled_predicted_sql_execution_report.json`, `classification_metrics_report.json`, `calibration_report.json`, and `model_selection_report.json` together. `calibration_degenerate` disables confidence-threshold abstention; `model_selection_stale` means the report predates or does not identify the candidate bundle.
 
 For a quick smoke test:
 ```bash
@@ -80,6 +104,8 @@ streamlit run app/streamlit_app.py
 
 The app loads a validated model bundle from `artifacts/model_bundle/current/`.
 It does not fall back to sample examples in normal runtime. If the bundle is invalid, the app shows the blocking validation issues and asks you to rerun the training command.
+
+For local UI testing only, set `NL2SQL_ALLOW_CANDIDATE_BUNDLE=1` or enable **Use candidate bundle for debugging** in the sidebar. The app then loads `artifacts/model_bundle/candidate/` with a persistent non-production warning; this never promotes the candidate or marks it production-ready.
 
 ---
 
@@ -294,7 +320,7 @@ For detailed internal commands (individual training steps, evaluation suites, ca
 | `ModuleNotFoundError: psycopg2` | Missing PostgreSQL wrapper. | `pip install psycopg2-binary` |
 | PostgreSQL connection fails | Bad credentials. | Verify credentials, check `pg_hba.conf`. |
 | No training data | Datasets not downloaded. | `python scripts/download_datasets.py` |
-| "No validated model bundle" | Training not run. | `python training/train_model.py --config configs/training.yaml` |
+| "No validated model bundle" | Training did not run, or the production quality gate prevented promotion. | Inspect `artifacts/evaluation/model_quality_gate_report.json`; use `configs/debug_training.yaml` only for explicit candidate UI testing. |
 | Full training fails dataset minimums | A requested dataset produced too few usable QueryIR rows. | Open `artifacts/generic_training/dataset_contribution_report.json` and `unsupported_sql_report.json`. |
 | Low training performance | Insufficient examples or unsupported SQL coverage. | Increase per-dataset caps or expand QueryIR support based on the unsupported SQL report. |
 
@@ -307,6 +333,8 @@ For detailed internal commands (individual training steps, evaluation suites, ca
 The `simple_query_pass` metric is **behavior-derived** — it is computed from the actual gold and predicted QueryIR structures, not from a magic metric key. A query qualifies as "simple" if the gold intent is one of `{show_records, count_records, simple_filter}` with no joins. The pass condition checks: intent match, base_table match, no predicted joins, and SQL validation. Non-simple queries receive `None` and are excluded from rate calculations.
 
 Production quality gates require the explicit `simple_query_pass_rate_production` threshold and do not fall back from `intent_accuracy_rate` when `simple_query_pass_rate` is missing. Smoke and developer runs may use the lower smoke threshold for fast feedback, but production mode fails closed.
+
+SQL evaluation records pre/post-repair validation rates, deterministic repair actions, normalized failure categories, abstentions, and `post_abstention_unsafe_sql_count`. Missing LIMIT, safely expandable single-table `SELECT *`, and trailing comments/semicolons may be repaired and revalidated. DML, unsafe keywords, ambiguous references, and invalid QueryIR are never repaired. Invalid outputs that remain unsafe are returned as clarification/abstention with `sql = null`.
 
 ### Multi-Seed Evaluation
 

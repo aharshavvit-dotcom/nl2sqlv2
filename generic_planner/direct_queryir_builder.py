@@ -42,7 +42,11 @@ class DirectQueryIRBuilder:
             warnings=warnings,
             limit=limit,
             select_mode="records",
-            metadata_extra={"safe_selected_columns": columns},
+            metadata_extra={
+                "safe_selected_columns": columns,
+                "projection_mode": "list_all_records",
+                "default_projection_used": selected_columns is None,
+            },
         )
 
     def build_count_records(self, table: str, question: str = "") -> QueryIR:
@@ -110,7 +114,11 @@ class DirectQueryIRBuilder:
             warnings=warnings,
             limit=limit,
             select_mode="records",
-            metadata_extra={"safe_selected_columns": columns},
+            metadata_extra={
+                "safe_selected_columns": columns,
+                "projection_mode": "specific_column_lookup" if len(columns) == 1 else "list_all_records",
+                "default_projection_used": True,
+            },
         )
 
     def _query_ir(

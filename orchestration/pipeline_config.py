@@ -17,7 +17,9 @@ def build_pipeline_steps(config: dict[str, Any]) -> list[str]:
     neural = config.get("neural") or {}
     self_training = config.get("self_training") or {}
     evaluation = config.get("evaluation") or {}
+    feedback_regression = config.get("feedback_regression") or {}
     bundle = config.get("bundle") or {}
+    execution_aware = config.get("execution_aware") or {}
 
     steps = ["verify_datasets"]
     if retrieval.get("enabled", True) or neural.get("enabled", True):
@@ -34,11 +36,12 @@ def build_pipeline_steps(config: dict[str, Any]) -> list[str]:
     if evaluation.get("enabled", True):
         if evaluation.get("run_execution_aware", False):
             steps.append("run_execution_aware_evaluation")
-        execution_aware = config.get("execution_aware") or {}
         controlled_fixtures = execution_aware.get("controlled_fixtures") or {}
         if controlled_fixtures.get("enabled", False):
             steps.append("run_controlled_fixture_evaluation")
         steps.append("evaluate_generic_models")
+    if feedback_regression.get("enabled", False):
+        steps.append("run_feedback_regression")
     steps.append("run_quality_gate")
     if bundle.get("build", True):
         steps.append("build_model_bundle")
@@ -47,6 +50,7 @@ def build_pipeline_steps(config: dict[str, Any]) -> list[str]:
         if controlled_predicted.get("enabled", False):
             steps.append("run_controlled_predicted_sql_evaluation")
             steps.append("attach_runtime_evaluation_reports_to_bundle")
+            steps.append("run_final_quality_gate")
         if bundle.get("validate", True):
             steps.append("validate_model_bundle")
         if bundle.get("promote_if_quality_gate_passes", False):
