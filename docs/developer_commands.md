@@ -207,7 +207,7 @@ Quality gate modes are explicit:
 
 Run `configs/debug_training.yaml` for app testing, `configs/baseline_training.yaml` for actionable model diagnostics, and `configs/training.yaml` for strict production promotion. A successful neural training step does not imply that a current bundle exists.
 
-The generic evaluation writes `unsafe_sql_examples.jsonl`, `sql_validation_failure_breakdown`, repair metrics, filter/dimension linking diagnostics, and abstention metrics. `execution_match_rate` is `null` when execution did not run; baseline/debug gates warn, while production fails with `execution_unavailable` only when execution is configured as required.
+The generic evaluation writes `unsafe_sql_examples.jsonl`, detailed `sql_validation_failures.jsonl` rows with deterministic root-cause hints, `sql_validation_failure_breakdown`, before/after repair metrics, filter/dimension linking diagnostics, and abstention metrics. `execution_match_rate` is `null` when execution did not run; baseline/debug gates warn, while production fails with `execution_unavailable` only when execution is configured as required.
 
 ### Select Best Model
 ```bash

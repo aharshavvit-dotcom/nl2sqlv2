@@ -41,6 +41,37 @@ POLICY_FAILURE_TYPES = (
 )
 
 
+def _unquoted_sql(sql: str) -> str:
+    """Remove quoted strings/identifiers before keyword policy scanning."""
+    return re.sub(
+        r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`|\[(?:\]\]|[^\]])*\]",
+        " ",
+        sql,
+    )
+
+
+def root_cause_hint(sql: str | None, validation: dict[str, Any]) -> str:
+    """Return a stable, deterministic hint for an invalid SQL example."""
+    failure = policy_failure_type(validation)
+    if failure == "unsafe_keyword" or not (validation.get("checks") or {}).get("no_blocked_keywords", True):
+        return "unsafe_keyword"
+    text = str(sql or "")
+    if re.search(r'(?is)\bAS\s+(?!["`\[])(?:#|\d\S*|[^,\n]+[\s()/#.][^,\n]*)(?=\s*(?:,|FROM\b|LIMIT\b|$))', text):
+        return "unquoted_alias"
+    if re.search(r'\.\s*["`][^"`]+["`]\s*\.', text):
+        return "malformed_identifier"
+    unquoted_refs = re.finditer(
+        r'(?is)(?:"(?:""|[^"])*"|`(?:``|[^`])*`)\s*\.\s*'
+        r'(?!["`\[])(?P<identifier>.+?)(?=\s*(?:\bAS\b|,|\bFROM\b|\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|$))',
+        text,
+    )
+    if any(re.search(r'[\s./#()\-]', match.group("identifier").strip()) for match in unquoted_refs):
+        return "malformed_identifier"
+    if failure == "syntax_error":
+        return "parse_error"
+    return "unknown"
+
+
 def policy_failure_type(validation: dict[str, Any]) -> str | None:
     """Map central-validator failures to stable lifecycle categories.
 
@@ -96,12 +127,12 @@ class SQLValidator:
             issues.append("SQL is empty.")
             return self._payload(False, checks, issues, referenced_tables, referenced_columns)
 
-        upper_sql = sql.upper()
+        policy_sql = _unquoted_sql(sql).upper()
         checks["no_comments"] = "--" not in sql and "/*" not in sql and "*/" not in sql
         if not checks["no_comments"]:
             issues.append("SQL comments are not allowed.")
 
-        blocked = sorted(keyword for keyword in BLOCKED_KEYWORDS if re.search(rf"\b{keyword}\b", upper_sql))
+        blocked = sorted(keyword for keyword in BLOCKED_KEYWORDS if re.search(rf"\b{keyword}\b", policy_sql))
         checks["no_blocked_keywords"] = not blocked
         if blocked:
             issues.append("Blocked SQL keyword(s): " + ", ".join(blocked))
@@ -234,8 +265,8 @@ class SQLValidator:
         dialect: str,
         default_limit: int,
     ) -> dict[str, Any]:
-        upper_sql = sql.upper()
-        if any(re.search(rf"\b{keyword}\b", upper_sql) for keyword in BLOCKED_KEYWORDS):
+        policy_sql = _unquoted_sql(sql).upper()
+        if any(re.search(rf"\b{keyword}\b", policy_sql) for keyword in BLOCKED_KEYWORDS):
             return {"attempted": False, "sql": None, "actions": []}
 
         actions: list[str] = []
@@ -245,6 +276,13 @@ class SQLValidator:
         if without_terminator != candidate:
             candidate = without_terminator
             actions.append("removed_trailing_comment_or_semicolon")
+        # Renderer bugs from older bundles can leave display aliases unquoted.
+        # This rewrite changes only the alias token and is done before parsing,
+        # because malformed aliases are exactly what prevents sqlglot parsing.
+        alias_repaired = self._quote_unquoted_aliases(candidate)
+        if alias_repaired != candidate:
+            candidate = alias_repaired
+            actions.append("quoted_unquoted_alias")
         try:
             parsed = sqlglot.parse(candidate, read=self._sqlglot_dialect(dialect))
         except Exception:
@@ -274,6 +312,27 @@ class SQLValidator:
         if normalized != candidate and not actions:
             actions.append("normalized_identifier_quoting")
         return {"attempted": bool(actions), "sql": normalized, "actions": actions}
+
+    @staticmethod
+    def _quote_unquoted_aliases(sql: str) -> str:
+        if not re.match(r"(?is)^\s*SELECT\b", sql):
+            return sql
+
+        pattern = re.compile(
+            r'(?is)\bAS\s+(?!["`\[])(?P<alias>.+?)(?=\s*(?:,|\bFROM\b|\bLIMIT\b|$))'
+        )
+
+        def replace(match: re.Match[str]) -> str:
+            alias = match.group("alias").strip()
+            # Do not rewrite SQL type names in CAST(... AS TYPE).
+            prefix = sql[: match.start()]
+            if prefix.count("(") > prefix.count(")"):
+                return match.group(0)
+            if not alias or re.search(r"\b(?:JOIN|WHERE|GROUP|ORDER|HAVING)\b", alias, re.IGNORECASE):
+                return match.group(0)
+            return 'AS "' + alias.replace('"', '""') + '"'
+
+        return pattern.sub(replace, sql)
 
     @staticmethod
     def _payload(

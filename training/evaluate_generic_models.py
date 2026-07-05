@@ -15,7 +15,12 @@ if str(ROOT) not in sys.path:
 from dataset_training.dataset_evaluator import DatasetScaleEvaluator, write_confusion_matrix_csv
 from dataset_training.reporting import save_report_pair
 from dataset_training.utils import read_jsonl, write_jsonl
-from validation.sql_validator import POLICY_FAILURE_TYPES, SQLValidator, policy_failure_type
+from validation.sql_validator import (
+    POLICY_FAILURE_TYPES,
+    SQLValidator,
+    policy_failure_type,
+    root_cause_hint,
+)
 from inference.prediction_models import is_abstained_prediction
 
 
@@ -41,9 +46,11 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
         allow_gold_replay_baseline=bool(getattr(args, "allow_gold_replay_baseline", False)),
     )
     unsafe_examples_path = args.output.parent / "unsafe_sql_examples.jsonl"
+    validation_failures_path = args.output.parent / "sql_validation_failures.jsonl"
     test_safety = _apply_sql_safety(test_evaluation_rows)
     unseen_safety = _apply_sql_safety(unseen_evaluation_rows)
     write_jsonl(unsafe_examples_path, test_safety["failures"])
+    write_jsonl(validation_failures_path, test_safety["failures"])
     evaluator = DatasetScaleEvaluator()
     test_mode = "explicit_gold_replay_baseline" if test_source == "gold_replay_baseline" else "real_model_predictions"
     unseen_mode = "explicit_gold_replay_baseline" if unseen_source == "gold_replay_baseline" else "real_model_predictions"
@@ -129,9 +136,12 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
             "sql_validation_failure_breakdown": test_safety["failure_breakdown"],
             "top_sql_validation_errors": test_safety["top_errors"],
             "unsafe_sql_examples_path": str(unsafe_examples_path),
+            "sql_validation_failures_path": str(validation_failures_path),
             "sql_repair_attempt_count": test_safety["repair_attempt_count"],
             "sql_repair_success_count": test_safety["repair_success_count"],
             "sql_repair_success_rate": test_safety["repair_success_rate"],
+            "repairable_sql_failure_count": test_safety["repairable_failure_count"],
+            "non_repairable_sql_failure_count": test_safety["non_repairable_failure_count"],
             "sql_validation_rate_before_repair": test_safety["validation_rate_before_repair"],
             "sql_validation_rate_after_repair": test_safety["validation_rate_after_repair"],
             "abstention_count": test_safety["abstention_count"],
@@ -156,9 +166,12 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
         "sql_validation_failure_breakdown",
         "top_sql_validation_errors",
         "unsafe_sql_examples_path",
+        "sql_validation_failures_path",
         "sql_repair_attempt_count",
         "sql_repair_success_count",
         "sql_repair_success_rate",
+        "repairable_sql_failure_count",
+        "non_repairable_sql_failure_count",
         "sql_validation_rate_before_repair",
         "sql_validation_rate_after_repair",
         "abstention_count",
@@ -312,6 +325,8 @@ def _apply_sql_safety(rows: list[dict[str, Any]]) -> dict[str, Any]:
     after_valid = 0
     repair_attempts = 0
     repair_successes = 0
+    repairable_failures = 0
+    non_repairable_failures = 0
     unsafe_abstentions = 0
     filter_abstentions = 0
 
@@ -339,6 +354,11 @@ def _apply_sql_safety(rows: list[dict[str, Any]]) -> dict[str, Any]:
             repair_attempts += 1
         if repair.get("repair_succeeded"):
             repair_successes += 1
+        if original_sql and not original_validation.get("is_valid"):
+            if repair.get("repair_attempted"):
+                repairable_failures += 1
+            else:
+                non_repairable_failures += 1
 
         final_sql = repair.get("final_sql")
         final_valid = bool(final_validation.get("is_valid")) and bool(final_sql)
@@ -374,6 +394,7 @@ def _apply_sql_safety(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "example_id": row.get("example_id"),
                 "question": row.get("question"),
                 "predicted_sql": original_sql,
+                "final_sql": repair.get("final_sql"),
                 "predicted_query_ir": row.get("predicted_query_ir") or {},
                 "sql_validation_passed": False,
                 "validation_errors": list(original_validation.get("issues") or []),
@@ -384,6 +405,9 @@ def _apply_sql_safety(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "repair_succeeded": bool(repair.get("repair_succeeded")),
                 "repair_actions": list(repair.get("repair_actions") or []),
                 "final_sql_after_repair": repair.get("final_sql"),
+                "root_cause_hint": root_cause_hint(original_sql, original_validation),
+                "referenced_table": next(iter(original_validation.get("referenced_tables") or []), None),
+                "referenced_columns": list(original_validation.get("referenced_columns") or []),
                 "abstained": preexisting_abstention,
                 "abstention_reason": abstention_reason,
             })
@@ -422,6 +446,8 @@ def _apply_sql_safety(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "repair_attempt_count": repair_attempts,
         "repair_success_count": repair_successes,
         "repair_success_rate": repair_successes / repair_attempts if repair_attempts else 0.0,
+        "repairable_failure_count": repairable_failures,
+        "non_repairable_failure_count": non_repairable_failures,
         "validation_rate_before_repair": before_valid / total if total else 0.0,
         "validation_rate_after_repair": after_valid / total if total else 0.0,
         "abstention_count": abstentions,

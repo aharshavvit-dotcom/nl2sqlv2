@@ -6,12 +6,14 @@ import json
 from pathlib import Path
 
 import pytest
+import sqlglot
 
-from ir.ir_to_sql_renderer import IRToSQLRenderer
+from ir.ir_to_sql_renderer import IRToSQLRenderer, quote_identifier
 from ir.ir_validator import IRValidator
 from ir.option_c_to_ir import RetrievalIRConverter
 from ir.query_ir_models import IRDateFilter, IRDimension, IRFilter, IRMetric, IROrderBy, QueryIR
 from ir.sql_to_ir_converter import SQLToIRConverter
+from validation.sql_validator import SQLValidator
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,6 +92,58 @@ class TestIRToSQLRenderer:
         sql = IRToSQLRenderer().render(qir, dialect="sqlite")
         assert "LIKE" in sql
         assert "ILIKE" not in sql
+
+    @pytest.mark.parametrize(
+        "column",
+        [
+            "#",
+            "Home (1st leg)",
+            "Home (2nd leg)",
+            "1st Leg",
+            "Country/Region",
+            "Name of member organization",
+            "Date of birth",
+            "Mens singles",
+            "Womens singles",
+            "Mens doubles",
+            "Car No.",
+            "Rd.",
+            "Grand Prix",
+            "Grand Cru",
+            "Planet Type",
+            "Semimajor Axis ( AU )",
+            "Membership (from 2010)",
+        ],
+    )
+    def test_exact_schema_identifiers_and_aliases_are_quoted(self, column: str) -> None:
+        table = "1-12001616-4"
+        qir = QueryIR(
+            query_ir_id="quoted-identifiers",
+            question="show value",
+            normalized_question="show value",
+            intent="show_records",
+            template_id="show_records",
+            base_table=table,
+            dimensions=[IRDimension(
+                name=column,
+                table=table,
+                column=column,
+                expression=f"{table}.{column}",
+                alias=column,
+            )],
+            limit=100,
+        )
+        sql = IRToSQLRenderer().render(qir)
+        expected = f'{quote_identifier(table)}.{quote_identifier(column)} AS {quote_identifier(column)}'
+        assert expected in sql
+        assert "LIMIT 100" in sql
+        assert sqlglot.parse_one(sql, read="sqlite") is not None
+        schema = {"tables": {table: {"columns": {column: {"type": "text"}}}}}
+        assert SQLValidator().validate(sql, schema=schema)["is_valid"] is True
+
+    def test_quote_identifier_escapes_quotes_without_double_wrapping(self) -> None:
+        assert quote_identifier('a"b') == '"a""b"'
+        assert quote_identifier('"Car No."') == '"Car No."'
 
 
 # ── SQL-to-IR Converter ──────────────────────────────────────────────

@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
 
-from validation.sql_validator import SQLValidator, policy_failure_type
+from validation.sql_validator import SQLValidator, policy_failure_type, root_cause_hint
 from training.run_execution_aware_evaluation import evaluate_controlled_predicted_sql
 from training.evaluate_generic_models import _apply_sql_safety
 
@@ -196,6 +196,40 @@ def test_unsafe_dml_is_never_repaired():
     assert result["repair_attempted"] is False
     assert result["repair_succeeded"] is False
     assert result["final_sql"] is None
+
+
+@pytest.mark.parametrize("alias", ["Home (1st leg)", "#", "1st Leg", "Country/Region", "Rd."])
+def test_invalid_display_alias_is_quoted_then_revalidated(alias):
+    sql = f'SELECT "t"."value" AS {alias} FROM "t" LIMIT 10'
+    result = SQLValidator().validate_with_repair(
+        sql,
+        schema={"tables": {"t": {"columns": {"value": {"type": "text"}}}}},
+    )
+    assert result["repair_attempted"] is True
+    assert result["repair_succeeded"] is True
+    assert f'AS "{alias}"' in result["final_sql"]
+    assert result["final_validation"]["is_valid"] is True
+
+
+def test_blocked_word_inside_quoted_identifier_is_not_unsafe():
+    result = SQLValidator().validate('SELECT "drop" FROM "events" LIMIT 10')
+    assert result["checks"]["no_blocked_keywords"] is True
+    assert result["is_valid"] is True
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected"),
+    [
+        ('SELECT "t"."x" AS Home (1st leg) FROM "t" LIMIT 10', "unquoted_alias"),
+        ('SELECT "t".Rd. FROM "t" LIMIT 10', "malformed_identifier"),
+        ('DROP TABLE users', "unsafe_keyword"),
+        ('SELECT ( FROM "t" LIMIT 10', "parse_error"),
+        ('SELECT "t".name FROM "t"', "unknown"),
+    ],
+)
+def test_sql_failure_root_cause_hints(sql, expected):
+    validation = SQLValidator().validate(sql)
+    assert root_cause_hint(sql, validation) == expected
 
 
 def test_generic_sql_safety_counts_failures_and_abstains(tmp_path):
