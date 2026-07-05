@@ -404,6 +404,9 @@ class ModelBundleValidator:
             and lifecycle_proof.get("bundle_runtime_smoke_passed")
             and lifecycle_proof.get("calibration_report_available")
             and lifecycle_proof.get("calibration_loaded_in_runtime_smoke")
+            and manifest.quality_gate_mode in {"production", "release"}
+            and manifest.quality_gate_passed
+            and manifest.eligible_for_promotion
         )
         controlled_fixture_ready = bool(
             lifecycle_proof.get("controlled_fixture_eval_passed", False)
@@ -412,6 +415,8 @@ class ModelBundleValidator:
         lifecycle_proof["controlled_fixture_ready"] = controlled_fixture_ready
         lifecycle_proof["production_ready_full"] = production_ready_core and controlled_fixture_ready
         lifecycle_proof["production_ready"] = lifecycle_proof["production_ready_full"]
+        lifecycle_proof["quality_gate_mode"] = manifest.quality_gate_mode
+        lifecycle_proof["eligible_for_promotion"] = manifest.eligible_for_promotion
 
         return _result(issues, warnings, checked, lifecycle_proof)
 

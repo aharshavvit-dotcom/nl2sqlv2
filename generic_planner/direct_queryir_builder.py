@@ -78,8 +78,9 @@ class DirectQueryIRBuilder:
         filter_value: str,
         limit: int = 100,
         question: str = "",
+        selected_columns: list[str] | None = None,
     ) -> QueryIR:
-        columns = self.schema_profile.safe_select_columns(table)
+        columns = selected_columns or self.schema_profile.safe_select_columns(table)
         warnings = [] if columns else [f"No safe selectable columns found for table {table}."]
         dimensions = [
             IRDimension(
@@ -116,8 +117,8 @@ class DirectQueryIRBuilder:
             select_mode="records",
             metadata_extra={
                 "safe_selected_columns": columns,
-                "projection_mode": "specific_column_lookup" if len(columns) == 1 else "list_all_records",
-                "default_projection_used": True,
+                "projection_mode": "specific_column_lookup" if selected_columns else "list_all_records",
+                "default_projection_used": selected_columns is None,
             },
         )
 

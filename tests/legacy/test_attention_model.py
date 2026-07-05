@@ -48,6 +48,21 @@ def test_attention_model_forward_returns_logits_and_debug() -> None:
     assert "candidate_scores" in outputs
 
 
+def test_pointer_dropout_is_configured_and_active() -> None:
+    encoder = IRLabelEncoder()
+    model = SchemaAwareOptionAIRModel(
+        config={"embedding_dim": 8, "hidden_dim": 8, "candidate_hidden_dim": 6, "pointer_dropout": 0.30},
+        vocab_size=30,
+        label_sizes=encoder.label_sizes,
+    )
+
+    assert isinstance(model.pointer_dropout, torch.nn.Dropout)
+    assert model.pointer_dropout.p == 0.30
+    model.train()
+    values = torch.ones((128, 16))
+    assert torch.count_nonzero(model.pointer_dropout(values) == 0) > 0
+
+
 def test_pairwise_relation_bias_changes_logits() -> None:
     torch.manual_seed(7)
     encoder = IRLabelEncoder()

@@ -41,7 +41,11 @@ SYNONYMS_PATH = ROOT / "data" / "synonyms.yaml"
 MODEL_PATH = ROOT / "models" / "tfidf_retriever.joblib"
 
 # Default bundle path
-DEFAULT_BUNDLE_DIR = ROOT / "artifacts" / "model_bundle" / "current"
+NL2SQL_ENV = str(os.getenv("NL2SQL_ENV", "development")).strip().lower()
+DEFAULT_BUNDLE_DIR = Path(os.getenv(
+    "NL2SQL_MODEL_BUNDLE_DIR",
+    str(ROOT / "artifacts" / "model_bundle" / "current"),
+))
 DEFAULT_CANDIDATE_BUNDLE_DIR = ROOT / "artifacts" / "model_bundle" / "candidate"
 
 ARTIFACT_DIR = ROOT / "artifacts" / "work" / "retrieval_ir"
@@ -207,11 +211,15 @@ with st.sidebar:
     )
     bundle_dir = Path(bundle_path_input)
     env_candidate_debug = os.getenv("NL2SQL_ALLOW_CANDIDATE_BUNDLE", "0") == "1"
-    allow_candidate_debug = st.checkbox(
-        "Use candidate bundle for debugging",
-        value=env_candidate_debug,
-        help="Never promotes the candidate or marks it production-ready.",
-    )
+    if NL2SQL_ENV == "production":
+        allow_candidate_debug = False
+        st.caption("Production mode: candidate bundle loading is disabled.")
+    else:
+        allow_candidate_debug = st.checkbox(
+            "Use candidate bundle for debugging",
+            value=env_candidate_debug,
+            help="Never promotes the candidate or marks it production-ready.",
+        )
     bundle_info = _try_load_bundle(
         bundle_dir,
         allow_candidate_debug=allow_candidate_debug,
@@ -231,6 +239,18 @@ with st.sidebar:
                 "Warning: Candidate bundle loaded for debugging only. "
                 "This model did not pass production quality gate."
             )
+        qg = manifest.get("quality_gate") or {}
+        sidebar_status = {
+            "bundle_source": bundle_info.get("bundle_source", "none"),
+            "bundle_id": manifest.get("bundle_id"),
+            "bundle_status": manifest.get("bundle_status", manifest.get("status")),
+            "quality_gate_mode": manifest.get("quality_gate_mode", qg.get("mode")),
+            "quality_gate_passed": manifest.get("quality_gate_passed", qg.get("passed", False)),
+            "production_ready_full": manifest.get("production_ready_full", False),
+            "last_training_run_id": manifest.get("pipeline_run_id"),
+            "last_quality_gate_blockers": bundle_status.get("top_blockers", []),
+        }
+        st.json(sidebar_status)
     else:
         st.warning(
             "No validated model bundle found.\n\n"
@@ -295,13 +315,7 @@ with st.expander("Database Connection", expanded=True):
             st.error(message)
             st.stop()
     elif "db_config" not in st.session_state:
-        # Auto-connect to default SQLite if it exists
-        if DEFAULT_DB.exists():
-            st.session_state["db_config"] = DatabaseConnectionConfig(db_type="sqlite", sqlite_path=str(DEFAULT_DB))
-            st.session_state["db_connected"] = True
-        else:
-            st.info("Connect a database to begin.")
-            st.stop()
+        st.info("Connect a SQLite or PostgreSQL database to begin. No sample database is selected automatically.")
 
     # Show safe connection summary
     if "db_config" in st.session_state:

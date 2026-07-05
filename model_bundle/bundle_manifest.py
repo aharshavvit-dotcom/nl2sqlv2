@@ -56,11 +56,23 @@ class BundleManifest:
         "report_path": "evaluation/model_quality_gate_report.json",
     })
     pipeline_report: str = "pipeline/train_model_report.json"
+    bundle_status: str = ""
+    config_name: str = ""
+    quality_gate_mode: str = "baseline"
+    quality_gate_passed: bool = False
+    eligible_for_promotion: bool = False
+    production_ready_core: bool = False
+    controlled_fixture_ready: bool = False
+    production_ready_full: bool = False
+    model_artifact_source: str = "model_bundle_candidate"
+    evaluation_mode: str = "real_model_predictions"
+    gold_replay_used: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "bundle_id": self.bundle_id,
             "status": self.status,
+            "bundle_status": self.bundle_status or self.status,
             "created_at": self.created_at,
             "git_commit": self.git_commit,
             "pipeline_run_id": self.pipeline_run_id,
@@ -80,13 +92,23 @@ class BundleManifest:
             "lifecycle_proof": self.lifecycle_proof,
             "quality_gate": self.quality_gate,
             "pipeline_report": self.pipeline_report,
+            "config_name": self.config_name or Path(self.training_config_path).name,
+            "quality_gate_mode": self.quality_gate_mode,
+            "quality_gate_passed": self.quality_gate_passed,
+            "eligible_for_promotion": self.eligible_for_promotion,
+            "production_ready_core": self.production_ready_core,
+            "controlled_fixture_ready": self.controlled_fixture_ready,
+            "production_ready_full": self.production_ready_full,
+            "model_artifact_source": self.model_artifact_source,
+            "evaluation_mode": self.evaluation_mode,
+            "gold_replay_used": self.gold_replay_used,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "BundleManifest":
         return cls(
             bundle_id=data.get("bundle_id", ""),
-            status=data.get("status", "candidate"),
+            status=data.get("status", data.get("bundle_status", "candidate")),
             created_at=data.get("created_at", ""),
             git_commit=data.get("git_commit", "unknown"),
             pipeline_run_id=data.get("pipeline_run_id", ""),
@@ -106,6 +128,17 @@ class BundleManifest:
             lifecycle_proof=data.get("lifecycle_proof", {}),
             quality_gate=data.get("quality_gate", {}),
             pipeline_report=data.get("pipeline_report", ""),
+            bundle_status=data.get("bundle_status", data.get("status", "candidate")),
+            config_name=data.get("config_name", ""),
+            quality_gate_mode=data.get("quality_gate_mode", (data.get("quality_gate") or {}).get("mode", "baseline")),
+            quality_gate_passed=bool(data.get("quality_gate_passed", (data.get("quality_gate") or {}).get("passed", False))),
+            eligible_for_promotion=bool(data.get("eligible_for_promotion", False)),
+            production_ready_core=bool(data.get("production_ready_core", (data.get("lifecycle_proof") or {}).get("production_ready_core", False))),
+            controlled_fixture_ready=bool(data.get("controlled_fixture_ready", (data.get("lifecycle_proof") or {}).get("controlled_fixture_ready", False))),
+            production_ready_full=bool(data.get("production_ready_full", (data.get("lifecycle_proof") or {}).get("production_ready_full", False))),
+            model_artifact_source=data.get("model_artifact_source", "model_bundle_candidate"),
+            evaluation_mode=data.get("evaluation_mode", "real_model_predictions"),
+            gold_replay_used=bool(data.get("gold_replay_used", False)),
         )
 
 

@@ -11,6 +11,7 @@ import json
 from db.connection_config import DatabaseConnectionConfig, safe_config_summary
 from db.schema_reader import schema_summary
 from model_bundle.bundle_loader import inspect_bundle_status
+from model_bundle.bundle_loader import ModelBundleLoader
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -124,3 +125,20 @@ class TestUILabelNaming:
         for pattern in label_patterns:
             matches = re.findall(pattern, source)
             assert not matches, f"Found old V1/V2 in UI label: {matches}"
+
+
+def test_production_loader_forbids_candidate_even_with_debug_flag(tmp_path: Path, monkeypatch) -> None:
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    (candidate / "bundle_manifest.json").write_text(json.dumps({
+        "bundle_id": "candidate-1",
+        "status": "candidate",
+        "quality_gate_mode": "production",
+        "quality_gate_passed": True,
+        "production_ready_full": True,
+        "quality_gate": {"passed": True},
+    }), encoding="utf-8")
+    monkeypatch.setenv("NL2SQL_ENV", "production")
+
+    with pytest.raises(ValueError, match="forbids candidate"):
+        ModelBundleLoader().load(candidate, allow_candidate_debug=True)

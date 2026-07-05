@@ -173,6 +173,7 @@ class SchemaAwareOptionAIRModel(nn.Module):
         self.dimension_pointer = SchemaPointerNetwork(head_dim, candidate_dim, candidate_hidden_dim)
         self.date_pointer = SchemaPointerNetwork(head_dim, candidate_dim, candidate_hidden_dim)
         self.filter_pointer = SchemaPointerNetwork(head_dim, candidate_dim, candidate_hidden_dim)
+        self.pointer_dropout = nn.Dropout(float(merged.get("pointer_dropout", 0.30)))
 
     def forward(
         self,
@@ -282,27 +283,28 @@ class SchemaAwareOptionAIRModel(nn.Module):
             
         table_link_scores = schema_link_scores.new_zeros((schema_link_scores.size(0), self.max_tables)) if schema_link_scores is not None else None
 
-        base_table_logits = self.table_pointer(fused, table_vectors, table_candidate_mask, table_link_scores)
+        pointer_input = self.pointer_dropout(fused)
+        base_table_logits = self.table_pointer(pointer_input, table_vectors, table_candidate_mask, table_link_scores)
         metric_column_logits = self.metric_pointer(
-            fused,
+            pointer_input,
             column_vectors,
             _preferred_mask(metric_column_mask, column_candidate_mask),
             schema_link_scores,
         )
         dimension_column_logits = self.dimension_pointer(
-            fused,
+            pointer_input,
             column_vectors,
             _preferred_mask(dimension_column_mask, column_candidate_mask),
             schema_link_scores,
         )
         date_column_logits = self.date_pointer(
-            fused,
+            pointer_input,
             column_vectors,
             _preferred_mask(date_column_mask, column_candidate_mask),
             schema_link_scores,
         )
         filter_column_logits = self.filter_pointer(
-            fused,
+            pointer_input,
             column_vectors,
             _preferred_mask(filter_column_mask, column_candidate_mask),
             schema_link_scores,

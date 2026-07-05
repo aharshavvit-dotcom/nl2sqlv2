@@ -58,8 +58,41 @@ class ReleaseChecker:
         else:
             blocking.append("README.md is missing.")
 
+        current_manifest = root / "artifacts" / "model_bundle" / "current" / "bundle_manifest.json"
+        current_bundle_available = current_manifest.exists()
+        app_runtime_smoke_passed = False
+        if current_bundle_available:
+            try:
+                import json
+                manifest = json.loads(current_manifest.read_text(encoding="utf-8"))
+                app_runtime_smoke_passed = bool((manifest.get("lifecycle_proof") or {}).get("app_runtime_smoke_passed", False))
+            except (OSError, ValueError):
+                blocking.append("Current bundle manifest is unreadable.")
+        quality_mode = quality_gate_report.get("quality_gate_mode") or quality_gate_report.get("mode")
+        production_gate_passed = bool(
+            quality_gate_report.get("passed", False) and quality_mode in {"production", "release"}
+        )
+        baseline_gate_passed = bool(
+            quality_gate_report.get("passed", False) and quality_mode == "baseline"
+        )
+        tests_passed = bool(audit_report.get("tests_passed", audit_report.get("overall_status") == "pass"))
+        if not tests_passed:
+            blocking.append("Test or audit evidence did not pass.")
+        if not production_gate_passed:
+            blocking.append("Production quality gate did not pass.")
+        if not current_bundle_available:
+            blocking.append("Promoted current bundle is unavailable.")
+        if current_bundle_available and not app_runtime_smoke_passed:
+            blocking.append("App runtime smoke did not pass.")
+
         return {
             "release_ready": not blocking,
+            "tests_passed": tests_passed,
+            "baseline_gate_passed": baseline_gate_passed,
+            "production_gate_passed": production_gate_passed,
+            "current_bundle_available": current_bundle_available,
+            "app_runtime_smoke_passed": app_runtime_smoke_passed,
+            "blocking_release_items": blocking,
             "blocking_issues": blocking,
             "warnings": list(dict.fromkeys(warnings)),
             "recommended_next_actions": list(dict.fromkeys(next_actions)),

@@ -10,6 +10,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import argparse
 import re
 import sys
 from pathlib import Path
@@ -279,6 +280,52 @@ def run_audit() -> dict[str, Any]:
     return report
 
 
+def run_production_health_check() -> dict[str, Any]:
+    """Fail-closed deployment preflight for the promoted current bundle and app."""
+    from model_bundle.bundle_manifest import load_manifest
+    from validation.sql_validator import SQLValidator
+
+    manifest_path = ROOT / "artifacts" / "model_bundle" / "current" / "bundle_manifest.json"
+    checks: list[dict[str, Any]] = []
+    manifest = None
+    checks.append(_check("current_bundle_exists", "Current bundle exists", manifest_path.exists(), str(manifest_path)))
+    if manifest_path.exists():
+        try:
+            manifest = load_manifest(manifest_path)
+            checks.append(_check("bundle_manifest_readable", "Bundle manifest is readable", True))
+        except Exception as exc:
+            checks.append(_check("bundle_manifest_readable", "Bundle manifest is readable", False, str(exc)))
+    else:
+        checks.append(_check("bundle_manifest_readable", "Bundle manifest is readable", False, "manifest missing"))
+    production_ready = bool(
+        manifest
+        and manifest.status == "current"
+        and manifest.quality_gate_mode in {"production", "release"}
+        and manifest.quality_gate_passed
+        and manifest.production_ready_full
+    )
+    checks.append(_check("bundle_production_ready", "Current bundle is production ready", production_ready))
+    try:
+        source = (ROOT / "app" / "streamlit_app.py").read_text(encoding="utf-8")
+        compile(source, str(ROOT / "app" / "streamlit_app.py"), "exec")
+        __import__("model_bundle.bundle_loader")
+        app_importable = True
+        app_detail = "Streamlit entry point compiles and runtime imports resolve"
+    except Exception as exc:
+        app_importable = False
+        app_detail = str(exc)
+    checks.append(_check("app_importable", "App import preflight passes", app_importable, app_detail))
+    validation = SQLValidator().validate("SELECT 1 AS ok LIMIT 1", max_limit=1, dialect="sqlite")
+    checks.append(_check("sql_validator_works", "SQL validator accepts a safe bounded SELECT", bool(validation.get("is_valid")), str(validation.get("issues") or "")))
+    passed = all(item["passed"] for item in checks)
+    return {
+        "overall_status": "pass" if passed else "fail",
+        "passed": passed,
+        "checks": checks,
+        "blocking_issues": [item["description"] for item in checks if not item["passed"]],
+    }
+
+
 def _check(check_id: str, description: str, passed: bool, detail: str = "", severity: str = "error") -> dict[str, Any]:
     return {
         "check_id": check_id,
@@ -332,6 +379,13 @@ def write_reports(report: dict[str, Any]) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Audit integration or production deployment health.")
+    parser.add_argument("--production-health", action="store_true")
+    args = parser.parse_args()
+    if args.production_health:
+        report = run_production_health_check()
+        print(json.dumps(report, indent=2, ensure_ascii=True))
+        return 0 if report["passed"] else 1
     print("Integration Readiness Audit")
     print("=" * 60)
 

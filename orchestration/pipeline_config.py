@@ -50,6 +50,7 @@ def build_pipeline_steps(config: dict[str, Any]) -> list[str]:
         if controlled_predicted.get("enabled", False):
             steps.append("run_controlled_predicted_sql_evaluation")
             steps.append("attach_runtime_evaluation_reports_to_bundle")
+            steps.append("select_best_model")
             steps.append("run_final_quality_gate")
         if bundle.get("validate", True):
             steps.append("validate_model_bundle")

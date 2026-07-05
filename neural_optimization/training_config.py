@@ -27,6 +27,7 @@ _DEFAULT_MODEL = {
     "feed_forward_dim": 256,
     "activation": "gelu",
     "dropout": 0.25,
+    "pointer_dropout": 0.30,
     "layer_norm": True,
     "feed_forward_heads": True,
     "max_question_len": 64,
@@ -57,7 +58,8 @@ _DEFAULT_MODEL = {
 _DEFAULT_OPTIMIZER = {
     "name": "adamw",
     "learning_rate": 0.0007,
-    "weight_decay": 0.00001,
+    "weight_decay": 0.0001,
+    "pointer_head_weight_decay": 0.001,
     "momentum": 0.9,
     "nesterov": False,
 }
@@ -75,10 +77,10 @@ _DEFAULT_TRAINING = {
     "batch_size": 8,
     "epochs": 10,
     "gradient_clipping": 1.0,
-    "early_stopping_patience": 3,
+    "early_stopping_patience": 2,
     "seed": 42,
-    "save_best_metric": "validation_composite_score",
-    "save_best_mode": "max",
+    "save_best_metric": "loss",
+    "save_best_mode": "min",
 }
 
 _DEFAULT_LOSS = {

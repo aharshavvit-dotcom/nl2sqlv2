@@ -100,3 +100,19 @@ def test_users_default_projection_is_bounded_and_excludes_audit_columns() -> Non
     assert "password_hash" not in projected
     assert result.query_ir.metadata["projection_mode"] == "list_all_records"
     assert result.query_ir.metadata["default_projection_used"] is True
+
+
+def test_show_active_users_is_a_simple_filter_without_join() -> None:
+    schema = {**GENERIC_POSTGRES_SCHEMA, "tables": {**GENERIC_POSTGRES_SCHEMA["tables"]}}
+    schema["tables"]["users"] = {
+        **GENERIC_POSTGRES_SCHEMA["tables"]["users"],
+        "columns": [*GENERIC_POSTGRES_SCHEMA["tables"]["users"]["columns"], {"name": "status", "type": "text"}],
+    }
+    result = TableIntentResolver(SchemaProfile(schema)).resolve("show active users")
+
+    assert result.handled is True
+    assert result.intent == "simple_filter"
+    assert result.query_ir.base_table == "users"
+    assert result.query_ir.joins == []
+    assert result.query_ir.filters[0].column == "status"
+    assert result.query_ir.filters[0].value == "active"

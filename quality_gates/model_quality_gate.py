@@ -270,6 +270,13 @@ class ModelQualityGate:
                 warnings.append("calibration_degenerate: confidence thresholds are disabled")
 
         selection = evaluation_report.get("model_selection_report") or evaluation_report.get("model_selection") or {}
+        if evaluation_report.get("model_selection_required") and not selection:
+            failed_checks.append({
+                "metric": "model_selection_freshness",
+                "actual": "missing",
+                "expected": "fresh_eligible_candidate",
+                "comparison": "==",
+            })
         if selection and (
             selection.get("selection_blocked") is True
             or selection.get("selected_model") is None
@@ -286,10 +293,30 @@ class ModelQualityGate:
             else:
                 warnings.append("model_selection_stale_or_ineligible")
 
+        sql_safe = bool(
+            metrics.get("sql_validation_rate", 0.0) >= 0.90
+            and metrics.get("post_abstention_unsafe_sql_count", metrics.get("unsafe_sql_count", 0)) == 0
+        )
+        semantic_match_ready = bool(
+            metrics.get("controlled_predicted_sql_execution_match_rate", 0.0) >= 0.70
+            and metrics.get("controlled_predicted_sql_result_value_match_rate", 0.0) >= 0.70
+            and metrics.get("controlled_predicted_sql_safe_but_wrong_sql_rate", 1.0) <= 0.30
+        )
+        simple_query_ready = bool(metrics.get("simple_query_pass_rate", 0.0) >= 0.95)
+        bundle_ready = bool(
+            not evaluation_report.get("model_selection_required")
+            or (
+                selection
+                and not selection.get("selection_blocked", False)
+                and not selection.get("model_selection_stale", False)
+                and selection.get("candidate_bundle_id") == selection.get("manifest_bundle_id")
+            )
+        )
+        passed = not failed_checks
         return {
-            "passed": not failed_checks,
+            "passed": passed,
             "quality_gate_mode": mode,
-            "eligible_for_promotion": bool(not failed_checks and mode in {"production", "release"}),
+            "eligible_for_promotion": bool(passed and mode in {"production", "release"}),
             "failed_checks": failed_checks,
             "blocking_failures": failed_checks,
             "warnings": warnings,
@@ -300,6 +327,15 @@ class ModelQualityGate:
                 "enabled": bool(feedback_config.get("enabled", False)),
                 "required_for_production": bool(feedback_config.get("required_for_production", False)),
                 "available": "feedback_regression_pass_rate" in present,
+            },
+            "production_readiness_summary": {
+                "sql_safe": sql_safe,
+                "semantic_match_ready": semantic_match_ready,
+                "simple_query_ready": simple_query_ready,
+                "bundle_ready": bundle_ready,
+                "promotion_ready": bool(
+                    passed and mode in {"production", "release"} and bundle_ready
+                ),
             },
         }
 

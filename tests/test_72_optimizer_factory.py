@@ -53,3 +53,25 @@ class TestOptimizerFactory:
     def test_invalid_raises(self):
         with pytest.raises(ValueError, match="Unknown optimizer"):
             build_optimizer(_dummy_params(), {"name": "invalid"})
+
+    def test_pointer_heads_receive_stronger_weight_decay(self):
+        class PointerModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.encoder = nn.Linear(4, 4)
+                self.table_pointer = nn.Linear(4, 2)
+                self.metric_pointer = nn.Linear(4, 2)
+                self.dimension_pointer = nn.Linear(4, 2)
+                self.date_pointer = nn.Linear(4, 2)
+                self.filter_pointer = nn.Linear(4, 2)
+
+        opt = build_optimizer(PointerModel(), {
+            "name": "adamw",
+            "weight_decay": 0.0001,
+            "pointer_head_weight_decay": 0.001,
+        })
+        groups = {group["group_name"]: group for group in opt.param_groups}
+
+        assert groups["non_pointer_params"]["weight_decay"] == 0.0001
+        assert groups["pointer_head_params"]["weight_decay"] == 0.001
+        assert len(groups["pointer_head_params"]["params"]) == 10

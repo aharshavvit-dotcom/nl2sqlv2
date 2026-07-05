@@ -324,6 +324,12 @@ class ModelBundleBuilder:
             )
 
         # production_ready: split into core, controlled fixture, and full
+        quality_gate_mode = str(
+            (quality_gate_report or {}).get("quality_gate_mode")
+            or config.get("quality_gate", {}).get("mode")
+            or "baseline"
+        ).lower()
+        eligible_for_promotion = bool((quality_gate_report or {}).get("eligible_for_promotion", False))
         production_ready_core = all([
             lifecycle_proof["generic_eval_valid_for_quality_gate"],
             lifecycle_proof["generic_eval_real_predictions"],
@@ -332,6 +338,8 @@ class ModelBundleBuilder:
             lifecycle_proof["calibration_report_available"],
             lifecycle_proof["bundle_runtime_smoke_passed"],
             lifecycle_proof["calibration_loaded_in_runtime_smoke"],
+            quality_gate_mode in {"production", "release"},
+            eligible_for_promotion,
         ])
         controlled_required = bool(
             (config.get("execution_aware", {}).get("controlled_fixtures", {})
@@ -345,6 +353,8 @@ class ModelBundleBuilder:
         lifecycle_proof["controlled_fixture_ready"] = controlled_fixture_ready
         lifecycle_proof["production_ready_full"] = production_ready_core and controlled_fixture_ready
         lifecycle_proof["production_ready"] = lifecycle_proof["production_ready_full"]
+        lifecycle_proof["quality_gate_mode"] = quality_gate_mode
+        lifecycle_proof["eligible_for_promotion"] = eligible_for_promotion
 
         # Build manifest
         bundle_id = f"nl2sql_bundle_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
@@ -394,6 +404,17 @@ class ModelBundleBuilder:
             lifecycle_proof=lifecycle_proof,
             quality_gate=quality_gate_info,
             pipeline_report="pipeline/train_model_report.json",
+            bundle_status="candidate",
+            config_name=Path(config_path).name if config_path else "",
+            quality_gate_mode=quality_gate_mode,
+            quality_gate_passed=bool((quality_gate_report or {}).get("passed", False)),
+            eligible_for_promotion=eligible_for_promotion,
+            production_ready_core=production_ready_core,
+            controlled_fixture_ready=controlled_fixture_ready,
+            production_ready_full=bool(production_ready_core and controlled_fixture_ready),
+            model_artifact_source="model_bundle_candidate",
+            evaluation_mode=str((evaluation_report or {}).get("evaluation_mode") or "legacy_cache"),
+            gold_replay_used=bool((evaluation_report or {}).get("gold_replay_used", False)),
         )
 
         manifest_path = out / "bundle_manifest.json"

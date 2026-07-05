@@ -663,7 +663,7 @@ class TestTrainModelIntegration:
         result = ModelBundleBuilder().build_candidate_bundle(
             work_dir=ROOT / "artifacts",
             output_dir=ROOT / "artifacts" / "model_bundle" / "_test_prod_ready",
-            config={},
+            config={"quality_gate": {"mode": "production", "required": True}},
             pipeline_report={"steps": [
                 {"step": "run_app_smoke_check", "status": "completed", "summary": {"calibration_loaded": True}},
                 {"step": "run_controlled_fixture_evaluation", "status": "completed", "summary": {
@@ -677,7 +677,11 @@ class TestTrainModelIntegration:
                 "predictor_used": True,
                 "test_performance": {"calibration": {"conformal_confidence_threshold": 0.85}},
             },
-            quality_gate_report={"passed": True},
+            quality_gate_report={
+                "passed": True,
+                "quality_gate_mode": "production",
+                "eligible_for_promotion": True,
+            },
         )
         manifest_path = ROOT / "artifacts" / "model_bundle" / "_test_prod_ready" / "bundle_manifest.json"
         if manifest_path.exists():

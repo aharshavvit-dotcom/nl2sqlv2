@@ -8,6 +8,7 @@ import torch
 from torch import nn
 
 from .loss_utils import accuracy_from_logits, margin_ranking_slot_loss, masked_cross_entropy
+from neural_optimization.optimizer_factory import build_optimizer
 
 
 HEAD_TO_LABEL = {
@@ -62,11 +63,12 @@ class OptionAIRTrainer:
         self.device = torch.device("cpu")
         self.model.to(self.device)
         self.loss_fn = nn.CrossEntropyLoss(ignore_index=-1)
-        self.optimizer = torch.optim.Adam(
-            self.model.parameters(),
-            lr=float(config.get("learning_rate", 0.001)),
-            weight_decay=float(config.get("weight_decay", 0.0)),
-        )
+        self.optimizer = build_optimizer(self.model, {
+            "name": config.get("optimizer", "adam"),
+            "learning_rate": float(config.get("learning_rate", 0.001)),
+            "weight_decay": float(config.get("weight_decay", 0.0001)),
+            "pointer_head_weight_decay": float(config.get("pointer_head_weight_decay", 0.001)),
+        })
         self.diagnostics = diagnostics
 
     def train(self, train_loader, val_loader, output_dir=None, label_encoder=None) -> dict[str, Any]:

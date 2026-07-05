@@ -45,10 +45,10 @@ calibration_metrics:
 controlled_predicted_sql:
   min_safe_sql_rate: {baseline_min: 1.0, production_min: 1.0}
   min_execution_success_rate: {baseline_min: 1.0, production_min: 1.0}
-  min_execution_match_rate: {baseline_min: 0.40, production_min: 0.60}
+  min_execution_match_rate: {baseline_min: 0.40, production_min: 0.70}
   min_row_count_match_rate: {baseline_min: 0.70, production_min: 0.85}
   min_result_value_match_rate: {baseline_min: 0.50, production_min: 0.70}
-  max_safe_but_wrong_sql_rate: {baseline_max: 0.60, production_max: 0.40}
+  max_safe_but_wrong_sql_rate: {baseline_max: 0.60, production_max: 0.30}
 
 linking:
   min_filter_column_accuracy_rate: {baseline_min: 0.40, production_min: 0.70}

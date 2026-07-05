@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+import os
 
 import pandas as pd
 from sqlalchemy import create_engine, text
@@ -25,6 +26,11 @@ class PostgresConnector(DatabaseConnector):
             raise ValueError("PostgresConnector requires db_type='postgres'")
         self.config = config
         self.schema_name = config.schema_name or "public"
+        try:
+            seconds = max(1, int(os.getenv("NL2SQL_DB_STATEMENT_TIMEOUT_SECONDS", "30")))
+        except ValueError:
+            seconds = 30
+        self.statement_timeout_ms = seconds * 1000
 
     def test_connection(self) -> tuple[bool, str]:
         try:
@@ -160,8 +166,8 @@ class PostgresConnector(DatabaseConnector):
         engine = create_engine(self.config.sqlalchemy_url(), future=True)
         try:
             with engine.connect() as conn:
-                conn.execute(text(f"SET statement_timeout = '{self.STATEMENT_TIMEOUT}'"))
                 conn.execute(text("SET TRANSACTION READ ONLY"))
+                conn.execute(text(f"SET LOCAL statement_timeout = {self.statement_timeout_ms}"))
                 df = pd.read_sql_query(text(sql), conn)
                 conn.rollback()  # ensure read-only transaction is closed cleanly
             if limit and len(df) > limit:

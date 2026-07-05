@@ -680,6 +680,7 @@ class StepRunner:
         from model_selection.selection_reporter import SelectionReporter
         from quality_gates.thresholds import load_thresholds
         from training.select_best_model import _attach_predicted_sql_metrics, _metrics, _read
+        from model_bundle.bundle_manifest import load_manifest
 
         artifacts = _artifacts(config)
         controlled_predicted_sql_report = _read(Path(artifacts["evaluation_dir"]) / "controlled_predicted_sql_execution_report.json")
@@ -690,15 +691,38 @@ class StepRunner:
             ),
             controlled_predicted_sql_report,
         )
+        evaluation_report = _read(Path(artifacts["evaluation_dir"]) / "generic_model_evaluation_report.json")
+        candidate_manifest_path = _candidate_bundle_dir(config) / "bundle_manifest.json"
+        candidate_manifest = load_manifest(candidate_manifest_path) if candidate_manifest_path.exists() else None
+        report_bundle_id = controlled_predicted_sql_report.get("bundle_id") or evaluation_report.get("bundle_id")
+        report_generated_at = controlled_predicted_sql_report.get("generated_at") or evaluation_report.get("generated_at")
         candidate = ModelCandidate(
             "adaptive_router",
-            str(ROOT / "artifacts"),
+            str(_candidate_bundle_dir(config)),
             "adaptive_router",
             metrics,
-            datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-            {"controlled_predicted_sql_report": controlled_predicted_sql_report},
+            str(report_generated_at or datetime.now(timezone.utc).replace(microsecond=0).isoformat()),
+            {
+                "controlled_predicted_sql_report": controlled_predicted_sql_report,
+                "candidate_bundle_generated_at": candidate_manifest.created_at if candidate_manifest else None,
+                "enforce_freshness": True,
+            },
+            model_artifact_source="model_bundle_candidate",
+            evaluation_mode=str(evaluation_report.get("evaluation_mode") or "legacy_cache"),
+            eligible_for_promotion=evaluation_report.get("evaluation_mode") == "real_model_predictions",
+            candidate_bundle_id=str(report_bundle_id or "") or None,
+            manifest_bundle_id=candidate_manifest.bundle_id if candidate_manifest else None,
+            pipeline_run_id=str(controlled_predicted_sql_report.get("pipeline_run_id") or "") or None,
+            generated_at=str(report_generated_at or "") or None,
+            report_path=str(Path(artifacts["evaluation_dir"]) / "generic_model_evaluation_report.json"),
         )
         report = ModelSelector().select_best([candidate], load_thresholds(ROOT / "evaluation/model_quality_thresholds.yaml"))
+        report.update({
+            "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "candidate_bundle_id": str(report_bundle_id or ""),
+            "manifest_bundle_id": candidate_manifest.bundle_id if candidate_manifest else None,
+            "model_selection_stale": bool(report.get("selection_blocked")),
+        })
         SelectionReporter().write(Path(artifacts["evaluation_dir"]) / "model_selection_report.json", report)
         return {"status": "completed", "summary": {"selected": bool(report.get("selected_model")), "blocking": report.get("blocking_issues", [])}}
 
@@ -950,6 +974,10 @@ class StepRunner:
                 feedback_rate = (feedback_report.get("summary") or {}).get("pass_rate")
             if isinstance(feedback_rate, (int, float)):
                 eval_report["feedback_regression_pass_rate"] = float(feedback_rate)
+        selection_path = Path(artifacts["evaluation_dir"]) / "model_selection_report.json"
+        eval_report["model_selection_required"] = gate_mode in {"production", "release"} and final_phase
+        if selection_path.exists():
+            eval_report["model_selection_report"] = json.loads(selection_path.read_text(encoding="utf-8"))
         contribution_path = ROOT / "artifacts/generic_training/dataset_contribution_report.json"
         eval_report["dataset_contribution_report_required"] = True
         if contribution_path.exists():
@@ -979,6 +1007,12 @@ class StepRunner:
                     json.dumps(report, indent=2, ensure_ascii=False),
                     encoding="utf-8",
                 )
+                selection_source = Path(artifacts["evaluation_dir"]) / "model_selection_report.json"
+                if selection_source.exists():
+                    (bundle_eval / "model_selection_report.json").write_text(
+                        selection_source.read_text(encoding="utf-8"),
+                        encoding="utf-8",
+                    )
                 manifest_path = candidate / "bundle_manifest.json"
                 if manifest_path.exists():
                     from model_bundle.bundle_manifest import load_manifest, save_manifest
@@ -989,8 +1023,36 @@ class StepRunner:
                         "passed": bool(report.get("passed", False)),
                         "required": bool(gate_cfg.get("required", False)),
                         "report_path": "evaluation/model_quality_gate_report.json",
-                        "mode": report.get("mode", gate_mode),
+                        "mode": report.get("quality_gate_mode", gate_mode),
                         "phase": "final",
+                    }
+                    readiness = report.get("production_readiness_summary") or {}
+                    production_core = bool(
+                        report.get("passed", False)
+                        and gate_mode in {"production", "release"}
+                        and readiness.get("sql_safe", False)
+                        and readiness.get("semantic_match_ready", False)
+                        and readiness.get("simple_query_ready", False)
+                        and readiness.get("bundle_ready", False)
+                    )
+                    controlled_fixture_ready = bool(
+                        (manifest.lifecycle_proof or {}).get("controlled_fixture_ready", False)
+                    )
+                    manifest.quality_gate_mode = gate_mode
+                    manifest.quality_gate_passed = bool(report.get("passed", False))
+                    manifest.eligible_for_promotion = bool(report.get("eligible_for_promotion", False))
+                    manifest.production_ready_core = production_core
+                    manifest.controlled_fixture_ready = controlled_fixture_ready
+                    manifest.production_ready_full = production_core and controlled_fixture_ready
+                    manifest.lifecycle_proof = {
+                        **(manifest.lifecycle_proof or {}),
+                        "quality_gate_mode": gate_mode,
+                        "quality_gate_passed": manifest.quality_gate_passed,
+                        "eligible_for_promotion": manifest.eligible_for_promotion,
+                        "production_ready_core": manifest.production_ready_core,
+                        "controlled_fixture_ready": manifest.controlled_fixture_ready,
+                        "production_ready_full": manifest.production_ready_full,
+                        "production_ready": manifest.production_ready_full,
                     }
                     save_manifest(manifest, manifest_path)
 
@@ -1055,9 +1117,8 @@ class StepRunner:
 
         integrated = config.training.get("_integrated_config") or {}
         current_dir = ROOT / integrated.get("paths", {}).get("current_bundle_dir", "artifacts/model_bundle/current")
-        skip_qg = not integrated.get("quality_gate", {}).get("required", False)
-        result = ModelBundlePromoter().promote(_candidate_bundle_dir(config), current_dir, skip_quality_gate=skip_qg)
-        return {"status": "completed" if result.get("promoted") or skip_qg else "failed", "summary": result, "error": result.get("reason")}
+        result = ModelBundlePromoter().promote(_candidate_bundle_dir(config), current_dir)
+        return {"status": "completed" if result.get("promoted") else "failed", "summary": result, "error": result.get("reason")}
 
 
 def _canonical_step(step: str) -> str:

@@ -22,6 +22,12 @@ class TestNeuralTrainingConfig:
         assert cfg.training["batch_size"] == 8
         assert cfg.loss["base_table"] == 1.2
         assert cfg.scheduler["name"] == "reduce_on_plateau"
+        assert cfg.training["save_best_metric"] == "loss"
+        assert cfg.training["save_best_mode"] == "min"
+        assert cfg.training["early_stopping_patience"] == 2
+        assert cfg.model["pointer_dropout"] == 0.30
+        assert cfg.optimizer["weight_decay"] == 0.0001
+        assert cfg.optimizer["pointer_head_weight_decay"] == 0.001
 
     def test_to_dict(self):
         cfg = NeuralTrainingConfig()

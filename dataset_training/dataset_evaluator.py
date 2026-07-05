@@ -182,6 +182,16 @@ class DatasetScaleEvaluator:
                 if row.get("abstention_reason") in {"low_filter_confidence", "ambiguous_filter_column"}
             ),
         })
+        simple_results = [
+            item["simple_query_pass"]
+            for item in per_example
+            if item.get("simple_query_pass") is not None
+        ]
+        summary["simple_query_count"] = len(simple_results)
+        summary["simple_query_pass_rate"] = (
+            sum(bool(value) for value in simple_results) / len(simple_results)
+            if simple_results else 0.0
+        )
         predictions_total = len(rows)
         abstention_count = sum(1 for item in per_example if item.get("abstained"))
         generated_count = sum(
@@ -653,6 +663,9 @@ def _linking_diagnostics(
             "value_to_column_linked": bool(pred_filter_value is not None and pred_filter_column),
             "linking_method": mapping.get("filter_linking_method") or "fallback",
             "linking_confidence": max(filter_confidence, top_score),
+            "filter_column_confidence": max(filter_confidence, top_score),
+            "filter_value_confidence": float((slots.get("filter_value") or {}).get("confidence", 0.0) or 0.0)
+            if isinstance(slots.get("filter_value"), dict) else 0.0,
             "filter_value_extraction_match": _optional_equal(value_candidate.get("value"), gold_filter_value),
             "filter_column_top1_match": _optional_equal(ranked_names[0] if ranked_names else None, gold_filter_column),
             "filter_column_top3_match": (
@@ -660,6 +673,7 @@ def _linking_diagnostics(
                 else any(_optional_equal(name, gold_filter_column) is True for name in ranked_names[:3])
             ),
             "ambiguous": ambiguous,
+            "ambiguity_reason": "top_filter_columns_within_margin" if ambiguous else None,
             "filter_value_candidates": value_candidates,
         },
         "dimension_linking": {
@@ -668,6 +682,7 @@ def _linking_diagnostics(
             "dimension_match": _optional_equal(pred_dimension_column, gold_dimension_column),
             "linking_method": mapping.get("dimension_linking_method") or "fallback",
             "linking_confidence": dimension_confidence,
+            "dimension_confidence": dimension_confidence,
         },
     }
 

@@ -107,6 +107,23 @@ It does not fall back to sample examples in normal runtime. If the bundle is inv
 
 For local UI testing only, set `NL2SQL_ALLOW_CANDIDATE_BUNDLE=1` or enable **Use candidate bundle for debugging** in the sidebar. The app then loads `artifacts/model_bundle/candidate/` with a persistent non-production warning; this never promotes the candidate or marks it production-ready.
 
+Development candidate mode (PowerShell):
+
+```powershell
+$env:NL2SQL_ENV="development"
+$env:NL2SQL_ALLOW_CANDIDATE_BUNDLE="1"
+streamlit run app/streamlit_app.py
+```
+
+Production mode requires `artifacts/model_bundle/current/bundle_manifest.json` and fails closed if it is missing, invalid, not production-gated, or not fully production ready:
+
+```powershell
+$env:NL2SQL_ENV="production"
+streamlit run app/streamlit_app.py
+```
+
+See [docs/deployment.md](docs/deployment.md) for environment variables and the deployment health check.
+
 ---
 
 ## Database Connectivity
@@ -301,6 +318,8 @@ python training/train_model.py --config configs/training.yaml --resume
 ```bash
 pytest tests/ -v
 ```
+
+Before release, run the complete checklist in [docs/developer_commands.md](docs/developer_commands.md), including compile, tests, cleanup, integration audit, baseline training, production training, and the production health check.
 
 ---
 

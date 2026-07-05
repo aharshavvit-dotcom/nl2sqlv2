@@ -75,6 +75,10 @@ class TrainingDiagnostics:
             "batch_size": config.get("training", {}).get("batch_size"),
             "epochs": config.get("training", {}).get("epochs"),
             "save_best_metric": config.get("training", {}).get("save_best_metric"),
+            "checkpoint_monitor": config.get("training", {}).get("save_best_metric"),
+            "checkpoint_mode": config.get("training", {}).get("save_best_mode"),
+            "pointer_head_weight_decay": config.get("optimizer", {}).get("pointer_head_weight_decay"),
+            "pointer_dropout": config.get("model", {}).get("pointer_dropout"),
             "gradient_clipping_value": config.get("training", {}).get("gradient_clipping"),
             "train_path": config.get("data", {}).get("train_path"),
             "validation_path": config.get("data", {}).get("validation_path"),
@@ -240,8 +244,13 @@ class TrainingDiagnostics:
     def best_epoch(self) -> dict[str, Any]:
         if not self.epochs:
             return {}
-        metric = self.config_summary.get("save_best_metric") or "overall_slot_accuracy"
-        return max(self.epochs, key=lambda e: e.get(metric, e.get("overall_slot_accuracy", 0.0)))
+        metric = self.config_summary.get("checkpoint_monitor") or "overall_slot_accuracy"
+        mode = self.config_summary.get("checkpoint_mode") or "max"
+        epoch_key = "validation_total_loss" if metric == "loss" else metric
+        return (min if mode == "min" else max)(
+            self.epochs,
+            key=lambda e: e.get(epoch_key, float("inf") if mode == "min" else float("-inf")),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         total_time = (time.time() - self._start_time) if self._start_time else None
@@ -249,12 +258,34 @@ class TrainingDiagnostics:
         train_losses = [value for epoch in self.epochs for value in (epoch.get("train_loss_samples") or [epoch.get("train_total_loss", 0.0)])]
         validation_losses = [value for epoch in self.epochs for value in (epoch.get("validation_loss_samples") or [epoch.get("validation_total_loss", 0.0)])]
         high_loss_examples = [item for epoch in self.epochs for item in (epoch.get("high_loss_examples") or [])]
+        current = self.epochs[-1] if self.epochs else {}
+        best_val_loss = min(
+            (epoch.get("validation_total_loss") for epoch in self.epochs),
+            default=None,
+        )
+        current_val_loss = current.get("validation_total_loss")
+        current_train_loss = current.get("train_total_loss")
+        ratio = (
+            current_val_loss / current_train_loss
+            if isinstance(current_val_loss, (int, float))
+            and isinstance(current_train_loss, (int, float))
+            and current_train_loss > 0
+            else None
+        )
         return {
             "config": self.config_summary,
             "total_training_time_seconds": total_time,
             "total_epochs": len(self.epochs),
             "best_epoch": best.get("epoch"),
             "best_overall_slot_accuracy": best.get("overall_slot_accuracy"),
+            "checkpoint_monitor": self.config_summary.get("checkpoint_monitor"),
+            "checkpoint_mode": self.config_summary.get("checkpoint_mode"),
+            "pointer_head_weight_decay": self.config_summary.get("pointer_head_weight_decay"),
+            "pointer_dropout": self.config_summary.get("pointer_dropout"),
+            "best_val_loss": best_val_loss,
+            "current_val_loss": current_val_loss,
+            "val_train_loss_ratio": ratio,
+            "overfitting_warning": bool(ratio is not None and ratio > 1.5),
             "loss_percentiles": {
                 **{f"train_loss_p{p}": _percentile(train_losses, p) for p in [50, 95, 99]},
                 **{f"validation_loss_p{p}": _percentile(validation_losses, p) for p in [50, 95, 99]},

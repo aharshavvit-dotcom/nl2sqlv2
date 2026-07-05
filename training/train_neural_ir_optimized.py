@@ -252,7 +252,7 @@ def run_optimized_training(
     model.to(device)
 
     # Build optimizer & scheduler
-    optimizer = build_optimizer(model.parameters(), config.optimizer)
+    optimizer = build_optimizer(model, config.optimizer)
     epochs = int(config.training.get("epochs", 10))
     total_steps = epochs * len(train_loader)
     scheduler = build_scheduler(optimizer, config.scheduler, total_steps=total_steps)
@@ -278,8 +278,8 @@ def run_optimized_training(
     }
 
     # Checkpoint manager & early stopping
-    best_metric = config.training.get("save_best_metric", "overall_slot_accuracy")
-    best_mode = config.training.get("save_best_mode", "max")
+    best_metric = str(config.training.get("save_best_metric", "loss"))
+    best_mode = str(config.training.get("save_best_mode", "min"))
     ckpt_manager = CheckpointManager(output_dir, metric_name=best_metric, mode=best_mode)
     early_stopper = EarlyStopping(
         patience=int(config.training.get("early_stopping_patience", 3)),
@@ -299,6 +299,10 @@ def run_optimized_training(
     print(f"  Optimizer: {config.optimizer.get('name')} | Activation: {config.model.get('activation')}")
     print(f"  Training: {len(train_dataset)} examples | Validation: {len(val_dataset) if val_dataset else 0}")
     print(f"  Batch size: {batch_size} | Gradient clipping: {grad_clip}")
+    print(f"  Checkpoint monitor: {best_metric}")
+    print(f"  Checkpoint mode: {best_mode}")
+    if best_metric == "loss" and best_mode == "min":
+        print("  Best checkpoint selected by lowest validation loss")
     if hard_negative_warning:
         print(f"  Warning: {hard_negative_warning}")
     print(
@@ -508,7 +512,7 @@ def run_optimized_training(
         checkpoint_path = output_dir / "model.pt"
     report = {
         "best_epoch": best_epoch.get("epoch"),
-        "best_metric": best_epoch.get("overall_slot_accuracy"),
+        "best_metric": best_epoch.get("validation_total_loss") if best_metric == "loss" else best_epoch.get(best_metric),
         "best_overall_slot_accuracy": best_epoch.get("overall_slot_accuracy"),
         "final_train_loss": train_loss,
         "final_val_loss": val_metrics.get("loss"),
@@ -540,6 +544,22 @@ def run_optimized_training(
         "ffn_heads_enabled": bool(config.model.get("feed_forward_heads", False)),
         "scheduler": config.scheduler.get("name"),
         "best_checkpoint_metric": best_metric,
+        "checkpoint_monitor": best_metric,
+        "checkpoint_mode": best_mode,
+        "pointer_head_weight_decay": float(config.optimizer.get("pointer_head_weight_decay", 0.001)),
+        "pointer_dropout": float(config.model.get("pointer_dropout", 0.30)),
+        "best_val_loss": best_epoch.get("validation_total_loss"),
+        "current_val_loss": val_metrics.get("loss"),
+        "val_train_loss_ratio": (
+            val_metrics.get("loss") / train_loss
+            if val_metrics.get("loss") is not None and train_loss > 0
+            else None
+        ),
+        "overfitting_warning": bool(
+            val_metrics.get("loss") is not None
+            and train_loss > 0
+            and val_metrics.get("loss") / train_loss > 1.5
+        ),
         "loss_weights": dict(config.loss),
         "validation_gold_score_available": "validation_gold_score" in final_metrics,
         "validation_gold_score_unavailable_reason": (

@@ -286,6 +286,33 @@ def _query_ir_from_sql(
     return dict(converted.get("query_ir") or {}) if converted.get("success") else {}
 
 
+def _projection_diagnostics(predicted_ir: dict[str, Any], gold_ir: dict[str, Any]) -> dict[str, Any]:
+    def columns(payload: dict[str, Any]) -> set[str]:
+        selected: set[str] = set()
+        for section in ("dimensions", "metrics"):
+            for item in payload.get(section) or []:
+                if not isinstance(item, dict):
+                    continue
+                value = item.get("expression") or item.get("column")
+                if value:
+                    selected.add(str(value).strip().lower().replace('"', "").replace("`", ""))
+        return selected
+
+    predicted = columns(predicted_ir)
+    gold = columns(gold_ir)
+    extra = sorted(predicted - gold)
+    return {
+        "comparable": bool(predicted_ir and gold_ir),
+        "predicted_columns": sorted(predicted),
+        "gold_columns": sorted(gold),
+        "exact_match": predicted == gold,
+        "contains_gold": gold.issubset(predicted),
+        "extra_columns": extra,
+        "has_extra_columns": bool(extra),
+        "default_projection_used": bool((predicted_ir.get("metadata") or {}).get("default_projection_used")),
+    }
+
+
 def _semantic_failure_category(
     query_ir_diff: dict[str, Any],
     predicted_sql: str,
@@ -507,6 +534,7 @@ def evaluate_controlled_predicted_sql(
                     "predicted_query_ir": {},
                     "gold_query_ir": gold_query_ir,
                     "query_ir_diff": {},
+                    "projection_diagnostics": {},
                     # Legacy fields for backward compat
                     "predicted_sql_valid": False,
                     "predicted_sql_is_select_only": False,
@@ -560,6 +588,9 @@ def evaluate_controlled_predicted_sql(
                     entry["predicted_query_ir"] = predicted_query_ir
                     if predicted_query_ir and gold_query_ir:
                         entry["query_ir_diff"] = diff_query_ir(predicted_query_ir, gold_query_ir)
+                        entry["projection_diagnostics"] = _projection_diagnostics(
+                            predicted_query_ir, gold_query_ir,
+                        )
                     entry["original_predicted_sql"] = (
                         result_debug.get("original_sql") or predicted_sql or None
                     )
@@ -735,6 +766,12 @@ def evaluate_controlled_predicted_sql(
         category: sum(1 for row in results if row.get("semantic_failure_category") == category)
         for category in semantic_categories
     }
+    projection_cases = [
+        row.get("projection_diagnostics") or {}
+        for row in results
+        if (row.get("projection_diagnostics") or {}).get("comparable")
+    ]
+    projection_denominator = len(projection_cases)
 
     # Phase 3: Failure breakdown
     failure_breakdown = {
@@ -800,6 +837,21 @@ def evaluate_controlled_predicted_sql(
         "semantic_failure_breakdown": semantic_failure_breakdown,
         "safe_but_wrong_sql_count": safe_but_wrong_count,
         "safe_but_wrong_sql_rate": safe_but_wrong_count / production_valid if production_valid else 0.0,
+        "projection_exact_match_rate": (
+            sum(bool(item.get("exact_match")) for item in projection_cases) / projection_denominator
+            if projection_denominator else 0.0
+        ),
+        "projection_contains_gold_rate": (
+            sum(bool(item.get("contains_gold")) for item in projection_cases) / projection_denominator
+            if projection_denominator else 0.0
+        ),
+        "extra_projection_column_rate": (
+            sum(bool(item.get("has_extra_columns")) for item in projection_cases) / projection_denominator
+            if projection_denominator else 0.0
+        ),
+        "default_projection_used_count": sum(
+            bool(item.get("default_projection_used")) for item in projection_cases
+        ),
         "semantic_execution_match_rate": exec_match / answered_denominator if answered_count else 0.0,
         "quality_on_answered_rate": exec_match / answered_denominator if answered_count else 0.0,
         "quality_on_all_questions_rate": exec_match / total if total else 0.0,

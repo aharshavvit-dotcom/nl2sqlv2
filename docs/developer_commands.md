@@ -236,6 +236,20 @@ When both candidates contain paired per-example results, promotion performs 1,00
 
 ## Auditing & Verification
 
+### Release checklist
+
+```bash
+python -m compileall app db evaluation inference ir model_bundle model_selection neural_ir quality_gates retriever training validation scripts tests
+python -m pytest tests/ -q
+python scripts/repo_cleanup_check.py
+python scripts/audit_integration_readiness.py
+python training/train_model.py --config configs/baseline_training.yaml
+python training/train_model.py --config configs/training.yaml
+python scripts/audit_integration_readiness.py --production-health
+```
+
+Release is permitted only when tests, cleanup, integration audit, baseline and production gates pass; the candidate is promoted to `current`; and the production health check confirms the app runtime artifact.
+
 ### Audit Scripts
 ```bash
 python scripts/audit_generic_nl2sql_readiness.py

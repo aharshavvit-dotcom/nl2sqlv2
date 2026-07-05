@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +72,11 @@ class ModelBundleLoader:
             )
 
         manifest = load_manifest(manifest_path)
+        environment = str(os.getenv("NL2SQL_ENV", "development")).strip().lower()
+        if environment not in {"development", "staging", "production"}:
+            raise ValueError(f"Invalid NL2SQL_ENV={environment!r}; expected development, staging, or production.")
+        if environment == "production" and manifest.status != "current":
+            raise ValueError("Production mode forbids candidate bundle loading; use the current bundle.")
         if manifest.status == "candidate" and not allow_candidate_debug:
             raise ValueError(
                 "Candidate bundle loading is disabled. Set "
@@ -94,6 +100,16 @@ class ModelBundleLoader:
                 f"Bundle {manifest.bundle_id} has status 'failed'. "
                 "Run training again to produce a valid bundle."
             )
+        if environment == "production":
+            production_issues = []
+            if manifest.quality_gate_mode not in {"production", "release"}:
+                production_issues.append("quality_gate_mode is not production")
+            if not manifest.quality_gate_passed or not (manifest.quality_gate or {}).get("passed", False):
+                production_issues.append("quality gate did not pass")
+            if not manifest.production_ready_full:
+                production_issues.append("production_ready_full is false")
+            if production_issues:
+                raise ValueError("Production bundle is not deployable: " + "; ".join(production_issues))
 
         # Rule 3: Warn on candidate bundle
         if manifest.status == "candidate":
@@ -118,6 +134,9 @@ class ModelBundleLoader:
             "bundle_source": "candidate_debug" if manifest.status == "candidate" else "current",
             "quality_gate_passed": bool((manifest.quality_gate or {}).get("passed", False)),
             "production_ready": bool((manifest.lifecycle_proof or {}).get("production_ready", False)),
+            "production_ready_full": bool(manifest.production_ready_full),
+            "quality_gate_mode": manifest.quality_gate_mode,
+            "runtime_environment": environment,
             "loaded_for_debug": bool(manifest.status == "candidate" and allow_candidate_debug),
             "bundle_validation": validation,
         }

@@ -22,6 +22,7 @@ from validation.sql_validator import (
     root_cause_hint,
 )
 from inference.prediction_models import is_abstained_prediction
+from ir.query_ir_models import diff_query_ir
 
 
 def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
@@ -47,6 +48,7 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
     )
     unsafe_examples_path = args.output.parent / "unsafe_sql_examples.jsonl"
     validation_failures_path = args.output.parent / "sql_validation_failures.jsonl"
+    simple_query_failures_path = args.output.parent / "simple_query_failures.jsonl"
     test_safety = _apply_sql_safety(test_evaluation_rows)
     unseen_safety = _apply_sql_safety(unseen_evaluation_rows)
     write_jsonl(unsafe_examples_path, test_safety["failures"])
@@ -78,6 +80,12 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
             calibration_coverage_target=float(getattr(args, "calibration_coverage_target", 0.95)),
             calibration_config=calibration_config,
         )
+    simple_query_failures = _simple_query_failures(test_rows, test_eval.get("per_example") or [])
+    write_jsonl(simple_query_failures_path, simple_query_failures)
+    simple_query_failure_breakdown: dict[str, int] = {}
+    for item in simple_query_failures:
+        reason = str(item.get("simple_query_failure_reason") or "unknown")
+        simple_query_failure_breakdown[reason] = simple_query_failure_breakdown.get(reason, 0) + 1
     # Derive strict validity from sub-report evaluator logic
     test_valid = bool(test_eval.get("is_valid_for_quality_gate", False))
     unseen_valid = bool(unseen_eval.get("is_valid_for_quality_gate", False))
@@ -120,7 +128,9 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
         {
             "query_ir_validity_rate": test_summary.get("query_ir_validity_rate"),
             "sql_validation_rate": test_summary.get("sql_validation_rate"),
-            "simple_query_pass_rate": test_summary.get("simple_query_pass_rate", test_summary.get("intent_accuracy_rate")),
+            "simple_query_pass_rate": test_summary.get("simple_query_pass_rate", 0.0),
+            "simple_query_failure_breakdown": simple_query_failure_breakdown,
+            "simple_query_failures_path": str(simple_query_failures_path),
             "no_select_star_rate": 1.0,
             "unsafe_sql_count": test_summary.get("unsafe_sql_count", 0),
             "unnecessary_join_rate": test_summary.get("unnecessary_join_rate"),
@@ -167,6 +177,8 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
         "top_sql_validation_errors",
         "unsafe_sql_examples_path",
         "sql_validation_failures_path",
+        "simple_query_failure_breakdown",
+        "simple_query_failures_path",
         "sql_repair_attempt_count",
         "sql_repair_success_count",
         "sql_repair_success_rate",
@@ -195,6 +207,60 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
     save_report_pair(args.output, report, "Generic Model Evaluation Report")
     _write_governance_reports(args.output.parent, report)
     return report
+
+
+def _simple_query_failures(
+    gold_rows: list[dict[str, Any]],
+    per_example: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build actionable diagnostics for behavior-derived simple-query failures."""
+    gold_by_id = {str(row.get("example_id")): row for row in gold_rows}
+    failures: list[dict[str, Any]] = []
+    for item in per_example:
+        if item.get("simple_query_pass") is not False:
+            continue
+        gold_row = gold_by_id.get(str(item.get("example_id"))) or {}
+        gold_ir = gold_row.get("query_ir") or {}
+        predicted_ir = item.get("predicted_query_ir") or {}
+        difference = diff_query_ir(predicted_ir, gold_ir)
+        reason = _simple_query_failure_reason(item, difference)
+        failures.append({
+            "example_id": item.get("example_id"),
+            "question": item.get("question") or gold_row.get("question"),
+            "gold_intent": gold_ir.get("intent"),
+            "predicted_intent": predicted_ir.get("intent"),
+            "gold_base_table": gold_ir.get("base_table"),
+            "predicted_base_table": predicted_ir.get("base_table"),
+            "gold_query_ir": gold_ir,
+            "predicted_query_ir": predicted_ir,
+            "predicted_sql": item.get("predicted_sql"),
+            "final_sql": item.get("final_sql_after_repair"),
+            "sql_validation_passed": bool(item.get("sql_validation_passed")),
+            "simple_query_pass": False,
+            "simple_query_failure_reason": reason,
+            "query_ir_diff": difference,
+        })
+    return failures
+
+
+def _simple_query_failure_reason(item: dict[str, Any], difference: dict[str, Any]) -> str:
+    if item.get("abstained"):
+        return "abstained"
+    if not item.get("sql_validation_passed"):
+        return "sql_validation_failed"
+    if difference.get("intent_match") is False:
+        return "intent_mismatch"
+    if difference.get("base_table_match") is False:
+        return "base_table_mismatch"
+    if item.get("unnecessary_join") or difference.get("join_match") is False:
+        return "unnecessary_join"
+    if difference.get("filter_column_match") is False:
+        return "filter_column_mismatch"
+    if difference.get("filter_value_match") is False:
+        return "filter_value_mismatch"
+    if difference.get("projection_match") is False:
+        return "projection_mismatch"
+    return "unknown"
 
 
 def _evaluation_rows(

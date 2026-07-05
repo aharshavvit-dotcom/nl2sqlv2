@@ -82,6 +82,24 @@ class TestOptimizedTrainingSmoke:
         assert cfg.optimizer["name"] == "adamw"
         assert cfg.training["gradient_clipping"] == 1.0
 
+    def test_loss_monitor_selects_lower_loss_despite_lower_slot_accuracy(self, tmp_path):
+        diag = TrainingDiagnostics(tmp_path)
+        diag.set_config({
+            "training": {"save_best_metric": "loss", "save_best_mode": "min"},
+            "optimizer": {"pointer_head_weight_decay": 0.001},
+            "model": {"pointer_dropout": 0.30},
+        })
+        diag.record_epoch(1, {"loss": 0.30}, {"loss": 0.50, "overall_slot_accuracy": 0.95})
+        diag.record_epoch(2, {"loss": 0.25}, {"loss": 0.40, "overall_slot_accuracy": 0.80})
+        result = diag.to_dict()
+
+        assert result["best_epoch"] == 2
+        assert result["best_val_loss"] == 0.40
+        assert result["checkpoint_monitor"] == "loss"
+        assert result["checkpoint_mode"] == "min"
+        assert result["pointer_head_weight_decay"] == 0.001
+        assert result["pointer_dropout"] == 0.30
+
     def test_ordered_dataset_curriculum_reports_not_phased(self):
         rows = [{"query_ir": {"intent": "show_records"}}]
         ordered, distribution = CurriculumBuilder().order_examples(rows, mode="ordered_dataset")

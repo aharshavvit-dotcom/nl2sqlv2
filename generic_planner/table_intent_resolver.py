@@ -22,7 +22,6 @@ ANALYTIC_BLOCKERS = (
     r"\bsales\b",
     r"\bgroup\b",
     r"\btrend\b",
-    r"\bby\s+\w+",
 )
 JOIN_LANGUAGE = (
     r"\bwith\s+\w+",
@@ -54,7 +53,11 @@ class TableIntentResolver:
         if not normalized:
             return GenericPlannerResult(False, reason="empty question")
 
-        if any(re.search(pattern, normalized) for pattern in ANALYTIC_BLOCKERS):
+        grouped_aggregation = bool(
+            re.search(r"\bby\b", normalized)
+            and re.search(r"\b(count|how many|number of|total|sum|average|avg|max|min)\b", normalized)
+        )
+        if grouped_aggregation or any(re.search(pattern, normalized) for pattern in ANALYTIC_BLOCKERS):
             return GenericPlannerResult(False, reason="analytical question requires model routing")
 
         table_result = self._single_table_match(question)
@@ -80,6 +83,7 @@ class TableIntentResolver:
                 filter_operator=filter_payload["operator"],
                 filter_value=filter_payload["value"],
                 question=question,
+                selected_columns=self._requested_projection_columns(question, table),
             )
             query_ir.metadata["generic_planner_debug"] = {
                 "matched_table": table_result,
@@ -142,6 +146,15 @@ class TableIntentResolver:
         matches = self.schema_profile.find_table_matches(question)
         strong = [match for match in matches if match["score"] >= 0.80]
         if not strong:
+            tables = self.schema_profile.get_tables()
+            if len(tables) == 1:
+                return {
+                    "ok": True,
+                    "table": tables[0],
+                    "score": 0.90,
+                    "matched_text": "only table in schema",
+                    "match_type": "single_table_schema",
+                }
             return {"ok": False, "reason": "no clear table match", "matches": matches[:3]}
         top = strong[0]
         if len(strong) > 1 and strong[1]["table"] != top["table"] and strong[1]["score"] >= top["score"] - 0.05:
@@ -193,6 +206,26 @@ class TableIntentResolver:
             r"\b(?P<column>created|updated|date|[A-Za-z_][\w-]*_date)\s+(?P<operator>after|before|on or after|on or before)\s+(?P<value>[A-Za-z0-9_.:-]+)$",
         ]
         payload: dict[str, Any] = {"is_filter": False}
+
+        # Adjective status form: "show active users" / "list completed jobs".
+        status_columns = [
+            column["name"] for column in self.schema_profile.get_columns(table)
+            if normalize_table_phrase(column["name"]) in {"status", "state", "active", "enabled"}
+        ]
+        table_phrases = sorted(self.schema_profile._table_variants.get(table, {table}), key=len, reverse=True)
+        for table_phrase in table_phrases:
+            phrase = normalize_table_phrase(table_phrase)
+            match = re.search(rf"\b(?:show|list|display|get)\s+(?P<value>[a-z][\w-]*)\s+{re.escape(phrase)}\b", normalized)
+            if match and status_columns and match.group("value") not in {"all", "the"}:
+                return {
+                    "is_filter": True,
+                    "ok": True,
+                    "column": status_columns[0],
+                    "operator": "equals",
+                    "value": self._clean_value(match.group("value")),
+                    "column_match": {"table": table, "column": status_columns[0], "score": 0.95, "match_type": "status_adjective"},
+                    "raw": match.group(0),
+                }
         for pattern in patterns:
             match = re.search(pattern, normalized)
             if not match:
@@ -224,6 +257,52 @@ class TableIntentResolver:
                 "raw": match.group(0),
             }
 
+        # Lookup forms such as "episode written by Mark Tinker" and
+        # "school whose season was in 2012".  These only activate when the
+        # schema supplies a strong matching column, keeping the direct path
+        # conservative on ambiguous schemas.
+        connector_patterns = [
+            r"\b(?P<column>written by|directed by|produced by|arranged by)\s+(?P<value>[^?.!]+)",
+            r"\b(?P<column>titled|named|called)\s+[\"']?(?P<value>[^\"'?.!]+)",
+        ]
+        for pattern in connector_patterns:
+            for match in re.finditer(pattern, normalized):
+                column_text = match.group("column").strip()
+                value = self._clean_value(match.group("value"))
+                column_match = self._match_filter_column(column_text, table)
+                if column_match and value and len(value.split()) <= 12:
+                    return {
+                        "is_filter": True,
+                        "ok": True,
+                        "column": column_match["column"],
+                        "operator": "equals",
+                        "value": value,
+                        "column_match": column_match,
+                        "raw": match.group(0),
+                    }
+
+        for column in self.schema_profile.get_columns(table):
+            for variant in sorted(column_name_variants(column["name"]), key=len, reverse=True):
+                phrase = normalize_table_phrase(variant)
+                if not phrase:
+                    continue
+                match = re.search(
+                    rf"\b{re.escape(phrase)}\b\s+(?:is|was|were|being|equals|=)\s+(?:in\s+)?(?P<value>[^?.!,]+)",
+                    normalized,
+                )
+                if match:
+                    value = self._clean_value(match.group("value"))
+                    if value and len(value.split()) <= 12:
+                        return {
+                            "is_filter": True,
+                            "ok": True,
+                            "column": column["name"],
+                            "operator": "equals",
+                            "value": value,
+                            "column_match": {"table": table, "column": column["name"], "score": 1.0, "match_type": "exact_column_phrase"},
+                            "raw": match.group(0),
+                        }
+
         # Short form: "users status active" or "status completed".
         if not self._is_show_question(normalized):
             for column in self.schema_profile.get_columns(table):
@@ -244,6 +323,21 @@ class TableIntentResolver:
                             "raw": match.group(0),
                         }
         return payload
+
+    def _requested_projection_columns(self, question: str, table: str) -> list[str] | None:
+        normalized = self._normalize_question(question)
+        patterns = [
+            r"^(?:what|which)\s+(?:is|was|are|were)?\s*(?:the\s+)?(?P<target>.+?)\s+(?:of|for|with|where|whose|when|that|who)\b",
+            r"^who\s+(?P<target>[a-z][\w\s/-]*?)\s+(?:the\s+)?(?:episode|track|player|team|record)\b",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, normalized)
+            if not match:
+                continue
+            matches = self.schema_profile.find_column_matches(match.group("target"), table=table)
+            if matches and float(matches[0].get("score", 0.0)) >= 0.80:
+                return [str(matches[0]["column"])]
+        return None
 
     def _match_filter_column(self, column_text: str, table: str) -> dict[str, Any] | None:
         matches = self.schema_profile.find_column_matches(column_text, table=table)
