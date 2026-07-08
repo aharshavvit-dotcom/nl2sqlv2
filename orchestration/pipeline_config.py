@@ -67,6 +67,7 @@ DEFAULT_STEPS = build_pipeline_steps({})
 @dataclass
 class PipelineConfig:
     pipeline_name: str
+    pipeline_run_id: str = ""
     seed: int = 42
     datasets: dict[str, Any] = field(default_factory=dict)
     training: dict[str, Any] = field(default_factory=dict)
@@ -83,8 +84,13 @@ class PipelineConfig:
         training = payload.get("training") or {}
         if integrated_config:
             training = {**training, "_integrated_config": integrated_config}
+        pipeline_run_id = str(
+            payload.get("pipeline_run_id")
+            or integrated_config.get("_pipeline_run_id", "")
+        )
         return cls(
             pipeline_name=payload.get("pipeline_name", Path(path).stem),
+            pipeline_run_id=pipeline_run_id,
             seed=int(payload.get("seed", 42)),
             datasets=payload.get("datasets") or {},
             training=training,
@@ -94,3 +100,4 @@ class PipelineConfig:
             skip_heavy_steps=bool(payload.get("skip_heavy_steps", False)),
             integrated_config=integrated_config,
         )
+

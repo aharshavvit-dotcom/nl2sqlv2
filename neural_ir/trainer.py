@@ -60,7 +60,14 @@ class OptionAIRTrainer:
     def __init__(self, model, config, diagnostics=None):
         self.model = model
         self.config = config
-        self.device = torch.device("cpu")
+        
+        # Support device auto-configuration
+        device_name = config.get("runtime", {}).get("device", "auto")
+        if device_name == "auto":
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = torch.device(device_name)
+            
         self.model.to(self.device)
         self.loss_fn = nn.CrossEntropyLoss(ignore_index=-1)
         self.optimizer = build_optimizer(self.model, {
@@ -80,6 +87,7 @@ class OptionAIRTrainer:
         best_loss = float("inf")
         best_metric_value: float | None = None
         best_state = None
+        best_epoch = 1
         patience = 0
         history = []
         epochs = int(self.config.get("epochs", 10))
@@ -88,8 +96,10 @@ class OptionAIRTrainer:
         save_best_metric = str(self.config.get("save_best_metric", "loss"))
         save_best_mode = str(self.config.get("save_best_mode", "min"))
         total_start_time = time.time()
+        early_stopping_epoch = None
         
         print(f"Starting Neural QueryIR Model training for {epochs} epochs...")
+        print(f"Device: {self.device}")
         print(f"Batch size: {batch_size}")
         print(f"Checkpoint monitor: {save_best_metric}")
         print(f"Checkpoint mode: {save_best_mode}")
@@ -130,6 +140,7 @@ class OptionAIRTrainer:
             if improved:
                 best_loss = val_loss
                 best_metric_value = monitored
+                best_epoch = epoch
                 best_state = {key: value.detach().cpu().clone() for key, value in self.model.state_dict().items()}
                 patience = 0
                 print(f"Checkpoint saved: {save_best_metric}={monitored:.4f}")
@@ -137,6 +148,7 @@ class OptionAIRTrainer:
                 patience += 1
                 print(f"No {save_best_metric} improvement. Patience: {patience}/{patience_limit}")
                 if patience >= patience_limit:
+                    early_stopping_epoch = epoch
                     print(f"Early stopping triggered at Epoch {epoch}.")
                     break
                     
@@ -151,7 +163,10 @@ class OptionAIRTrainer:
             "best_checkpoint_metric": save_best_metric,
             "checkpoint_mode": save_best_mode,
             "early_stopping_patience": patience_limit,
+            "epochs_requested": epochs,
             "epochs_ran": len(history),
+            "early_stopping_epoch": early_stopping_epoch,
+            "selected_checkpoint_epoch": best_epoch,
             "history": history,
         }
         (output_path / "training_metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
@@ -199,12 +214,31 @@ class OptionAIRTrainer:
 
     def _loss(self, outputs: dict[str, torch.Tensor], labels: dict[str, torch.Tensor], batch: dict[str, Any] | None = None) -> torch.Tensor:
         losses = []
+        loss_config = self.config.get("loss") or {}
+        head_weight_keys = {
+            "intent_logits": "intent",
+            "base_table_logits": "base_table",
+            "metric_column_logits": "metric_column",
+            "metric_aggregation_logits": "metric_aggregation",
+            "metric_expression_type_logits": "metric_expression_type",
+            "dimension_column_logits": "dimension_column",
+            "filter_column_logits": "filter_column",
+            "date_column_logits": "date_column",
+            "date_grain_logits": "date_grain",
+            "date_filter_type_logits": "date_filter_type",
+            "filter_operator_logits": "filter_operator",
+            "order_direction_logits": "order_direction",
+            "limit_bucket_logits": "limit_bucket",
+        }
         for head, label in HEAD_TO_LABEL.items():
             target = labels[label]
             if not target.ne(-1).any():
                 continue
             mask = (batch or {}).get(HEAD_TO_MASK.get(head, "")) if batch else None
-            losses.append(masked_cross_entropy(outputs[head], target, mask=mask, ignore_index=-1))
+            raw_loss = masked_cross_entropy(outputs[head], target, mask=mask, ignore_index=-1)
+            weight_key = head_weight_keys.get(head)
+            weight = float(loss_config.get(weight_key, 1.0)) if weight_key else 1.0
+            losses.append(raw_loss * weight)
         if not losses:
             base_loss = outputs["intent_logits"].sum() * 0.0
         else:

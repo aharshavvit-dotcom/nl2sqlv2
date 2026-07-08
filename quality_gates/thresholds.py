@@ -21,6 +21,12 @@ DEFAULT_THRESHOLDS = {
         "sql_structure_match_rate_min": 0.70,
         "execution_match_rate_min": 0.60,
         "model_promotion_min_improvement": 0.01,
+        "controlled_predicted_sql_execution_match_rate_min": 0.70,
+        "controlled_predicted_sql_result_value_match_rate_min": 0.70,
+        "controlled_predicted_sql_safe_but_wrong_sql_rate_max": 0.30,
+        "controlled_predicted_sql_safe_sql_rate_min": 1.0,
+        "post_abstention_unsafe_sql_count_max": 0,
+        "controlled_predicted_sql_required": False,
     }
 }
 

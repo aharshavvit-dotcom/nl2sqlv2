@@ -1,3 +1,6 @@
+# Smoke configuration — NOT eligible for production promotion.
+# Minimal run for CI/testing. Overrides canonical neural settings.
+# Bundle is built but never promotable.
 pipeline:
   name: smoke_integrated_training
   seed: 42
@@ -6,6 +9,7 @@ pipeline:
 
 profile: smoke
 allow_neural_config_override: true
+development_policy_override: true
 
 datasets:
   names:

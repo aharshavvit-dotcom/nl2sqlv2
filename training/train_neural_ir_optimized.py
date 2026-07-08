@@ -323,6 +323,15 @@ def run_optimized_training(
         epoch_start = time.time()
         print(f"\n--- Epoch {epoch:02d}/{epochs:02d} ---")
 
+        if curriculum_enabled:
+            from dataset_training.curriculum_builder import CurriculumBuilder
+            # Use deterministic epoch-based seed
+            epoch_seed = int(config.training.get("seed", 42)) + epoch
+            train_dataset.examples = CurriculumBuilder().shuffle_within_buckets(
+                train_dataset.examples,
+                seed=epoch_seed,
+            )
+
         # ── Train ────────────────────────────────────────────────
         model.train()
         total_loss = 0.0
@@ -515,7 +524,11 @@ def run_optimized_training(
     checkpoint_path = output_dir / "best_model.pt"
     if not checkpoint_path.exists():
         checkpoint_path = output_dir / "model.pt"
+    from datetime import datetime, timezone
+    pipeline_run_id = str(config.output.get("pipeline_run_id", ""))
     report = {
+        "pipeline_run_id": pipeline_run_id,
+        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "best_epoch": best_epoch.get("epoch"),
         "best_metric": best_epoch.get("validation_total_loss") if best_metric == "loss" else best_epoch.get(best_metric),
         "best_overall_slot_accuracy": best_epoch.get("overall_slot_accuracy"),
@@ -609,6 +622,8 @@ def _effective_config_hash(config: NeuralTrainingConfig) -> str:
 def _save_training_manifest(output_dir: Path, report: dict[str, Any], config: NeuralTrainingConfig) -> None:
     manifest = {
         "artifact_type": "neural_queryir_model",
+        "pipeline_run_id": report.get("pipeline_run_id", ""),
+        "generated_at": report.get("generated_at", ""),
         "source_train_file": report.get("train_path"),
         "source_validation_file": report.get("validation_path"),
         "train_examples_count": report.get("train_examples_count", 0),

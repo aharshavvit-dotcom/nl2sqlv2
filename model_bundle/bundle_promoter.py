@@ -120,34 +120,73 @@ class ModelBundlePromoter:
                 "quality_gate": gate or manifest.quality_gate,
             }
 
-        # 3. Backup old current bundle
-        if current.exists() and (current / "bundle_manifest.json").exists():
+        # 3. Windows-safe atomic promotion flow
+        import uuid
+        run_suffix = manifest.pipeline_run_id or uuid.uuid4().hex[:8]
+        current_tmp = current.parent / f"current.tmp.{run_suffix}"
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        backup_dir = history_base / f"current.backup.{timestamp}"
+
+        # Clean up any leftover temp dirs
+        if current_tmp.exists():
             try:
-                old_manifest = load_manifest(current / "bundle_manifest.json")
-                backup_name = old_manifest.bundle_id or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+                shutil.rmtree(current_tmp)
             except Exception:
-                backup_name = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            backup_dir = history_base / backup_name
-            backup_dir.parent.mkdir(parents=True, exist_ok=True)
-            if backup_dir.exists():
-                shutil.rmtree(backup_dir)
-            shutil.copytree(current, backup_dir)
+                pass
 
-        # 4. Promote candidate to current
-        if current.exists():
-            shutil.rmtree(current)
-        shutil.copytree(candidate, current)
+        try:
+            # Step A: Copy candidate to temp directory first
+            shutil.copytree(candidate, current_tmp)
+            
+            # Step B: Rename existing current directory to backup
+            renamed_backup = False
+            if current.exists():
+                backup_dir.parent.mkdir(parents=True, exist_ok=True)
+                if backup_dir.exists():
+                    shutil.rmtree(backup_dir)
+                shutil.move(str(current), str(backup_dir))
+                renamed_backup = True
 
-        # 5. Update manifest status to 'current'
-        manifest.status = "current"
-        manifest.bundle_status = "current"
-        manifest.model_artifact_source = "model_bundle_current"
-        save_manifest(manifest, current / "bundle_manifest.json")
+            # Step C: Rename temp directory to current
+            try:
+                shutil.move(str(current_tmp), str(current))
+            except Exception as exc:
+                # Rollback if Step C fails
+                if renamed_backup:
+                    shutil.move(str(backup_dir), str(current))
+                raise exc
+
+            # Step D: Update manifest status to 'current' and save
+            manifest.status = "current"
+            manifest.bundle_status = "current"
+            manifest.model_artifact_source = "model_bundle_current"
+            save_manifest(manifest, current / "bundle_manifest.json")
+
+            # Step E: Delete backup only after successful manifest save
+            if renamed_backup and backup_dir.exists():
+                try:
+                    shutil.rmtree(backup_dir)
+                except Exception:
+                    pass  # Advisory, don't fail promotion if backup cleanup fails
+
+        except Exception as exc:
+            # Final cleanup of temp directory if it still exists
+            if current_tmp.exists():
+                try:
+                    shutil.rmtree(current_tmp)
+                except Exception:
+                    pass
+            return {
+                "promoted": False,
+                "reason": f"Windows-safe promotion failed during folder swap: {exc}",
+                "blocking_issues": [str(exc)],
+            }
 
         # 6. Write promotion report
         promotion_report = {
             "promoted": True,
             "bundle_id": manifest.bundle_id,
+            "pipeline_run_id": manifest.pipeline_run_id,
             "promoted_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             "candidate_dir": str(candidate),
             "current_dir": str(current),

@@ -1,3 +1,6 @@
+# Debug configuration — NOT eligible for production promotion.
+# Overrides canonical neural settings (reduced epochs/batch_size) for rapid iteration.
+# All quality gates are advisory-only; bundle is never promotable.
 pipeline:
   name: debug_app_training
   seed: 42
@@ -6,6 +9,7 @@ pipeline:
 
 profile: debug
 allow_neural_config_override: true
+development_policy_override: true
 
 datasets:
   names: [wikisql]

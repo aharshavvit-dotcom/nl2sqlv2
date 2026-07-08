@@ -253,6 +253,7 @@ class StepRunner:
 
         integrated = config.training.get("_integrated_config") or {}
         dataset_cfg = integrated.get("datasets", {})
+        pipeline_run_id = config.pipeline_run_id or integrated.get("_pipeline_run_id", "")
         args = argparse.Namespace(
             datasets=",".join(config.datasets.get("names", [])),
             max_examples=config.datasets.get("max_examples"),
@@ -270,6 +271,7 @@ class StepRunner:
             unseen_db_test_ratio=float(dataset_cfg.get("unseen_db_test_ratio", 0.15)),
             include_unsupported=True,
             schema_renaming=(integrated.get("augmentation") or {}).get("schema_renaming") or {},
+            pipeline_run_id=pipeline_run_id,
         )
         report = build_generic_ir_corpus(args)
         _enforce_dataset_contribution(report, config)
@@ -317,6 +319,7 @@ class StepRunner:
         artifacts = _artifacts(config)
         neural_config = ROOT / str(config.training.get("neural_config") or "configs/neural_training_default.yaml")
         training_config = load_training_config(neural_config)
+        pipeline_run_id = config.pipeline_run_id or (config.training.get("_integrated_config") or {}).get("_pipeline_run_id", "")
         training_config = merge_cli_overrides(
             training_config,
             {
@@ -327,6 +330,7 @@ class StepRunner:
                 "batch_size": config.training.get("batch_size"),
                 "max_examples": config.datasets.get("max_examples"),
                 "hard_negatives": str(ROOT / "data/processed/generic_ir_hard_negatives.jsonl"),
+                "pipeline_run_id": pipeline_run_id,
             },
         )
         report = run_optimized_training(training_config, Path(artifacts["neural_model_dir"]))
@@ -655,10 +659,14 @@ class StepRunner:
         artifacts = _artifacts(config)
         integrated = config.training.get("_integrated_config") or {}
         calibration = integrated.get("calibration") or {}
+        pipeline_run_id = config.training.get("pipeline_run_id") or integrated.get("_pipeline_run_id", "")
+        # CRITICAL: evaluate_generic_models runs BEFORE build_model_bundle.
+        # It must load from work artifacts (retrieval_model_dir, neural_model_dir),
+        # NOT from the candidate bundle directory which may be stale or non-existent.
         args = argparse.Namespace(
             test=ROOT / "data/processed/generic_ir_test.jsonl",
             unseen_db_test=ROOT / "data/processed/generic_ir_unseen_db_test.jsonl",
-            model_bundle_dir=Path(artifacts["bundle_dir"]) if artifacts.get("bundle_dir") else None,
+            model_bundle_dir=None,  # Pre-bundle: always use work artifacts
             retrieval_model_dir=Path(artifacts["retrieval_model_dir"]),
             neural_model_dir=Path(artifacts["neural_model_dir"]),
             output=Path(artifacts["evaluation_dir"]) / "generic_model_evaluation_report.json",
@@ -668,6 +676,7 @@ class StepRunner:
             calibration_coverage_target=float(calibration.get("abstention_coverage_target", 0.95)),
             use_conformal_threshold=bool(calibration.get("use_conformal_threshold", True)),
             abstain_when_calibrated_confidence_below=calibration.get("abstain_when_calibrated_confidence_below"),
+            pipeline_run_id=pipeline_run_id,
         )
         report = evaluate_generic_models(args)
         return {"status": "completed", "summary": report.get("summary", {})}
@@ -1132,6 +1141,9 @@ def _canonical_step(step: str) -> str:
 
 def _candidate_bundle_dir(config: PipelineConfig) -> Path:
     integrated = config.training.get("_integrated_config") or {}
+    run_id = config.pipeline_run_id or integrated.get("_pipeline_run_id", "")
+    if run_id:
+        return ROOT / "artifacts" / "model_bundle" / "candidates" / run_id
     return ROOT / integrated.get("paths", {}).get("candidate_bundle_dir", "artifacts/model_bundle/candidate")
 
 
@@ -1201,7 +1213,9 @@ def _artifacts(config: PipelineConfig) -> dict[str, str]:
         "bundle_dir": "",
         "calibration_report_path": str(ROOT / "artifacts/work/evaluation/calibration_report.json"),
     }
-    return {**defaults, **{key: str(value) for key, value in config.artifacts.items()}}
+    res = {**defaults, **{key: str(value) for key, value in config.artifacts.items()}}
+    res["candidate_bundle_dir"] = str(_candidate_bundle_dir(config))
+    return res
 
 
 def _enforce_dataset_contribution(report: dict[str, Any], config: PipelineConfig) -> None:

@@ -62,6 +62,7 @@ class GenericIRCorpusBuilder:
         max_examples_per_dataset: dict[str, int] | None = None,
         min_converted_examples_required: dict[str, int] | None = None,
         schema_renaming: dict[str, Any] | None = None,
+        pipeline_run_id: str | None = None,
     ) -> dict[str, Any]:
         output = Path(output_dir)
         artifacts = Path(artifact_dir)
@@ -122,6 +123,7 @@ class GenericIRCorpusBuilder:
             splits["unsupported"],
         )
         split_report = {
+            "pipeline_run_id": pipeline_run_id or "",
             "datasets_requested": requested,
             "dataset_registry": registry_report,
             "split_counts": {name: len(rows) for name, rows in splits.items()},
@@ -140,6 +142,7 @@ class GenericIRCorpusBuilder:
             splits=splits,
             leakage_report=leakage_report,
             min_converted_examples_required=min_converted_examples_required,
+            pipeline_run_id=pipeline_run_id,
         )
         unsupported_report = self._unsupported_sql_report(unsupported_rows)
         save_report_pair(artifacts / "dataset_contribution_report.json", contribution_report, "Dataset Contribution Report")
@@ -292,7 +295,9 @@ class GenericIRCorpusBuilder:
         splits: dict[str, list[dict[str, Any]]],
         leakage_report: dict[str, Any],
         min_converted_examples_required: dict[str, int] | None = None,
+        pipeline_run_id: str | None = None,
     ) -> dict[str, Any]:
+        from datetime import datetime, timezone
         by_dataset: dict[str, dict[str, Any]] = {}
         all_names = list(dict.fromkeys([*requested, "wikisql", "spider", "bird-mini", "bird-full"]))
         raw_counts = Counter(example.dataset_name for example in examples)
@@ -363,6 +368,8 @@ class GenericIRCorpusBuilder:
                 ),
             }
         return {
+            "pipeline_run_id": pipeline_run_id or "",
+            "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             "datasets_requested": requested,
             "datasets_found": [name for name in requested if registry_report.get(name, {}).get("available")],
             "datasets_missing": [name for name in requested if not registry_report.get(name, {}).get("available")],

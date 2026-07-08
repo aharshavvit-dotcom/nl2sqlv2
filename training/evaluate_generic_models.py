@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -93,7 +94,10 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
     gold_replay_used = bool(test_eval.get("gold_replay_used", False)) or bool(unseen_eval.get("gold_replay_used", False))
     full_bundle_runtime_used = test_artifact_source == "model_bundle"
     calibration_loaded = full_bundle_runtime_used  # bundle path loads calibration via RetrievalNL2SQLModel.load
+    pipeline_run_id = getattr(args, "pipeline_run_id", "") or ""
     report = {
+        "pipeline_run_id": pipeline_run_id,
+        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "evaluation_mode": test_mode,
         "test_source": "real_model_predictions" if test_mode == "real_model_predictions" else "gold_replay_baseline",
         "gold_replay_used": gold_replay_used,

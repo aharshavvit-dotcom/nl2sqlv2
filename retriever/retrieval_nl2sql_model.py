@@ -192,7 +192,38 @@ class RetrievalNL2SQLModel:
             or os.getenv("ENABLE_DEV_FALLBACKS", "").strip().lower() in {"1", "true", "yes"}
         )
 
-    def predict(self, question: str, schema: SchemaGraph, use_neural_ir_fallback: bool | None = None, use_option_a_fallback: bool | None = None) -> PredictionResult:
+    def predict(
+        self,
+        question: str,
+        schema: SchemaGraph,
+        use_neural_ir_fallback: bool | None = None,
+        use_option_a_fallback: bool | None = None,
+        bypass_cache: bool = False,
+    ) -> PredictionResult:
+        # Check environment override
+        if os.getenv("NL2SQL_BYPASS_CACHE", "").strip().lower() in {"1", "true", "yes"}:
+            bypass_cache = True
+
+        bundle_meta = self.metadata.get("model_bundle") or {}
+        routing_policy = bundle_meta.get("routing_policy") or {}
+
+        # Lazy init prediction cache
+        if not hasattr(self, "_cache"):
+            from inference.prediction_cache import PredictionCache
+            self._cache = PredictionCache()
+
+        # Check prediction cache
+        schema_dict = schema.describe() if hasattr(schema, "describe") else {}
+        cached_data = self._cache.get(
+            question=question,
+            schema=schema_dict,
+            model_checkpoint_path=self.neural_ir_model_dir,
+            routing_policy=routing_policy,
+            bypass_cache=bypass_cache,
+        )
+        if cached_data is not None:
+            return PredictionResult(**cached_data)
+
         _fallback = use_neural_ir_fallback if use_neural_ir_fallback is not None else use_option_a_fallback
         result = self.orchestrator.predict(
             question=question,
@@ -206,7 +237,6 @@ class RetrievalNL2SQLModel:
         )
         result.debug["dev_fallback_used"] = self.artifact_dir is None
         # Precise runtime_source: distinguish validated bundles from raw artifact dirs
-        bundle_meta = self.metadata.get("model_bundle") or {}
         if self.artifact_dir is None:
             result.debug["runtime_source"] = "dev_fallback"
         elif bundle_meta:
@@ -221,6 +251,23 @@ class RetrievalNL2SQLModel:
         result.debug["bundle_dir"] = str(self.artifact_dir) if self.artifact_dir else ""
         result.debug["bundle_status"] = bundle_meta.get("status", "")
         result.debug["artifact_dir"] = str(self.artifact_dir) if self.artifact_dir else ""
+
+        # Cache prediction
+        self._cache.put(
+            question=question,
+            schema=schema_dict,
+            model_checkpoint_path=self.neural_ir_model_dir,
+            prediction=result.dict(),
+            routing_policy=routing_policy,
+        )
+
+        # Log telemetry
+        try:
+            from inference.telemetry_logger import TelemetryLogger
+            TelemetryLogger().log_prediction(question, result.dict())
+        except Exception:
+            pass
+
         return result
 
     @staticmethod

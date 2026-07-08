@@ -61,6 +61,9 @@ class PromotionPolicy:
                 blocking.append("bundle_id_missing")
             elif candidate_bundle_id != manifest_bundle_id:
                 blocking.append("bundle_id_mismatch")
+            pipeline_run_id = challenger_metadata.get("pipeline_run_id")
+            if not pipeline_run_id:
+                blocking.append("pipeline_run_id_missing")
             generated_at = challenger_metadata.get("generated_at")
             manifest_generated_at = challenger_metadata.get("candidate_bundle_generated_at")
             if not generated_at or (
@@ -68,9 +71,11 @@ class PromotionPolicy:
             ):
                 blocking.append("stale_report")
         if bool(minimums.get("controlled_predicted_sql_required", False)):
-            if int(challenger_metrics.get("controlled_predicted_sql_unsafe_sql_count", 0) or 0) > 0:
+            unsafe_cnt = safe_float(challenger_metrics.get("controlled_predicted_sql_unsafe_sql_count"), 0.0) or 0.0
+            if int(unsafe_cnt) > 0:
                 blocking.append("controlled_predicted_sql_unsafe_sql_count")
-            if float(challenger_metrics.get("controlled_predicted_sql_safe_sql_rate", 1.0) or 0.0) < 1.0:
+            safe_rate = safe_float(challenger_metrics.get("controlled_predicted_sql_safe_sql_rate"), 1.0)
+            if safe_rate is None or safe_rate < 1.0:
                 blocking.append("controlled_predicted_sql_safe_sql_rate")
         champion_metrics = champion_metrics or {}
         min_improvement = float(minimums.get("model_promotion_min_improvement", 0.0))

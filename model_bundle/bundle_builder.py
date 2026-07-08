@@ -404,12 +404,49 @@ class ModelBundleBuilder:
             qg_path.parent.mkdir(parents=True, exist_ok=True)
             qg_path.write_text(json.dumps(quality_gate_report, indent=2, ensure_ascii=False), encoding="utf-8")
 
+        # Compute precise dependency versions
+        import platform
+        import sklearn
+        import torch
+        import sqlglot
+        try:
+            import numpy
+            np_ver = numpy.__version__
+        except ImportError:
+            np_ver = "unknown"
+        try:
+            import joblib
+            jl_ver = joblib.__version__
+        except ImportError:
+            jl_ver = "unknown"
+        
+        lock_file_path = Path(ROOT) / "requirements.lock"
+        lock_sha = ""
+        if lock_file_path.exists():
+            try:
+                lock_sha = hashlib.sha256(lock_file_path.read_bytes()).hexdigest()
+            except Exception:
+                pass
+
+        dependency_versions = {
+            "python_version": platform.python_version(),
+            "scikit_learn_version": sklearn.__version__,
+            "numpy_version": np_ver,
+            "joblib_version": jl_ver,
+            "torch_version": torch.__version__,
+            "sqlglot_version": sqlglot.__version__,
+            "lock_file_sha256": lock_sha,
+        }
+
+        # Resolve correct pipeline run ID
+        pipeline_run_id = config.get("_pipeline_run_id") or config.get("pipeline_run_id") or config.get("pipeline_name", "")
+
         manifest = BundleManifest(
             bundle_id=bundle_id,
             status="candidate",
             created_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             git_commit=self._git_commit(),
-            pipeline_run_id=config.get("pipeline_name", ""),
+            pipeline_run_id=pipeline_run_id,
             training_config_path=str(config_path) if config_path else "",
             training_config_hash=config_hash,
             datasets=datasets,
@@ -449,6 +486,7 @@ class ModelBundleBuilder:
             neural_training_config=neural_training_config,
             dataset_contribution_status=dataset_contribution_status,
             sklearn_artifact_version=sklearn_artifact_version,
+            dependency_versions=dependency_versions,
         )
 
         manifest_path = out / "bundle_manifest.json"

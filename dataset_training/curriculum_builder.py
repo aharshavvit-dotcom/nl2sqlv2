@@ -65,3 +65,20 @@ class CurriculumBuilder:
         distribution["_phased_epochs"] = mode == "phased_epochs"  # type: ignore[assignment]
         distribution["_active"] = True  # type: ignore[assignment]
         return ordered, distribution
+
+    def shuffle_within_buckets(
+        self,
+        examples: list[dict[str, Any]],
+        seed: int,
+    ) -> list[dict[str, Any]]:
+        """Shuffle examples within their difficulty buckets, maintaining easy-to-hard phase order."""
+        import random
+        phases = self.build_phases(examples)
+        rng = random.Random(seed)
+        for name in list(phases.keys()):
+            rng.shuffle(phases[name])
+        ordered = []
+        for name in ["phase_1", "phase_2", "phase_3", "phase_4"]:
+            if name in phases:
+                ordered.extend(phases[name])
+        return ordered

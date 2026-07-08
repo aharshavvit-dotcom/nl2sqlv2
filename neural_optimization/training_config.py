@@ -112,6 +112,7 @@ _DEFAULT_OUTPUT = {
     "output_dir": "artifacts/neural_ir_model",
     "save_diagnostics": True,
     "save_effective_config": True,
+    "pipeline_run_id": "",
 }
 
 
@@ -172,6 +173,7 @@ def merge_cli_overrides(config: NeuralTrainingConfig, overrides: dict[str, Any])
         "train": ("data", "train_path"),
         "validation": ("data", "validation_path"),
         "hard_negatives": ("data", "hard_negatives_path"),
+        "pipeline_run_id": ("output", "pipeline_run_id"),
     }
     for key, value in overrides.items():
         if value is None:

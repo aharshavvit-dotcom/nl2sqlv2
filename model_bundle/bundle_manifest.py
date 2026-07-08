@@ -70,6 +70,17 @@ class BundleManifest:
     neural_training_config: dict[str, Any] = field(default_factory=dict)
     dataset_contribution_status: dict[str, Any] = field(default_factory=dict)
     sklearn_artifact_version: dict[str, Any] = field(default_factory=dict)
+    dependency_versions: dict[str, str] = field(default_factory=dict)
+    routing_policy: dict[str, Any] = field(default_factory=lambda: {
+        "direct_planner_enabled": True,
+        "retrieval_enabled": True,
+        "neural_fallback_enabled": True,
+        "direct_planner_confidence_threshold": 0.9,
+        "retrieval_acceptance_threshold": 0.7,
+        "neural_trigger_threshold": 0.65,
+        "clarification_threshold": 0.5,
+        "abstention_threshold": 0.35,
+    })
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -108,6 +119,8 @@ class BundleManifest:
             "neural_training_config": self.neural_training_config,
             "dataset_contribution_status": self.dataset_contribution_status,
             "sklearn_artifact_version": self.sklearn_artifact_version,
+            "dependency_versions": self.dependency_versions,
+            "routing_policy": self.routing_policy,
         }
 
     @classmethod
@@ -148,6 +161,8 @@ class BundleManifest:
             neural_training_config=data.get("neural_training_config", {}),
             dataset_contribution_status=data.get("dataset_contribution_status", {}),
             sklearn_artifact_version=data.get("sklearn_artifact_version", {}),
+            dependency_versions=data.get("dependency_versions", {}),
+            routing_policy=data.get("routing_policy", {}),
         )
 
 

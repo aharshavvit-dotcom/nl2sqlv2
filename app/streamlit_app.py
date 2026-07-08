@@ -747,6 +747,19 @@ if generate and question.strip():
             )
             feedback_id = FeedbackStore(FEEDBACK_PATH).append(feedback)
             st.success(f"Feedback saved: {feedback_id}")
+            
+            # Log telemetry feedback
+            try:
+                from inference.telemetry_logger import TelemetryLogger
+                is_correct = rating_label == "Correct"
+                TelemetryLogger().log_feedback(
+                    question=question,
+                    sql=result.sql or "",
+                    is_correct=is_correct,
+                    comments=f"rating={rating_label} tags={selected_tag_labels} comment={comment}",
+                )
+            except Exception:
+                pass
 
     if st.checkbox("Show QueryIR debug"):
         st.subheader("QueryIR JSON")

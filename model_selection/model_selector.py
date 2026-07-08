@@ -232,24 +232,36 @@ def _selection_score(metrics: dict[str, Any]) -> float:
     return score
 
 
+def _minimum_float(minimums: dict[str, Any], key: str, default: float) -> float:
+    val = _minimum(minimums, key, default)
+    res = safe_float(val, default)
+    return default if res is None else res
+
+
 def _hard_blockers(metrics: dict[str, Any], minimums: dict[str, Any]) -> list[str]:
     issues = []
-    if (safe_float(metrics.get("unsafe_sql_count", metrics.get("unsafe_sql_count_max")), 0.0) or 0.0) > float(_minimum(minimums, "unsafe_sql_count_max", 0)):
+    unsafe_max = _minimum_float(minimums, "unsafe_sql_count_max", 0.0)
+    if (safe_float(metrics.get("unsafe_sql_count", metrics.get("unsafe_sql_count_max")), 0.0) or 0.0) > unsafe_max:
         issues.append("unsafe_sql_count")
-    if (safe_float(metrics.get("no_select_star_rate"), 1.0) or 0.0) < float(_minimum(minimums, "no_select_star_rate", 1.0)):
+    no_select_star_min = _minimum_float(minimums, "no_select_star_rate", 1.0)
+    if (safe_float(metrics.get("no_select_star_rate"), 1.0) or 0.0) < no_select_star_min:
         issues.append("select_star")
-    if (safe_float(metrics.get("unnecessary_join_rate", metrics.get("unnecessary_join_rate_max")), 0.0) or 0.0) > float(_minimum(minimums, "unnecessary_join_rate_max", 0.05)):
+    unnecessary_join_max = _minimum_float(minimums, "unnecessary_join_rate_max", 0.05)
+    if (safe_float(metrics.get("unnecessary_join_rate", metrics.get("unnecessary_join_rate_max")), 0.0) or 0.0) > unnecessary_join_max:
         issues.append("unnecessary_join_rate")
-    if (safe_float(metrics.get("wrong_table_rate", metrics.get("wrong_table_rate_max")), 0.0) or 0.0) > float(_minimum(minimums, "wrong_table_rate_max", 0.15)):
+    wrong_table_max = _minimum_float(minimums, "wrong_table_rate_max", 0.15)
+    if (safe_float(metrics.get("wrong_table_rate", metrics.get("wrong_table_rate_max")), 0.0) or 0.0) > wrong_table_max:
         issues.append("wrong_table_rate")
-    if (safe_float(metrics.get("sql_validation_rate"), 0.0) or 0.0) < float(_minimum(minimums, "sql_validation_rate", 0.90)):
+    sql_validation_min = _minimum_float(minimums, "sql_validation_rate", 0.90)
+    if (safe_float(metrics.get("sql_validation_rate"), 0.0) or 0.0) < sql_validation_min:
         issues.append("sql_validation_rate")
-    if (safe_float(metrics.get("simple_query_pass_rate"), 1.0) or 0.0) < float(_minimum(minimums, "simple_query_pass_rate", 0.0)):
+    simple_query_pass_min = _minimum_float(minimums, "simple_query_pass_rate", 0.0)
+    if (safe_float(metrics.get("simple_query_pass_rate"), 1.0) or 0.0) < simple_query_pass_min:
         issues.append("simple_query_pass_rate_regressed")
     if bool(minimums.get("controlled_predicted_sql_required", False)):
         if (safe_float(metrics.get("controlled_predicted_sql_safe_sql_rate"), 0.0) or 0.0) < 1.0:
             issues.append("controlled_predicted_sql_safe_sql_rate")
-        if int(metrics.get("controlled_predicted_sql_unsafe_sql_count", 0) or 0) > 0:
+        if int(safe_float(metrics.get("controlled_predicted_sql_unsafe_sql_count"), 0.0) or 0.0) > 0:
             issues.append("controlled_predicted_sql_unsafe_sql_count")
     return issues
 

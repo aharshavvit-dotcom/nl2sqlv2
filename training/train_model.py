@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -127,8 +128,10 @@ def config_to_pipeline_config(config: dict[str, Any], steps: list[str]) -> dict[
     current_bundle_dir = ROOT / paths.get("current_bundle_dir", "artifacts/model_bundle/current")
 
     # Map to the existing PipelineConfig format
+    pipeline_run_id = config.get("_pipeline_run_id", "")
     return {
         "pipeline_name": pipeline.get("name", "integrated_training"),
+        "pipeline_run_id": pipeline_run_id,
         "seed": pipeline.get("seed", 42),
         "smoke": datasets.get("max_examples", 5000) <= 200,
         "skip_heavy_steps": False,
@@ -199,6 +202,7 @@ def write_training_report(report: dict[str, Any], config: dict[str, Any]) -> Non
     # JSON report
     enriched = {
         **report,
+        "pipeline_run_id": config.get("_pipeline_run_id", ""),
         "completed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "config_path": config.get("_config_path", ""),
         "effective_neural_config": config.get("_effective_neural_config", {}),
@@ -243,7 +247,12 @@ def main() -> int:
     # 1. Load config
     config = load_training_config(args.config)
     pipeline_name = config.get("pipeline", {}).get("name", "integrated_training")
+
+    # Generate immutable pipeline run ID for this execution
+    pipeline_run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8]
+    config["_pipeline_run_id"] = pipeline_run_id
     print(f"Pipeline: {pipeline_name}")
+    print(f"Run ID:   {pipeline_run_id}")
 
     # 2. Validate environment
     env_issues = validate_environment(config)

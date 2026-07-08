@@ -63,6 +63,24 @@ class ModelBundleValidator:
             issues.append(f"Failed to parse bundle_manifest.json: {exc}")
             return _result(issues, warnings, checked)
 
+        # Validate report identity consistency (P0 requirement)
+        try:
+            from orchestration.report_identity import validate_bundle_report_identities
+            run_id_val = config.get("_pipeline_run_id") if config else None
+            identity_report = validate_bundle_report_identities(path, expected_pipeline_run_id=run_id_val)
+            if not identity_report["valid"]:
+                if manifest.quality_gate_mode in {"production", "release"}:
+                    issues.extend(identity_report["issues"])
+                else:
+                    warnings.extend(identity_report["issues"])
+            for rep_res in identity_report.get("reports") or []:
+                rep_name = rep_res["report_name"]
+                lifecycle_proof[f"{rep_name}_identity_verified"] = rep_res["valid"]
+                lifecycle_proof[f"{rep_name}_pipeline_run_id"] = rep_res["pipeline_run_id"]
+                lifecycle_proof[f"{rep_name}_bundle_id"] = rep_res["bundle_id"]
+        except Exception as exc:
+            warnings.append(f"Failed to run report identity validation: {exc}")
+
         policy = _controlled_predicted_sql_policy(path, config)
         if allow_failed_quality_gate_debug:
             policy = {
