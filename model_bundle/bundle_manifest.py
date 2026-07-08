@@ -67,6 +67,9 @@ class BundleManifest:
     model_artifact_source: str = "model_bundle_candidate"
     evaluation_mode: str = "real_model_predictions"
     gold_replay_used: bool = False
+    neural_training_config: dict[str, Any] = field(default_factory=dict)
+    dataset_contribution_status: dict[str, Any] = field(default_factory=dict)
+    sklearn_artifact_version: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -102,6 +105,9 @@ class BundleManifest:
             "model_artifact_source": self.model_artifact_source,
             "evaluation_mode": self.evaluation_mode,
             "gold_replay_used": self.gold_replay_used,
+            "neural_training_config": self.neural_training_config,
+            "dataset_contribution_status": self.dataset_contribution_status,
+            "sklearn_artifact_version": self.sklearn_artifact_version,
         }
 
     @classmethod
@@ -139,6 +145,9 @@ class BundleManifest:
             model_artifact_source=data.get("model_artifact_source", "model_bundle_candidate"),
             evaluation_mode=data.get("evaluation_mode", "real_model_predictions"),
             gold_replay_used=bool(data.get("gold_replay_used", False)),
+            neural_training_config=data.get("neural_training_config", {}),
+            dataset_contribution_status=data.get("dataset_contribution_status", {}),
+            sklearn_artifact_version=data.get("sklearn_artifact_version", {}),
         )
 
 

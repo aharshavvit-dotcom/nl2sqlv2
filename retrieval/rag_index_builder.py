@@ -12,6 +12,7 @@ from dataset_training.utils import read_jsonl
 from .example_index import ExampleIndex
 from .pattern_index import PatternIndex
 from .schema_index import SchemaIndex
+from .artifact_compatibility import build_sklearn_metadata, write_sklearn_metadata
 
 
 class RAGIndexBuilder:
@@ -45,6 +46,13 @@ class RAGIndexBuilder:
             "intent_distribution": dict(intent_distribution),
             "sql_complexity_distribution": dict(sql_complexity_distribution),
         }
+        sklearn_metadata = build_sklearn_metadata(
+            artifact_types=["tfidf_vectorizer", "tfidf_matrix", "schema_index", "pattern_index"],
+            source_path=source_train_file,
+            config={"index_version": metadata["index_version"]},
+        )
+        write_sklearn_metadata(output, sklearn_metadata)
+        metadata["sklearn_artifact_metadata"] = sklearn_metadata
         (output / "rag_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         manifest = {
             "source_train_file": str(source_train_file or ""),
@@ -56,6 +64,8 @@ class RAGIndexBuilder:
             "schema_index_built": (output / "schema_index.pkl").exists(),
             "example_index_built": (output / "example_index.pkl").exists(),
             "pattern_index_built": (output / "pattern_index.pkl").exists(),
+            "sklearn_version": sklearn_metadata["sklearn_version"],
+            "sklearn_artifact_metadata": sklearn_metadata,
         }
         (output / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         return {
@@ -68,6 +78,7 @@ class RAGIndexBuilder:
                 "pattern_index": str(output / "pattern_index.pkl"),
                 "metadata": str(output / "rag_metadata.json"),
                 "manifest": str(output / "manifest.json"),
+                "sklearn_artifact_metadata": str(output / "sklearn_artifact_metadata.json"),
             },
         }
 

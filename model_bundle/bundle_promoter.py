@@ -72,6 +72,22 @@ class ModelBundlePromoter:
             blockers.append("candidate_not_eligible_for_promotion")
         if manifest.production_ready_full is not True:
             blockers.append("production_ready_full_false")
+        required_neural = {
+            "epochs": 10,
+            "batch_size": 8,
+            "save_best_metric": "loss",
+            "save_best_mode": "min",
+            "early_stopping_patience": 2,
+            "weight_decay": 0.0001,
+            "pointer_head_weight_decay": 0.001,
+            "pointer_dropout": 0.30,
+        }
+        if any(manifest.neural_training_config.get(key) != value for key, value in required_neural.items()):
+            blockers.append("effective_neural_config_invalid")
+        if manifest.dataset_contribution_status.get("passed") is not True:
+            blockers.append("dataset_contribution_invalid")
+        if not manifest.sklearn_artifact_version.get("sklearn_version"):
+            blockers.append("sklearn_artifact_version_missing")
         if not controlled_path.exists() or not lifecycle.get("controlled_predicted_sql_report_attached_to_bundle", False):
             blockers.append("controlled_predicted_sql_report_missing")
         if not lifecycle.get("controlled_predicted_sql_report_identity_verified", False):
@@ -85,10 +101,16 @@ class ModelBundlePromoter:
                 blockers.append("model_selection_blocked")
             if selection.get("model_selection_stale") is True:
                 blockers.append("model_selection_report_stale")
+            if selection.get("selection_mode") != "production":
+                blockers.append("model_selection_mode_not_production")
+            if selection.get("required_metric_failures"):
+                blockers.append("model_selection_required_metrics_missing")
             if selection.get("candidate_bundle_id") != manifest.bundle_id:
                 blockers.append("model_selection_bundle_id_mismatch")
             if selection.get("manifest_bundle_id") != manifest.bundle_id:
                 blockers.append("model_selection_manifest_id_mismatch")
+        if lifecycle.get("controlled_predicted_sql_passed") is not True:
+            blockers.append("controlled_predicted_sql_not_passed")
         if blockers:
             return {
                 "promoted": False,

@@ -78,13 +78,22 @@ class OptionAIRTrainer:
         output_path = Path(output_dir or "artifacts/work/neural_ir")
         output_path.mkdir(parents=True, exist_ok=True)
         best_loss = float("inf")
+        best_metric_value: float | None = None
         best_state = None
         patience = 0
         history = []
-        epochs = int(self.config.get("epochs", 5))
+        epochs = int(self.config.get("epochs", 10))
+        batch_size = int(self.config.get("batch_size", 8))
+        patience_limit = int(self.config.get("early_stopping_patience", 2))
+        save_best_metric = str(self.config.get("save_best_metric", "loss"))
+        save_best_mode = str(self.config.get("save_best_mode", "min"))
         total_start_time = time.time()
         
         print(f"Starting Neural QueryIR Model training for {epochs} epochs...")
+        print(f"Batch size: {batch_size}")
+        print(f"Checkpoint monitor: {save_best_metric}")
+        print(f"Checkpoint mode: {save_best_mode}")
+        print(f"Early stopping patience: {patience_limit}")
         print(f"Training set: {len(train_loader)} batches | Validation set: {len(val_loader) if val_loader else 0} batches")
         
         for epoch in range(1, epochs + 1):
@@ -112,15 +121,22 @@ class OptionAIRTrainer:
             print(f"Finished Epoch {epoch:02d}/{epochs:02d} in {epoch_duration:.2f} seconds.")
             print(f"Summary -> Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Train Acc: {train_acc:.2%} | Val Acc: {val_acc:.2%}")
             
-            if val_loss < best_loss:
+            monitored = float((val_metrics or train_metrics).get(save_best_metric, val_loss))
+            improved = (
+                best_metric_value is None
+                or (save_best_mode == "min" and monitored < best_metric_value)
+                or (save_best_mode == "max" and monitored > best_metric_value)
+            )
+            if improved:
                 best_loss = val_loss
+                best_metric_value = monitored
                 best_state = {key: value.detach().cpu().clone() for key, value in self.model.state_dict().items()}
                 patience = 0
-                print(f"Checkpoint saved: New best validation loss is {best_loss:.4f}")
+                print(f"Checkpoint saved: {save_best_metric}={monitored:.4f}")
             else:
                 patience += 1
-                print(f"No validation loss improvement. Patience: {patience}/3")
-                if patience >= 3:
+                print(f"No {save_best_metric} improvement. Patience: {patience}/{patience_limit}")
+                if patience >= patience_limit:
                     print(f"Early stopping triggered at Epoch {epoch}.")
                     break
                     
@@ -130,7 +146,14 @@ class OptionAIRTrainer:
         if best_state is not None:
             self.model.load_state_dict(best_state)
         torch.save(self.model.state_dict(), output_path / "model.pt")
-        metrics = {"best_validation_loss": best_loss, "epochs_ran": len(history), "history": history}
+        metrics = {
+            "best_validation_loss": best_loss,
+            "best_checkpoint_metric": save_best_metric,
+            "checkpoint_mode": save_best_mode,
+            "early_stopping_patience": patience_limit,
+            "epochs_ran": len(history),
+            "history": history,
+        }
         (output_path / "training_metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
         return metrics
 

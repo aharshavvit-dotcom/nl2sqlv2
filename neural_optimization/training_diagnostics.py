@@ -6,6 +6,7 @@ Records per-epoch metrics and produces JSON plus Markdown reports.
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import time
 from pathlib import Path
@@ -78,7 +79,9 @@ class TrainingDiagnostics:
             "checkpoint_monitor": config.get("training", {}).get("save_best_metric"),
             "checkpoint_mode": config.get("training", {}).get("save_best_mode"),
             "pointer_head_weight_decay": config.get("optimizer", {}).get("pointer_head_weight_decay"),
+            "weight_decay": config.get("optimizer", {}).get("weight_decay"),
             "pointer_dropout": config.get("model", {}).get("pointer_dropout"),
+            "early_stopping_patience": config.get("training", {}).get("early_stopping_patience"),
             "gradient_clipping_value": config.get("training", {}).get("gradient_clipping"),
             "train_path": config.get("data", {}).get("train_path"),
             "validation_path": config.get("data", {}).get("validation_path"),
@@ -273,6 +276,19 @@ class TrainingDiagnostics:
             else None
         )
         return {
+            "effective_epochs": self.config_summary.get("epochs"),
+            "effective_batch_size": self.config_summary.get("batch_size"),
+            "save_best_metric": self.config_summary.get("save_best_metric"),
+            "save_best_mode": self.config_summary.get("checkpoint_mode"),
+            "early_stopping_patience": self.config_summary.get("early_stopping_patience"),
+            "checkpoint_selected_epoch": best.get("epoch"),
+            "checkpoint_selected_metric": self.config_summary.get("checkpoint_monitor"),
+            "best_validation_loss": best_val_loss,
+            "best_validation_slot_accuracy": best.get("overall_slot_accuracy"),
+            "final_train_loss": current_train_loss,
+            "final_validation_loss": current_val_loss,
+            "weight_decay": self.config_summary.get("weight_decay"),
+            "effective_config_hash": _effective_config_hash(self.config_summary),
             "config": self.config_summary,
             "total_training_time_seconds": total_time,
             "total_epochs": len(self.epochs),
@@ -355,3 +371,18 @@ def _percentile(values: list[float], percentile: int) -> float:
     if lower == upper:
         return ordered[lower]
     return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
+
+
+def _effective_config_hash(summary: dict[str, Any]) -> str:
+    payload = {
+        "epochs": summary.get("epochs"),
+        "batch_size": summary.get("batch_size"),
+        "save_best_metric": summary.get("save_best_metric"),
+        "save_best_mode": summary.get("checkpoint_mode"),
+        "early_stopping_patience": summary.get("early_stopping_patience"),
+        "weight_decay": summary.get("weight_decay"),
+        "pointer_head_weight_decay": summary.get("pointer_head_weight_decay"),
+        "pointer_dropout": summary.get("pointer_dropout"),
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()

@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 from typing import Any
 
-from .model_selector import _hard_blockers, _timestamp
+from .model_selector import _hard_blockers, _timestamp, safe_float
 
 
 PROMOTION_CRITICAL_METRICS = {
@@ -135,8 +135,10 @@ class PromotionPolicy:
     ) -> dict[str, Any] | None:
         if metric_name not in challenger_metrics or metric_name not in champion_metrics:
             return None
-        challenger = float(challenger_metrics.get(metric_name) or 0.0)
-        champion = float(champion_metrics.get(metric_name) or 0.0)
+        challenger = safe_float(challenger_metrics.get(metric_name))
+        champion = safe_float(champion_metrics.get(metric_name))
+        if challenger is None or champion is None:
+            return None
         point_delta = challenger - champion if higher_is_better else champion - challenger
         if higher_is_better:
             regression = challenger + min_improvement < champion

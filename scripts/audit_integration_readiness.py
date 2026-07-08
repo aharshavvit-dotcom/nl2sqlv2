@@ -253,6 +253,60 @@ def run_audit() -> dict[str, Any]:
         "Strict artifact and dataset checks found" if bundle_strict else "Bundle validator still appears advisory",
     ))
 
+    # Canonical neural configuration and production lifecycle checks.
+    try:
+        import yaml
+        from training.config_loader import resolve_effective_neural_config
+
+        resolved = {}
+        for config_name in ["training.yaml", "baseline_training.yaml"]:
+            payload = yaml.safe_load((ROOT / "configs" / config_name).read_text(encoding="utf-8")) or {}
+            resolved[config_name] = resolve_effective_neural_config(payload, root=ROOT)
+        canonical_ok = all(
+            item.get("config_path") == "configs/neural_training_default.yaml"
+            and item.get("epochs") == 10
+            and item.get("batch_size") == 8
+            and item.get("save_best_metric") == "loss"
+            and item.get("save_best_mode") == "min"
+            and item.get("early_stopping_patience") == 2
+            for item in resolved.values()
+        )
+        detail = json.dumps(resolved, sort_keys=True)
+    except Exception as exc:
+        canonical_ok = False
+        detail = str(exc)
+    checks.append(_check(
+        "canonical_neural_config_uniform",
+        "Production and baseline resolve the canonical neural configuration",
+        canonical_ok,
+        detail,
+    ))
+
+    step_source = step_runner.read_text(encoding="utf-8") if step_runner.exists() else ""
+    checks.append(_check(
+        "dataset_conversion_reports_contracted",
+        "Dataset contribution and unsupported SQL reports are required pipeline outputs",
+        "dataset_contribution_report.json" in step_source and "unsupported_sql_report.json" in step_source,
+    ))
+    selector_source = (ROOT / "model_selection" / "model_selector.py").read_text(encoding="utf-8")
+    checks.append(_check(
+        "model_selection_none_safe",
+        "Model selection handles missing metrics without a Python exception",
+        "def safe_float" in selector_source and "required_metric_failures" in selector_source,
+    ))
+    loader_source = (ROOT / "model_bundle" / "bundle_loader.py").read_text(encoding="utf-8")
+    checks.append(_check(
+        "production_current_only",
+        "Production runtime requires current and forbids candidate bundles",
+        'environment == "production" and manifest.status != "current"' in loader_source,
+    ))
+    compatibility_source = (ROOT / "retrieval" / "artifact_compatibility.py").read_text(encoding="utf-8")
+    checks.append(_check(
+        "sklearn_artifact_compatibility",
+        "Serialized sklearn artifacts carry version metadata and fail closed",
+        "sklearn_version" in compatibility_source and "rebuild_required" in compatibility_source,
+    ))
+
     # Compute summary
     passed = sum(1 for c in checks if c["passed"])
     failed = sum(1 for c in checks if not c["passed"])

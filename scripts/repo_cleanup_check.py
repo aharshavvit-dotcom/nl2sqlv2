@@ -14,6 +14,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 CHECKS_PASSED = 0
 CHECKS_FAILED = 0
@@ -244,6 +246,41 @@ def check_smoke_training_config() -> None:
           (ROOT / "configs" / "smoke_training.yaml").exists())
 
 
+def check_neural_config_uniformity() -> None:
+    import yaml
+    from training.config_loader import resolve_effective_neural_config
+
+    errors = []
+    for name in ["training.yaml", "baseline_training.yaml"]:
+        try:
+            payload = yaml.safe_load((ROOT / "configs" / name).read_text(encoding="utf-8")) or {}
+            effective = resolve_effective_neural_config(payload, root=ROOT)
+            if (effective["epochs"], effective["batch_size"]) != (10, 8):
+                errors.append(f"{name}: {effective['epochs']}/{effective['batch_size']}")
+            if (effective["save_best_metric"], effective["save_best_mode"]) != ("loss", "min"):
+                errors.append(f"{name}: invalid checkpoint policy")
+        except Exception as exc:
+            errors.append(f"{name}: {exc}")
+    trainer_sources = "\n".join(
+        (ROOT / path).read_text(encoding="utf-8")
+        for path in ["neural_ir/trainer.py", "training/train_neural_ir_optimized.py"]
+    )
+    if re.search(r"patience(?:_limit)?\s*=\s*3|early_stopping_patience[^\n]*,\s*3", trainer_sources):
+        errors.append("hardcoded patience=3 in trainer code")
+    check("Training: canonical neural config is uniform", not errors, "; ".join(errors))
+
+
+def check_sklearn_metadata_policy() -> None:
+    compatibility = ROOT / "retrieval" / "artifact_compatibility.py"
+    builder = ROOT / "retrieval" / "rag_index_builder.py"
+    passed = (
+        compatibility.exists()
+        and "sklearn_version" in compatibility.read_text(encoding="utf-8")
+        and "write_sklearn_metadata" in builder.read_text(encoding="utf-8")
+    )
+    check("Artifacts: sklearn metadata policy is enforced", passed)
+
+
 def check_integration_test() -> None:
     """Integration test exists."""
     check("Integration: test_99_train_model_integration.py exists",
@@ -293,6 +330,8 @@ def main() -> None:
     check_train_model_exists()
     check_bundle_manifest_module()
     check_smoke_training_config()
+    check_neural_config_uniformity()
+    check_sklearn_metadata_policy()
     check_integration_test()
 
     print("\n" + "=" * 60)

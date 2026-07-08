@@ -4,6 +4,9 @@ pipeline:
   fail_fast: true
   promote_if_passed: false
 
+profile: debug
+allow_neural_config_override: true
+
 datasets:
   names: [wikisql]
   max_examples: 100

@@ -16,6 +16,15 @@ from .bundle_manifest import BundleManifest, save_manifest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _read_json(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 class ModelBundleBuilder:
     """Assembles a candidate model bundle from training artifacts."""
 
@@ -104,6 +113,28 @@ class ModelBundleBuilder:
         unseen_performance = (evaluation_report or {}).get("unseen_db_performance") or {}
         classification_metrics = test_performance.get("classification_metrics") or {}
         percentiles = test_performance.get("percentiles") or {}
+        effective_neural = dict(config.get("_effective_neural_config") or {})
+        neural_training_config = {
+            key: effective_neural.get(key)
+            for key in (
+                "epochs", "batch_size", "save_best_metric", "save_best_mode",
+                "early_stopping_patience", "weight_decay",
+                "pointer_head_weight_decay", "pointer_dropout", "effective_config_hash",
+            )
+        } if effective_neural else {}
+        contribution_report = _read_json(
+            generic_training_src / "dataset_contribution_report.json"
+            if generic_training_src else None
+        )
+        dataset_contribution_status = {
+            "passed": bool(contribution_report.get("full_training_dataset_minimums_passed", False)),
+            "minimum_failures": contribution_report.get("minimum_failures") or [],
+            "datasets_requested": contribution_report.get("datasets_requested") or [],
+        }
+        retrieval_manifest = _read_json(
+            retrieval_src / "manifest.json" if retrieval_src else None
+        )
+        sklearn_artifact_version = dict(retrieval_manifest.get("sklearn_artifact_metadata") or {})
         # Extract controlled fixture results from pipeline_report if available
         _steps = [s for s in (pipeline_report or {}).get("steps", []) if isinstance(s, dict)]
         _fixture_step = next(
@@ -415,6 +446,9 @@ class ModelBundleBuilder:
             model_artifact_source="model_bundle_candidate",
             evaluation_mode=str((evaluation_report or {}).get("evaluation_mode") or "legacy_cache"),
             gold_replay_used=bool((evaluation_report or {}).get("gold_replay_used", False)),
+            neural_training_config=neural_training_config,
+            dataset_contribution_status=dataset_contribution_status,
+            sklearn_artifact_version=sklearn_artifact_version,
         )
 
         manifest_path = out / "bundle_manifest.json"

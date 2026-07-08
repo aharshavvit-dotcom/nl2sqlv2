@@ -12,8 +12,8 @@ DEFAULT_CONFIG = {
     "max_schema_len": 256,
     "max_tables": 64,
     "max_columns": 256,
-    "batch_size": 16,
-    "epochs": 5,
+    "batch_size": 8,
+    "epochs": 10,
     "learning_rate": 0.001,
 }
 

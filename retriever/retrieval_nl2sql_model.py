@@ -98,6 +98,9 @@ class RetrievalNL2SQLModel:
                 use_neural_ir_fallback=_fallback,
             )
         if cls.artifact_ready(artifact_path):
+            from retrieval.artifact_compatibility import validate_sklearn_metadata
+
+            validate_sklearn_metadata(artifact_path, mode="runtime")
             metadata = cls._load_metadata(artifact_path)
             if bundle_context:
                 metadata["model_bundle"] = bundle_manifest

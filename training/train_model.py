@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from training.config_loader import resolve_effective_neural_config
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -53,6 +55,7 @@ def load_training_config(config_path: Path) -> dict[str, Any]:
         sys.exit(1)
     config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     config["_config_path"] = str(config_path)
+    config["_effective_neural_config"] = resolve_effective_neural_config(config)
     return config
 
 
@@ -118,6 +121,7 @@ def config_to_pipeline_config(config: dict[str, Any], steps: list[str]) -> dict[
     self_training = config.get("self_training", {})
     evaluation = config.get("evaluation", {})
     quality_gate = config.get("quality_gate", {})
+    effective_neural = config.get("_effective_neural_config") or resolve_effective_neural_config(config)
     evaluation_dir = ROOT / evaluation.get("output_dir", "artifacts/evaluation")
     candidate_bundle_dir = ROOT / paths.get("candidate_bundle_dir", "artifacts/model_bundle/candidate")
     current_bundle_dir = ROOT / paths.get("current_bundle_dir", "artifacts/model_bundle/current")
@@ -135,9 +139,10 @@ def config_to_pipeline_config(config: dict[str, Any], steps: list[str]) -> dict[
             "min_converted_examples_required": datasets.get("min_converted_examples_required", {}),
         },
         "training": {
-            "neural_epochs": neural.get("epochs", 5),
-            "batch_size": neural.get("batch_size", 8),
-            "neural_config": neural.get("config", "configs/neural_training_default.yaml"),
+            "neural_epochs": effective_neural["epochs"],
+            "batch_size": effective_neural["batch_size"],
+            "neural_config": effective_neural["config_path"],
+            "effective_neural_config": effective_neural,
             "self_improvement_iterations": self_training.get("iterations", 1),
             "max_self_training_examples": self_training.get("max_examples", 1000),
         },
@@ -196,6 +201,7 @@ def write_training_report(report: dict[str, Any], config: dict[str, Any]) -> Non
         **report,
         "completed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "config_path": config.get("_config_path", ""),
+        "effective_neural_config": config.get("_effective_neural_config", {}),
     }
     (output_dir / "train_model_report.json").write_text(
         json.dumps(enriched, indent=2, ensure_ascii=False), encoding="utf-8"

@@ -7,9 +7,59 @@ from typing import Any
 from .model_candidate import ModelCandidate
 
 
+def safe_float(value: Any, default: float | None = None) -> float | None:
+    """Parse a metric without turning absent data into a fabricated score."""
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class ModelSelector:
-    def select_best(self, candidates: list[ModelCandidate], thresholds: dict[str, Any]) -> dict[str, Any]:
+    def select_best(
+        self,
+        candidates: list[ModelCandidate],
+        thresholds: dict[str, Any],
+        *,
+        selection_mode: str = "production",
+    ) -> dict[str, Any]:
         minimums = thresholds.get("minimums") or thresholds
+        selection_mode = str(selection_mode or "production").lower()
+        optional_metric_names = {
+            "execution_match_rate",
+            "structure_match_rate",
+            "sql_structure_match_rate",
+            "final_sql_accuracy",
+            "controlled_predicted_sql_execution_match_rate",
+            "controlled_predicted_sql_result_value_match_rate",
+        }
+        missing_metrics = sorted({
+            key
+            for candidate in candidates
+            for key in optional_metric_names
+            if key not in candidate.metrics or candidate.metrics.get(key) is None
+        })
+        skipped_optional_metrics = list(missing_metrics) if selection_mode != "production" else []
+        required_metric_failures: list[str] = []
+        if selection_mode == "production":
+            required = {
+                key for key in ("sql_validation_rate", "simple_query_pass_rate")
+                if key in minimums or f"{key}_production" in minimums
+            }
+            if bool(minimums.get("controlled_predicted_sql_required", False)):
+                required.update({
+                    "controlled_predicted_sql_execution_match_rate",
+                    "controlled_predicted_sql_result_value_match_rate",
+                    "controlled_predicted_sql_safe_but_wrong_sql_rate",
+                })
+            required_metric_failures = sorted({
+                key
+                for candidate in candidates
+                for key in required
+                if key not in candidate.metrics or safe_float(candidate.metrics.get(key)) is None
+            })
         accepted = []
         rejected = []
         blocking_issues = []
@@ -22,6 +72,8 @@ class ModelSelector:
             if (candidate.metadata or {}).get("quality_gate_passed") is False:
                 issues.append("quality_gate_not_passed")
             issues.extend(_hard_blockers(candidate.metrics, minimums))
+            if selection_mode == "production":
+                issues.extend(f"missing_required_metric:{key}" for key in required_metric_failures)
             if issues:
                 rejected.append({"model": asdict(candidate), "blocking_issues": list(dict.fromkeys(issues))})
             else:
@@ -41,6 +93,11 @@ class ModelSelector:
                 "selection_blocked_reason": "no_eligible_candidate",
                 "blocking_issues": blocking_issues,
                 "warnings": [],
+                "missing_metrics": missing_metrics,
+                "skipped_optional_metrics": skipped_optional_metrics,
+                "required_metric_failures": required_metric_failures,
+                "selection_mode": selection_mode,
+                "selection_score": None,
             }
         selected = sorted(accepted, key=lambda item: _selection_score(item.metrics), reverse=True)[0]
         warnings: list[str] = []
@@ -117,6 +174,11 @@ class ModelSelector:
             "warnings": warnings,
             "selection_blocked": False,
             "selection_blocked_reason": None,
+            "missing_metrics": missing_metrics,
+            "skipped_optional_metrics": skipped_optional_metrics,
+            "required_metric_failures": required_metric_failures,
+            "selection_mode": selection_mode,
+            "selection_score": _selection_score(selected.metrics),
         }
 
 
@@ -165,27 +227,27 @@ def _selection_score(metrics: dict[str, Any]) -> float:
         "overall_slot_accuracy",
     ]
     negative = ["unnecessary_join_rate", "wrong_table_rate"]
-    score = sum(float(metrics.get(key, 0.0)) for key in positive)
-    score -= sum(float(metrics.get(key, 0.0)) for key in negative)
+    score = sum(safe_float(metrics.get(key), 0.0) or 0.0 for key in positive)
+    score -= sum(safe_float(metrics.get(key), 0.0) or 0.0 for key in negative)
     return score
 
 
 def _hard_blockers(metrics: dict[str, Any], minimums: dict[str, Any]) -> list[str]:
     issues = []
-    if float(metrics.get("unsafe_sql_count", metrics.get("unsafe_sql_count_max", 0)) or 0) > float(_minimum(minimums, "unsafe_sql_count_max", 0)):
+    if (safe_float(metrics.get("unsafe_sql_count", metrics.get("unsafe_sql_count_max")), 0.0) or 0.0) > float(_minimum(minimums, "unsafe_sql_count_max", 0)):
         issues.append("unsafe_sql_count")
-    if float(metrics.get("no_select_star_rate", 1.0) or 0.0) < float(_minimum(minimums, "no_select_star_rate", 1.0)):
+    if (safe_float(metrics.get("no_select_star_rate"), 1.0) or 0.0) < float(_minimum(minimums, "no_select_star_rate", 1.0)):
         issues.append("select_star")
-    if float(metrics.get("unnecessary_join_rate", metrics.get("unnecessary_join_rate_max", 0.0)) or 0.0) > float(_minimum(minimums, "unnecessary_join_rate_max", 0.05)):
+    if (safe_float(metrics.get("unnecessary_join_rate", metrics.get("unnecessary_join_rate_max")), 0.0) or 0.0) > float(_minimum(minimums, "unnecessary_join_rate_max", 0.05)):
         issues.append("unnecessary_join_rate")
-    if float(metrics.get("wrong_table_rate", metrics.get("wrong_table_rate_max", 0.0)) or 0.0) > float(_minimum(minimums, "wrong_table_rate_max", 0.15)):
+    if (safe_float(metrics.get("wrong_table_rate", metrics.get("wrong_table_rate_max")), 0.0) or 0.0) > float(_minimum(minimums, "wrong_table_rate_max", 0.15)):
         issues.append("wrong_table_rate")
-    if float(metrics.get("sql_validation_rate", 0.0) or 0.0) < float(_minimum(minimums, "sql_validation_rate", 0.90)):
+    if (safe_float(metrics.get("sql_validation_rate"), 0.0) or 0.0) < float(_minimum(minimums, "sql_validation_rate", 0.90)):
         issues.append("sql_validation_rate")
-    if float(metrics.get("simple_query_pass_rate", 1.0) or 1.0) < float(_minimum(minimums, "simple_query_pass_rate", 0.0)):
+    if (safe_float(metrics.get("simple_query_pass_rate"), 1.0) or 0.0) < float(_minimum(minimums, "simple_query_pass_rate", 0.0)):
         issues.append("simple_query_pass_rate_regressed")
     if bool(minimums.get("controlled_predicted_sql_required", False)):
-        if float(metrics.get("controlled_predicted_sql_safe_sql_rate", 1.0) or 0.0) < 1.0:
+        if (safe_float(metrics.get("controlled_predicted_sql_safe_sql_rate"), 0.0) or 0.0) < 1.0:
             issues.append("controlled_predicted_sql_safe_sql_rate")
         if int(metrics.get("controlled_predicted_sql_unsafe_sql_count", 0) or 0) > 0:
             issues.append("controlled_predicted_sql_unsafe_sql_count")

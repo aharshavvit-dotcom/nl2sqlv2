@@ -28,9 +28,9 @@ def _metrics(evaluation: dict, execution: dict) -> dict:
     metrics.update(
         {
             "gold_comparison_score": evaluation.get("summary", {}).get("gold_comparison_score", metrics.get("query_ir_validity_rate", 0.0)),
-            "execution_match_rate": summary.get("execution_match_rate", 0.0),
-            "structure_match_rate": summary.get("structure_match_rate", summary.get("sql_structure_match_rate", 0.0)),
-            "sql_structure_match_rate": summary.get("structure_match_rate", 0.0),
+            "execution_match_rate": summary.get("execution_match_rate"),
+            "structure_match_rate": summary.get("structure_match_rate", summary.get("sql_structure_match_rate")),
+            "sql_structure_match_rate": summary.get("structure_match_rate", summary.get("sql_structure_match_rate")),
             "unnecessary_join_rate": summary.get("unnecessary_join_rate", metrics.get("unnecessary_join_rate_max", 0.0)),
             "wrong_table_rate": summary.get("wrong_table_rate", metrics.get("wrong_table_rate_max", 0.0)),
             "analytics_query_pass_rate": evaluation.get("summary", {}).get("analytics_query_pass_rate", 1.0),
@@ -46,13 +46,13 @@ def _attach_predicted_sql_metrics(metrics: dict, predicted: dict) -> dict:
     metrics.update({
         "controlled_predicted_sql_execution_match_rate": predicted.get(
             "predicted_execution_match_rate",
-            predicted.get("predicted_result_value_match_rate", 0.0),
+            predicted.get("predicted_result_value_match_rate"),
         ),
-        "controlled_predicted_sql_execution_success_rate": predicted.get("predicted_execution_success_rate", 0.0),
-        "controlled_predicted_sql_row_count_match_rate": predicted.get("predicted_row_count_match_rate", 0.0),
-        "controlled_predicted_sql_safe_sql_rate": predicted.get("predicted_safe_sql_rate", 0.0),
-        "controlled_predicted_sql_result_value_match_rate": predicted.get("predicted_result_value_match_rate", 0.0),
-        "controlled_predicted_sql_safe_but_wrong_sql_rate": predicted.get("safe_but_wrong_sql_rate", 0.0),
+        "controlled_predicted_sql_execution_success_rate": predicted.get("predicted_execution_success_rate"),
+        "controlled_predicted_sql_row_count_match_rate": predicted.get("predicted_row_count_match_rate"),
+        "controlled_predicted_sql_safe_sql_rate": predicted.get("predicted_safe_sql_rate"),
+        "controlled_predicted_sql_result_value_match_rate": predicted.get("predicted_result_value_match_rate"),
+        "controlled_predicted_sql_safe_but_wrong_sql_rate": predicted.get("safe_but_wrong_sql_rate"),
         "controlled_predicted_sql_unsafe_sql_count": predicted.get(
             "unsafe_sql_count",
             predicted.get("predicted_unsafe_sql_count", 0),
@@ -68,6 +68,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--controlled-predicted-sql-report", type=Path, default=ROOT / "artifacts" / "evaluation" / "controlled_predicted_sql_execution_report.json")
     parser.add_argument("--thresholds", type=Path, default=ROOT / "evaluation" / "model_quality_thresholds.yaml")
     parser.add_argument("--output", type=Path, default=ROOT / "artifacts" / "evaluation" / "model_selection_report.json")
+    parser.add_argument("--selection-mode", choices=["baseline", "production"], default=None)
     return parser.parse_args()
 
 
@@ -114,7 +115,10 @@ def main() -> int:
         generated_at=str(report_generated_at or "") or None,
         report_path=str(args.evaluation_report),
     )
-    report = ModelSelector().select_best([candidate], load_thresholds(args.thresholds))
+    selection_mode = args.selection_mode or str(quality_gate_report.get("quality_gate_mode") or "baseline")
+    report = ModelSelector().select_best(
+        [candidate], load_thresholds(args.thresholds), selection_mode=selection_mode
+    )
     SelectionReporter().write(args.output, report)
     print(json.dumps(report, indent=2, ensure_ascii=True))
     return 0

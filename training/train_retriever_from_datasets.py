@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 from datasets.corpus_builder import CorpusBuilder
 from scripts.dataset_paths import ARTIFACT_DIR, PROCESSED_DATA_DIR, ensure_dataset_dirs, parse_dataset_list
 from training.training_report import build_training_report
+from retrieval.artifact_compatibility import build_sklearn_metadata, write_sklearn_metadata
 
 
 def train_from_datasets(
@@ -92,6 +93,13 @@ def train_from_datasets(
     _atomic_json(artifact_dir / "supported_patterns.json", payload["stats"].by_template)
     _atomic_json(artifact_dir / "dataset_stats.json", payload["stats"].to_dict())
     _atomic_json(artifact_dir / "training_report.json", report)
+    write_sklearn_metadata(
+        artifact_dir,
+        build_sklearn_metadata(
+            artifact_types=["tfidf_vectorizer", "tfidf_matrix"],
+            config={"datasets": requested, "include_schema_text": include_schema_text},
+        ),
+    )
     return {
         "artifact_dir": str(artifact_dir),
         "output_dir": str(output_dir),
@@ -164,6 +172,14 @@ def _train_from_handwritten_examples(
     _atomic_json(artifact_dir / "supported_patterns.json", report["by_template"])
     _atomic_json(artifact_dir / "dataset_stats.json", dataset_stats)
     _atomic_json(artifact_dir / "training_report.json", report)
+    write_sklearn_metadata(
+        artifact_dir,
+        build_sklearn_metadata(
+            artifact_types=["tfidf_vectorizer", "tfidf_matrix"],
+            source_path=examples_path,
+            config={"datasets": ["handwritten"]},
+        ),
+    )
     return {
         "artifact_dir": str(artifact_dir),
         "output_dir": str(PROCESSED_DATA_DIR),

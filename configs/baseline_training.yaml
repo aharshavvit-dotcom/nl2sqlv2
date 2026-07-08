@@ -5,10 +5,10 @@ pipeline:
   promote_if_passed: false
 
 datasets:
-  names: [wikisql]
-  max_examples: 500
-  max_examples_per_dataset: {wikisql: 500}
-  min_converted_examples_required: {wikisql: 10}
+  names: [wikisql, bird-mini]
+  max_examples: 1000
+  max_examples_per_dataset: {wikisql: 500, bird-mini: 500}
+  min_converted_examples_required: {wikisql: 10, bird-mini: 30}
 
 paths:
   processed_dir: data/processed
@@ -25,8 +25,6 @@ neural:
   enabled: true
   config: configs/neural_training_default.yaml
   output_dir: artifacts/work/neural_ir
-  epochs: 3
-  batch_size: 8
 
 self_training: {enabled: false}
 ranker: {enabled: false}

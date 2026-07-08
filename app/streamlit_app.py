@@ -240,6 +240,7 @@ with st.sidebar:
                 "This model did not pass production quality gate."
             )
         qg = manifest.get("quality_gate") or {}
+        neural_training = manifest.get("neural_training_config") or {}
         sidebar_status = {
             "bundle_source": bundle_info.get("bundle_source", "none"),
             "bundle_id": manifest.get("bundle_id"),
@@ -247,6 +248,9 @@ with st.sidebar:
             "quality_gate_mode": manifest.get("quality_gate_mode", qg.get("mode")),
             "quality_gate_passed": manifest.get("quality_gate_passed", qg.get("passed", False)),
             "production_ready_full": manifest.get("production_ready_full", False),
+            "effective_neural_epochs": neural_training.get("epochs"),
+            "effective_neural_batch_size": neural_training.get("batch_size"),
+            "dataset_contribution_status": manifest.get("dataset_contribution_status", {}),
             "last_training_run_id": manifest.get("pipeline_run_id"),
             "last_quality_gate_blockers": bundle_status.get("top_blockers", []),
         }

@@ -89,3 +89,25 @@ def test_stale_or_bundle_mismatched_candidate_is_rejected() -> None:
     assert "bundle_id_mismatch" in reasons
     assert "stale_report" in reasons
     assert report["selection_blocked_reason"] == "no_eligible_candidate"
+
+
+def test_baseline_skips_none_optional_metrics_without_crashing() -> None:
+    candidate = _candidate("baseline", execution_match_rate=None, structure_match_rate=None)
+
+    report = ModelSelector().select_best([candidate], THRESHOLDS, selection_mode="baseline")
+
+    assert report["selected_model"]["name"] == "baseline"
+    assert "execution_match_rate" in report["missing_metrics"]
+    assert "execution_match_rate" in report["skipped_optional_metrics"]
+    assert report["required_metric_failures"] == []
+
+
+def test_production_missing_required_controlled_metric_is_a_blocking_report() -> None:
+    thresholds = {"minimums": {**THRESHOLDS["minimums"], "controlled_predicted_sql_required": True}}
+    candidate = _candidate("production", controlled_predicted_sql_execution_match_rate=None)
+
+    report = ModelSelector().select_best([candidate], thresholds, selection_mode="production")
+
+    assert report["selected_model"] is None
+    assert "controlled_predicted_sql_execution_match_rate" in report["required_metric_failures"]
+    assert report["selection_blocked"] is True

@@ -12,6 +12,7 @@ from .feedback_index import FeedbackIndex
 from .pattern_index import PatternIndex
 from .retrieval_reranker import RetrievalReranker
 from .schema_index import SchemaIndex
+from .artifact_compatibility import validate_sklearn_metadata
 
 
 class LocalRAGRetriever:
@@ -74,6 +75,7 @@ class RAGRetrieverAdapter:
     @classmethod
     def load(cls, artifact_dir: str | Path) -> "RAGRetrieverAdapter":
         path = Path(artifact_dir)
+        validate_sklearn_metadata(path, mode="runtime")
         example_index = ExampleIndex.load(str(path / "example_index.pkl"))
         schema_index = joblib.load(path / "schema_index.pkl")
         pattern_index = joblib.load(path / "pattern_index.pkl")

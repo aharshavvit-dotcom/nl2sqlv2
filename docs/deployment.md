@@ -38,3 +38,17 @@ Environment variables:
 | `NL2SQL_LOG_LEVEL` | Runtime logging level |
 
 The production health check verifies the current bundle exists, its manifest is readable and production ready, the app entry point passes import preflight, and the central SQL validator accepts a bounded SELECT.
+
+Training lifecycle:
+
+- Debug/smoke uses the explicitly marked smoke neural config and creates a candidate only.
+- Baseline uses `configs/neural_training_default.yaml` (10 epochs, batch size 8) as a production-like diagnostic and never promotes.
+- Production uses the same canonical neural config, strict dataset and semantic gates, and promotes only a validated eligible candidate.
+- Production application startup loads `current` only; candidate access is development/staging debug behavior.
+
+After changing sklearn versions, old serialized retrieval/ranker objects must be rebuilt. The loader checks embedded version metadata, but these commands remove known stale work artifacts before retraining:
+
+```powershell
+Remove-Item -Recurse -Force artifacts\work\retrieval_ir -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force artifacts\work\adaptive_ranker -ErrorAction SilentlyContinue
+```

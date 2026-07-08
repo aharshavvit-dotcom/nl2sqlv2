@@ -12,6 +12,7 @@ from neural_optimization.training_config import (
     merge_cli_overrides,
     save_effective_config,
 )
+from training.config_loader import resolve_effective_neural_config
 
 
 class TestNeuralTrainingConfig:
@@ -101,3 +102,44 @@ def test_integrated_training_modes_are_explicit_and_safe():
         if mode != "production":
             assert payload["bundle"]["promote_if_quality_gate_passes"] is False
             assert payload["pipeline"]["promote_if_passed"] is False
+
+
+def test_baseline_and_production_resolve_canonical_neural_values():
+    root = Path(__file__).resolve().parents[1]
+    for name in ["baseline_training.yaml", "training.yaml"]:
+        payload = yaml.safe_load((root / "configs" / name).read_text(encoding="utf-8"))
+        effective = resolve_effective_neural_config(payload, root=root)
+        assert effective["epochs"] == 10
+        assert effective["batch_size"] == 8
+        assert effective["save_best_metric"] == "loss"
+        assert effective["save_best_mode"] == "min"
+        assert effective["early_stopping_patience"] == 2
+        assert effective["debug_override_used"] is False
+
+
+def test_production_and_baseline_reject_conflicting_pipeline_overrides():
+    root = Path(__file__).resolve().parents[1]
+    production = yaml.safe_load((root / "configs" / "training.yaml").read_text(encoding="utf-8"))
+    production["neural"]["epochs"] = 15
+    with pytest.raises(ValueError, match="conflict"):
+        resolve_effective_neural_config(production, root=root)
+
+    baseline = yaml.safe_load((root / "configs" / "baseline_training.yaml").read_text(encoding="utf-8"))
+    baseline["neural"]["epochs"] = 3
+    with pytest.raises(ValueError, match="conflict"):
+        resolve_effective_neural_config(baseline, root=root)
+
+
+def test_production_rejects_smoke_neural_config_and_debug_records_override():
+    root = Path(__file__).resolve().parents[1]
+    production = yaml.safe_load((root / "configs" / "training.yaml").read_text(encoding="utf-8"))
+    production["neural"]["config"] = "configs/neural_training_smoke.yaml"
+    with pytest.raises(ValueError, match="must use"):
+        resolve_effective_neural_config(production, root=root)
+
+    debug = yaml.safe_load((root / "configs" / "debug_training.yaml").read_text(encoding="utf-8"))
+    effective = resolve_effective_neural_config(debug, root=root)
+    assert effective["epochs"] == 1
+    assert effective["batch_size"] == 4
+    assert effective["debug_override_used"] is True
+    assert effective["not_production_training"] is True

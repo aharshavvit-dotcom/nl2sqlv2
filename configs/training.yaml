@@ -8,16 +8,13 @@ datasets:
   names:
     - wikisql
     - spider
-    - bird-mini
   max_examples: 15000
   max_examples_per_dataset:
     wikisql: 5000
     spider: 5000
-    bird-mini: 5000
   min_converted_examples_required:
     wikisql: 100
     spider: 100
-    bird-mini: 100
 
 paths:
   processed_dir: data/processed
@@ -34,8 +31,6 @@ neural:
   enabled: true
   config: configs/neural_training_default.yaml
   output_dir: artifacts/work/neural_ir
-  epochs: 15
-  batch_size: 8
 
 self_training:
   enabled: true

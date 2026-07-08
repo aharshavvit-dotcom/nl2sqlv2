@@ -23,9 +23,9 @@ class EarlyStopping:
 
     def __init__(
         self,
-        patience: int = 3,
-        metric_name: str = "validation_gold_score",
-        mode: str = "max",
+        patience: int = 2,
+        metric_name: str = "loss",
+        mode: str = "min",
         min_delta: float = 0.0,
     ) -> None:
         self.patience = patience

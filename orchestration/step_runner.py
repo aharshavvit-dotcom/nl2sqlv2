@@ -716,7 +716,12 @@ class StepRunner:
             generated_at=str(report_generated_at or "") or None,
             report_path=str(Path(artifacts["evaluation_dir"]) / "generic_model_evaluation_report.json"),
         )
-        report = ModelSelector().select_best([candidate], load_thresholds(ROOT / "evaluation/model_quality_thresholds.yaml"))
+        selection_mode = str(((config.training.get("_integrated_config") or {}).get("quality_gate") or {}).get("mode") or "baseline")
+        report = ModelSelector().select_best(
+            [candidate],
+            load_thresholds(ROOT / "evaluation/model_quality_thresholds.yaml"),
+            selection_mode=selection_mode,
+        )
         report.update({
             "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             "candidate_bundle_id": str(report_bundle_id or ""),

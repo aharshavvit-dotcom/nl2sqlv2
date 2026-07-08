@@ -139,6 +139,9 @@ class ModelBundleLoader:
             "runtime_environment": environment,
             "loaded_for_debug": bool(manifest.status == "candidate" and allow_candidate_debug),
             "bundle_validation": validation,
+            "neural_training_config": manifest.neural_training_config,
+            "dataset_contribution_status": manifest.dataset_contribution_status,
+            "sklearn_artifact_version": manifest.sklearn_artifact_version,
         }
 
         return result

@@ -328,18 +328,39 @@ class GenericIRCorpusBuilder:
                 for row in splits.get("unsupported", [])
                 if row.get("dataset_name") == name
             )
+            top_unsupported_patterns = [
+                {"pattern": pattern, "count": count}
+                for pattern, count in unsupported_reasons.most_common(10)
+            ]
+            passed = converted >= minimum_required
             by_dataset[name] = {
+                "dataset": name,
                 "raw_examples": int(raw_counts.get(name, 0)),
                 "loaded_examples": int(loaded_counts.get(name, 0)),
                 "converted_to_queryir": converted,
+                "converted_query_ir_examples": converted,
                 "used_in_train": int(split_counts["train"]),
                 "used_in_validation": int(split_counts["validation"]),
                 "used_in_test": int(split_counts["test"]),
                 "used_in_unseen_db_test": int(split_counts["unseen_db_test"]),
                 "unsupported": int(split_counts["unsupported"]),
+                "unsupported_sql_count": int(split_counts["unsupported"]),
                 "unsupported_reasons": dict(unsupported_reasons),
+                "top_unsupported_patterns": top_unsupported_patterns,
                 "minimum_required": minimum_required,
-                "minimum_passed": converted >= minimum_required,
+                "min_required": minimum_required,
+                "minimum_passed": passed,
+                "passed_min_required": passed,
+                "failure_reason": None if passed else "insufficient_query_ir_conversion",
+                "recommendation": (
+                    "none"
+                    if passed
+                    else (
+                        "improve_converter|use_full_bird|remove_from_production|dev_only_lower_threshold"
+                        if name.startswith("bird")
+                        else "improve_converter|verify_dataset_inputs"
+                    )
+                ),
             }
         return {
             "datasets_requested": requested,

@@ -81,7 +81,7 @@ DEFAULT_V2_CONFIG = {
     "max_tables": 64,
     "max_columns": 256,
     "batch_size": 8,
-    "epochs": 8,
+    "epochs": 10,
     "learning_rate": 0.0007,
     "weight_decay": 0.00001,
     "use_hard_negative_loss": True,

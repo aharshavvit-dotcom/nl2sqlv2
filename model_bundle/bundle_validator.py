@@ -95,12 +95,20 @@ class ModelBundleValidator:
         retrieval_dir = path / manifest.paths.get("retrieval_ir", "retrieval_ir/")
         _require_files(
             retrieval_dir,
-            ["example_index.pkl", "schema_index.pkl", "pattern_index.pkl", "manifest.json"],
+            ["example_index.pkl", "schema_index.pkl", "pattern_index.pkl", "manifest.json", "sklearn_artifact_metadata.json"],
             "retrieval",
             issues,
             checked,
         )
         _validate_rag_manifest(retrieval_dir / "manifest.json", manifest.datasets, issues, checked)
+        metadata_path = retrieval_dir / "sklearn_artifact_metadata.json"
+        if metadata_path.exists():
+            try:
+                from retrieval.artifact_compatibility import validate_sklearn_metadata
+
+                validate_sklearn_metadata(retrieval_dir, mode="runtime")
+            except (OSError, RuntimeError, ValueError) as exc:
+                issues.append(str(exc))
 
         if neural_enabled:
             neural_dir = path / manifest.paths.get("neural_ir", "neural_ir/")
@@ -112,6 +120,29 @@ class ModelBundleValidator:
                 checked,
             )
             _validate_neural_load(neural_dir, issues, warnings)
+            diagnostics_path = neural_dir / "training_diagnostics.json"
+            if diagnostics_path.exists() and manifest.neural_training_config:
+                diagnostics = _read_json(diagnostics_path)
+                pairs = {
+                    "epochs": "effective_epochs",
+                    "batch_size": "effective_batch_size",
+                    "save_best_metric": "save_best_metric",
+                    "save_best_mode": "save_best_mode",
+                    "early_stopping_patience": "early_stopping_patience",
+                    "weight_decay": "weight_decay",
+                    "pointer_head_weight_decay": "pointer_head_weight_decay",
+                    "pointer_dropout": "pointer_dropout",
+                    "effective_config_hash": "effective_config_hash",
+                }
+                mismatches = [
+                    key for key, diagnostic_key in pairs.items()
+                    if manifest.neural_training_config.get(key) != diagnostics.get(diagnostic_key)
+                ]
+                if mismatches and manifest.quality_gate_mode in {"production", "release"}:
+                    issues.append(
+                        "Neural training diagnostics conflict with bundle manifest: "
+                        + ", ".join(sorted(mismatches))
+                    )
 
         generic_dir = path / manifest.paths.get("generic_training", "generic_training/")
         contribution_path = generic_dir / "dataset_contribution_report.json"
@@ -126,6 +157,11 @@ class ModelBundleValidator:
             for name in ["spider", "bird-mini"]:
                 if name in requested and int((by_dataset.get(name) or {}).get("converted_to_queryir", 0)) <= 0:
                     issues.append(f"Requested dataset contributed zero usable examples: {name}")
+            if (
+                manifest.quality_gate_mode in {"production", "release"}
+                and contribution.get("full_training_dataset_minimums_passed") is not True
+            ):
+                issues.append("Production dataset contribution minimums failed")
         if unsupported_path.exists():
             checked.append(str(unsupported_path))
 

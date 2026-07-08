@@ -11,6 +11,7 @@ from nl2sql_v1.retriever import TfidfRetriever
 from nl2sql_v1.schema import read_sqlite_schema
 from retriever.retrieval_nl2sql_model import RetrievalNL2SQLModel
 from scripts.create_sample_db import build_database
+from retrieval.rag_index_builder import RAGIndexBuilder
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,14 +46,39 @@ def model(retriever: TfidfRetriever) -> RetrievalNL2SQLModel:
     )
 
 
+@pytest.fixture()
+def compatible_rag_dir(tmp_path: Path) -> Path:
+    RAGIndexBuilder().build(
+        [{
+            "example_id": "users_1",
+            "question": "list all users",
+            "intent": "show_records",
+            "template_id": "show_records",
+            "serialized_schema": "users(id, name)",
+            "query_ir": {
+                "intent": "show_records",
+                "template_id": "show_records",
+                "base_table": "users",
+                "required_tables": ["users"],
+                "joins": [],
+            },
+        }],
+        tmp_path,
+    )
+    return tmp_path
+
+
 class TestRetrievalNL2SQLModel:
-    def test_model_loads(self) -> None:
-        model = RetrievalNL2SQLModel.load()
+    def test_model_loads(self, compatible_rag_dir: Path) -> None:
+        model = RetrievalNL2SQLModel.load(artifact_dir=compatible_rag_dir)
         assert model.retriever is not None
 
-    def test_backward_compat_option_a_param(self) -> None:
+    def test_backward_compat_option_a_param(self, compatible_rag_dir: Path) -> None:
         """The old param names still work."""
-        model = RetrievalNL2SQLModel.load(use_option_a_fallback=False)
+        model = RetrievalNL2SQLModel.load(
+            artifact_dir=compatible_rag_dir,
+            use_option_a_fallback=False,
+        )
         assert not model.use_neural_ir_fallback
 
 

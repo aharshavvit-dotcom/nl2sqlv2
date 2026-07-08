@@ -236,6 +236,13 @@ When both candidates contain paired per-example results, promotion performs 1,00
 
 ## Auditing & Verification
 
+If the sklearn runtime version changed, remove stale serialized work artifacts before the release run:
+
+```powershell
+Remove-Item -Recurse -Force artifacts\work\retrieval_ir -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force artifacts\work\adaptive_ranker -ErrorAction SilentlyContinue
+```
+
 ### Release checklist
 
 ```bash

@@ -248,20 +248,17 @@ pipeline:
   promote_if_passed: true
 
 datasets:
-  names: [wikisql, spider, bird-mini]
-  max_examples: 5000
+  names: [wikisql, spider]
+  max_examples: 15000
   max_examples_per_dataset:
     wikisql: 5000
     spider: 5000
-    bird-mini: 5000
   min_converted_examples_required:
     wikisql: 100
     spider: 100
-    bird-mini: 100
 
 neural:
-  epochs: 5
-  batch_size: 8
+  config: configs/neural_training_default.yaml
 
 quality_gate:
   required: true
@@ -288,6 +285,7 @@ datasets:
     wikisql: 1
 
 neural:
+  config: configs/neural_training_smoke.yaml
   epochs: 1
   batch_size: 4
 

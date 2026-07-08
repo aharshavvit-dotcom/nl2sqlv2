@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import sys
@@ -100,6 +101,9 @@ def run_optimized_training(
 
     Returns a metrics dict suitable for experiment comparison.
     """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if config.output.get("save_effective_config", True):
+        save_effective_config(config, output_dir / "effective_config.yaml")
     # Seed
     seed = int(config.training.get("seed", 42))
     random.seed(seed)
@@ -282,7 +286,7 @@ def run_optimized_training(
     best_mode = str(config.training.get("save_best_mode", "min"))
     ckpt_manager = CheckpointManager(output_dir, metric_name=best_metric, mode=best_mode)
     early_stopper = EarlyStopping(
-        patience=int(config.training.get("early_stopping_patience", 3)),
+        patience=int(config.training.get("early_stopping_patience", 2)),
         metric_name=best_metric,
         mode=best_mode,
     )
@@ -301,6 +305,7 @@ def run_optimized_training(
     print(f"  Batch size: {batch_size} | Gradient clipping: {grad_clip}")
     print(f"  Checkpoint monitor: {best_metric}")
     print(f"  Checkpoint mode: {best_mode}")
+    print(f"  Early stopping patience: {early_stopper.patience}")
     if best_metric == "loss" and best_mode == "min":
         print("  Best checkpoint selected by lowest validation loss")
     if hard_negative_warning:
@@ -546,8 +551,13 @@ def run_optimized_training(
         "best_checkpoint_metric": best_metric,
         "checkpoint_monitor": best_metric,
         "checkpoint_mode": best_mode,
+        "early_stopping_patience": early_stopper.patience,
+        "effective_epochs": epochs,
+        "effective_batch_size": batch_size,
+        "weight_decay": float(config.optimizer.get("weight_decay", 0.0001)),
         "pointer_head_weight_decay": float(config.optimizer.get("pointer_head_weight_decay", 0.001)),
         "pointer_dropout": float(config.model.get("pointer_dropout", 0.30)),
+        "effective_config_hash": _effective_config_hash(config),
         "best_val_loss": best_epoch.get("validation_total_loss"),
         "current_val_loss": val_metrics.get("loss"),
         "val_train_loss_ratio": (
@@ -580,6 +590,20 @@ def run_optimized_training(
     _save_training_manifest(output_dir, report, config)
 
     return report
+
+
+def _effective_config_hash(config: NeuralTrainingConfig) -> str:
+    payload = json.dumps({
+        "epochs": config.training.get("epochs"),
+        "batch_size": config.training.get("batch_size"),
+        "save_best_metric": config.training.get("save_best_metric"),
+        "save_best_mode": config.training.get("save_best_mode"),
+        "early_stopping_patience": config.training.get("early_stopping_patience"),
+        "weight_decay": config.optimizer.get("weight_decay"),
+        "pointer_head_weight_decay": config.optimizer.get("pointer_head_weight_decay"),
+        "pointer_dropout": config.model.get("pointer_dropout"),
+    }, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _save_training_manifest(output_dir: Path, report: dict[str, Any], config: NeuralTrainingConfig) -> None:

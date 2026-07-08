@@ -5,6 +5,9 @@ from pathlib import Path
 from retrieval import ExampleIndex, LocalRAGRetriever, PatternIndex, RetrievalReranker, SchemaIndex
 from retrieval.rag_index_builder import RAGIndexBuilder
 from retriever.retrieval_nl2sql_model import RetrievalNL2SQLModel
+from retrieval.artifact_compatibility import validate_sklearn_metadata
+import json
+import pytest
 
 
 def _examples() -> list[dict]:
@@ -78,3 +81,25 @@ def test_runtime_loader_prefers_rag_index_when_present(tmp_path: Path) -> None:
 
     assert model.metadata["retrieval_backend"] == "local_rag"
     assert results[0].example_id == "show_users"
+
+
+def test_rag_builder_saves_sklearn_metadata(tmp_path: Path) -> None:
+    RAGIndexBuilder().build(_examples(), tmp_path)
+
+    metadata = json.loads((tmp_path / "sklearn_artifact_metadata.json").read_text(encoding="utf-8"))
+    assert metadata["sklearn_version"]
+    assert metadata["python_version"]
+    assert "tfidf_vectorizer" in metadata["artifact_types"]
+
+
+def test_sklearn_version_mismatch_rebuilds_in_training_and_fails_runtime(tmp_path: Path) -> None:
+    RAGIndexBuilder().build(_examples(), tmp_path)
+    path = tmp_path / "sklearn_artifact_metadata.json"
+    metadata = json.loads(path.read_text(encoding="utf-8"))
+    metadata["sklearn_version"] = "0.0.incompatible"
+    path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    training_check = validate_sklearn_metadata(tmp_path, mode="training")
+    assert training_check["rebuild_required"] is True
+    with pytest.raises(RuntimeError, match="Incompatible sklearn artifact version"):
+        validate_sklearn_metadata(tmp_path, mode="runtime")
