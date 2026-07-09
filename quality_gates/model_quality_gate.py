@@ -12,6 +12,17 @@ CRITICAL_METRICS = [
     "simple_query_pass_rate",
 ]
 
+# Semantic metrics that block promotion when below threshold.
+# These use applicability-aware denominators — a metric is only checked
+# when its applicable_cases count meets the configured minimum.
+SEMANTIC_CRITICAL_METRICS = [
+    "simple_query_semantic_pass_rate",
+    "projection_exact_match_rate",
+    "filter_column_accuracy_rate",
+    "filter_value_accuracy_rate",
+    "dimension_column_accuracy_rate",
+]
+
 
 class ModelQualityGate:
     def evaluate(self, evaluation_report: dict[str, Any], thresholds: dict[str, Any]) -> dict[str, Any]:
@@ -190,6 +201,31 @@ class ModelQualityGate:
 
         missing_metrics = sorted(set(missing_metrics))
 
+        # --- Sklearn and Calibration model metadata check (Review #15) ---
+        sklearn_info = evaluation_report.get("sklearn_info") or {}
+        if mode in {"production", "release"}:
+            if not sklearn_info.get("retrieval_sklearn_metadata_valid", True):
+                failed_checks.append({
+                    "metric": "retrieval_sklearn_metadata_valid",
+                    "actual": False,
+                    "expected": True,
+                    "comparison": "==",
+                })
+            if not sklearn_info.get("retrieval_checksums_valid", True):
+                failed_checks.append({
+                    "metric": "retrieval_checksums_valid",
+                    "actual": False,
+                    "expected": True,
+                    "comparison": "==",
+                })
+            if not sklearn_info.get("calibration_metadata_valid", True):
+                failed_checks.append({
+                    "metric": "calibration_metadata_valid",
+                    "actual": False,
+                    "expected": True,
+                    "comparison": "==",
+                })
+
         # Controlled fixture validation check
         controlled_fixture = evaluation_report.get("controlled_fixture_evaluation") or {}
         if isinstance(controlled_fixture, dict) and controlled_fixture:
@@ -293,6 +329,80 @@ class ModelQualityGate:
             else:
                 warnings.append("model_selection_stale_or_ineligible")
 
+        # --- Semantic metric checks (applicability-aware) ---
+        semantic_eval = (
+            evaluation_report.get("test_performance", {}).get("summary", {})
+            .get("semantic_evaluation", {})
+        ) or evaluation_report.get("summary", {}).get("semantic_evaluation", {})
+        semantic_thresholds = thresholds.get("semantic") or {}
+        min_applicable = int(semantic_thresholds.get("minimum_applicable_cases", 50))
+        for metric_name in SEMANTIC_CRITICAL_METRICS:
+            # Get applicability-aware metric from semantic_evaluation
+            if metric_name == "simple_query_semantic_pass_rate":
+                actual = (
+                    semantic_eval.get("simple_query_semantic_pass_rate")
+                    or metrics.get("simple_query_semantic_pass_rate")
+                )
+                if actual is not None:
+                    metrics[metric_name] = actual
+                    present.add(metric_name)
+            else:
+                # These have applicability-aware sub-structures
+                base_name = metric_name.removesuffix("_rate")
+                sub = semantic_eval.get(base_name) or {}
+                actual = sub.get("value")
+                applicable_cases = int(sub.get("applicable_cases", 0))
+                if actual is not None:
+                    metrics[metric_name] = actual
+                    present.add(metric_name)
+                    # Only enforce gate when we have sufficient support
+                    if applicable_cases < min_applicable and mode in {"production", "release"}:
+                        warnings.append(
+                            f"{metric_name}: only {applicable_cases} applicable cases "
+                            f"(minimum {min_applicable}); threshold not enforced"
+                        )
+                        continue
+            threshold_config = semantic_thresholds.get(metric_name)
+            if threshold_config is None:
+                continue
+            expected = _threshold_value_for_mode(threshold_config, mode) if isinstance(threshold_config, dict) else threshold_config
+            if expected is None:
+                continue
+            actual_val = metrics.get(metric_name)
+            if actual_val is not None and isinstance(actual_val, (int, float)) and actual_val < expected:
+                if mode in {"production", "release"}:
+                    failed_checks.append({
+                        "metric": metric_name,
+                        "actual": actual_val,
+                        "expected": expected,
+                        "comparison": ">=",
+                    })
+                else:
+                    warnings.append(
+                        f"semantic_threshold_warning: {metric_name}={actual_val:.4f} "
+                        f"below target {expected}"
+                    )
+
+        # --- Safe-but-wrong SQL blocking ---
+        safe_but_wrong = metrics.get("controlled_predicted_sql_safe_but_wrong_sql_rate")
+        safe_but_wrong_max = float(
+            (semantic_thresholds.get("safe_but_wrong_sql_rate_max") or {}).get("production_max", 0.30)
+            if isinstance(semantic_thresholds.get("safe_but_wrong_sql_rate_max"), dict)
+            else semantic_thresholds.get("safe_but_wrong_sql_rate_max", 0.30)
+        )
+        if (
+            safe_but_wrong is not None
+            and isinstance(safe_but_wrong, (int, float))
+            and safe_but_wrong > safe_but_wrong_max
+            and mode in {"production", "release"}
+        ):
+            failed_checks.append({
+                "metric": "controlled_predicted_sql_safe_but_wrong_sql_rate",
+                "actual": safe_but_wrong,
+                "expected": safe_but_wrong_max,
+                "comparison": "<=",
+            })
+
         sql_safe = bool(
             metrics.get("sql_validation_rate", 0.0) >= 0.90
             and metrics.get("post_abstention_unsafe_sql_count", metrics.get("unsafe_sql_count", 0)) == 0
@@ -300,9 +410,15 @@ class ModelQualityGate:
         semantic_match_ready = bool(
             metrics.get("controlled_predicted_sql_execution_match_rate", 0.0) >= 0.70
             and metrics.get("controlled_predicted_sql_result_value_match_rate", 0.0) >= 0.70
-            and metrics.get("controlled_predicted_sql_safe_but_wrong_sql_rate", 1.0) <= 0.30
+            and (safe_but_wrong is None or safe_but_wrong <= safe_but_wrong_max)
         )
         simple_query_ready = bool(metrics.get("simple_query_pass_rate", 0.0) >= 0.95)
+        semantic_grounding_ready = bool(
+            metrics.get("projection_exact_match_rate", 0.0) >= 0.70
+            and metrics.get("filter_column_accuracy_rate", 0.0) >= 0.70
+            and metrics.get("filter_value_accuracy_rate", 0.0) >= 0.70
+            and metrics.get("dimension_column_accuracy_rate", 0.0) >= 0.65
+        )
         bundle_ready = bool(
             not evaluation_report.get("model_selection_required")
             or (
@@ -332,6 +448,7 @@ class ModelQualityGate:
                 "sql_safe": sql_safe,
                 "semantic_match_ready": semantic_match_ready,
                 "simple_query_ready": simple_query_ready,
+                "semantic_grounding_ready": semantic_grounding_ready,
                 "bundle_ready": bundle_ready,
                 "promotion_ready": bool(
                     passed and mode in {"production", "release"} and bundle_ready

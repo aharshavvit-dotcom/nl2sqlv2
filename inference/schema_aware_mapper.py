@@ -23,6 +23,14 @@ ENTITY_TABLES = {
 
 
 class SchemaAwareMapper:
+    def __init__(
+        self,
+        projection_resolver: Any | None = None,
+        dimension_resolver: Any | None = None,
+    ):
+        self._projection_resolver = projection_resolver
+        self._dimension_resolver = dimension_resolver
+
     def map_slots_to_schema(
         self,
         slots: dict[str, Any],
@@ -32,6 +40,13 @@ class SchemaAwareMapper:
         template_id: str | None = None,
         semantic_profile: dict[str, Any] | None = None,
     ) -> SchemaMapping:
+        if not self._projection_resolver or not self._dimension_resolver:
+            from inference.grounding.projection_resolver import ProjectionResolver
+            from inference.grounding.dimension_resolver import DimensionResolver
+            if not self._projection_resolver:
+                self._projection_resolver = ProjectionResolver(schema_context)
+            if not self._dimension_resolver:
+                self._dimension_resolver = DimensionResolver(schema_context)
         metric_synonyms = normalize_section(metric_synonyms or {})
         dimension_synonyms = normalize_section(dimension_synonyms or {})
         metric_synonyms, dimension_synonyms = filter_sample_retail_physical_mappings(
@@ -84,7 +99,21 @@ class SchemaAwareMapper:
         if dimension:
             dimension_match = self._map_dimension_semantic(str(dimension), semantic_mapper, mapping.metric_table) if semantic_mapper else None
             if not dimension_match:
-                dimension_match = self._map_dimension(str(dimension), schema_context, mapping.metric_table, dimension_synonyms)
+                res = self._dimension_resolver.resolve_dimension(
+                    question=slots.get("question", {}).get("value", "") if isinstance(slots.get("question"), dict) else "",
+                    dimension_phrase=str(dimension),
+                    active_table=mapping.metric_table or mapping.entity_table
+                )
+                if res.get("column"):
+                    dimension_match = {
+                        "table": res["table"],
+                        "column": res["column"],
+                        "score": res["score"],
+                        "method": res["method"],
+                        "warnings": []
+                    }
+                else:
+                    dimension_match = self._map_dimension(str(dimension), schema_context, mapping.metric_table, dimension_synonyms)
             mapping.dimension_name = str(dimension)
             mapping.dimension_table = dimension_match.get("table")
             mapping.dimension_column = dimension_match.get("column")
@@ -96,14 +125,35 @@ class SchemaAwareMapper:
         if filter_column:
             filter_match = self._map_dimension_semantic(str(filter_column), semantic_mapper, mapping.entity_table or mapping.metric_table) if semantic_mapper else None
             if not filter_match:
-                filter_match = self._map_filter(
-                    str(filter_column),
-                    slot_values.get("filter_value"),
-                    schema_context,
-                    str(entity) if entity else None,
-                    mapping.metric_table,
-                    dimension_synonyms,
-                )
+                # Prioritize value index matching for filters to resolve conflicts
+                val = slot_values.get("filter_value")
+                resolved_col = None
+                if val is not None:
+                    # Look up in the value index via a helper resolver or mapping method
+                    from inference.grounding.schema_value_index import SchemaValueIndex
+                    value_index = SchemaValueIndex(schema_context)
+                    candidates = value_index.lookup_value(str(val))
+                    if candidates:
+                        # Prioritize candidates matching the active entity table
+                        candidates.sort(key=lambda x: (1.0 if x["table"] == (mapping.entity_table or mapping.metric_table) else 0.0, x["score"]), reverse=True)
+                        best = candidates[0]
+                        resolved_col = best["column"]
+                        filter_match = {
+                            "table": best["table"],
+                            "column": best["column"].split(".", 1)[-1],
+                            "score": best["score"],
+                            "method": "value_lookup",
+                            "warnings": []
+                        }
+                if not resolved_col:
+                    filter_match = self._map_filter(
+                        str(filter_column),
+                        slot_values.get("filter_value"),
+                        schema_context,
+                        str(entity) if entity else None,
+                        mapping.metric_table,
+                        dimension_synonyms,
+                    )
             mapping.filter_table = filter_match.get("table")
             mapping.filter_column = filter_match.get("column")
             mapping.match_scores["filter"] = filter_match.get("score", 0.0)

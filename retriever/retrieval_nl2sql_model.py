@@ -8,6 +8,7 @@ from typing import Any
 
 from inference.prediction_models import PredictionResult
 from inference.prediction_orchestrator import PredictionOrchestrator
+from inference.prediction_route import DiagnosticContext
 from inference.synonym_loader import load_metric_dimension_maps
 from nl2sql_v1.retriever import TfidfRetriever
 from nl2sql_v1.schema import SchemaGraph
@@ -199,28 +200,38 @@ class RetrievalNL2SQLModel:
         use_neural_ir_fallback: bool | None = None,
         use_option_a_fallback: bool | None = None,
         bypass_cache: bool = False,
+        *,
+        diagnostic_context: DiagnosticContext | None = None,
     ) -> PredictionResult:
         # Check environment override
         if os.getenv("NL2SQL_BYPASS_CACHE", "").strip().lower() in {"1", "true", "yes"}:
             bypass_cache = True
 
+        if diagnostic_context is not None:
+            # Revisions #3 / #18: disable cache reads & writes during diagnostics
+            if not diagnostic_context.cache_read_enabled:
+                bypass_cache = True
+
         bundle_meta = self.metadata.get("model_bundle") or {}
         routing_policy = bundle_meta.get("routing_policy") or {}
 
-        # Lazy init prediction cache
-        if not hasattr(self, "_cache"):
-            from inference.prediction_cache import PredictionCache
-            self._cache = PredictionCache()
-
-        # Check prediction cache
+        cached_data = None
         schema_dict = schema.describe() if hasattr(schema, "describe") else {}
-        cached_data = self._cache.get(
-            question=question,
-            schema=schema_dict,
-            model_checkpoint_path=self.neural_ir_model_dir,
-            routing_policy=routing_policy,
-            bypass_cache=bypass_cache,
-        )
+        if not bypass_cache:
+            # Lazy init prediction cache
+            if not hasattr(self, "_cache"):
+                from inference.prediction_cache import PredictionCache
+                self._cache = PredictionCache()
+
+            # Check prediction cache
+            cached_data = self._cache.get(
+                question=question,
+                schema=schema_dict,
+                model_checkpoint_path=self.neural_ir_model_dir,
+                routing_policy=routing_policy,
+                bypass_cache=bypass_cache,
+            )
+
         if cached_data is not None:
             return PredictionResult(**cached_data)
 
@@ -234,6 +245,7 @@ class RetrievalNL2SQLModel:
             dimension_synonyms=self.dimension_synonyms,
             validator=None,
             use_neural_ir_fallback=self.use_neural_ir_fallback if _fallback is None else _fallback,
+            diagnostic_context=diagnostic_context,
         )
         result.debug["dev_fallback_used"] = self.artifact_dir is None
         # Precise runtime_source: distinguish validated bundles from raw artifact dirs
@@ -252,21 +264,26 @@ class RetrievalNL2SQLModel:
         result.debug["bundle_status"] = bundle_meta.get("status", "")
         result.debug["artifact_dir"] = str(self.artifact_dir) if self.artifact_dir else ""
 
-        # Cache prediction
-        self._cache.put(
-            question=question,
-            schema=schema_dict,
-            model_checkpoint_path=self.neural_ir_model_dir,
-            prediction=result.dict(),
-            routing_policy=routing_policy,
-        )
+        # Cache prediction if permitted by diagnostic context
+        if not bypass_cache and (diagnostic_context is None or diagnostic_context.cache_write_enabled):
+            if not hasattr(self, "_cache"):
+                from inference.prediction_cache import PredictionCache
+                self._cache = PredictionCache()
+            self._cache.put(
+                question=question,
+                schema=schema_dict,
+                model_checkpoint_path=self.neural_ir_model_dir,
+                prediction=result.dict(),
+                routing_policy=routing_policy,
+            )
 
-        # Log telemetry
-        try:
-            from inference.telemetry_logger import TelemetryLogger
-            TelemetryLogger().log_prediction(question, result.dict())
-        except Exception:
-            pass
+        # Log telemetry if permitted by diagnostic context
+        if diagnostic_context is None or diagnostic_context.telemetry_namespace != "disabled":
+            try:
+                from inference.telemetry_logger import TelemetryLogger
+                TelemetryLogger().log_prediction(question, result.dict())
+            except Exception:
+                pass
 
         return result
 

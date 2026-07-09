@@ -10,7 +10,28 @@ from .runtime_schema_context import RuntimeSchemaContext
 from .synonym_loader import load_synonym_config, normalize_section
 
 
+import hashlib
+
 class SlotResolver:
+    def __init__(
+        self,
+        filter_value_extractor: Any | None = None,
+        grounding_service: Any | None = None,
+    ):
+        self._extractor = filter_value_extractor
+        self._grounding_service = grounding_service
+        self._cached_fingerprint = None
+
+    def _schema_fingerprint(self, schema_context: RuntimeSchemaContext) -> str:
+        tbls = sorted(schema_context.get_tables())
+        hasher = hashlib.sha256()
+        for t in tbls:
+            hasher.update(t.encode("utf-8"))
+            cols = sorted(schema_context.get_table_columns(t))
+            for c in cols:
+                hasher.update(c.encode("utf-8"))
+        return hasher.hexdigest()[:16]
+
     def resolve_slots(
         self,
         question: str,
@@ -34,17 +55,107 @@ class SlotResolver:
         )
         slots["date_grain"] = self._date_grain_slot(q)
         slots["date_filter"] = self._date_filter_slot(q)
-        filter_value_candidates = self.extract_filter_value_candidates(question, schema_context)
-        filter_column, filter_value, filter_operator = self._filter_slots(
-            question,
-            q,
-            synonyms["dimensions"],
-            schema_context,
-            filter_value_candidates,
-        )
-        slots["filter_column"] = filter_column
-        slots["filter_value"] = filter_value
-        slots["filter_operator"] = filter_operator
+
+        # Initialize extractor and grounding service lazily with caching
+        if not self._extractor or not self._grounding_service:
+            fingerprint = self._schema_fingerprint(schema_context)
+            if self._cached_fingerprint != fingerprint:
+                from inference.grounding.schema_value_index import SchemaValueIndex, ValueIndexMode
+                from inference.grounding.filter_value_extractor import FilterValueExtractor
+                from inference.grounding.filter_grounding_service import FilterGroundingService
+                
+                value_index = SchemaValueIndex(schema_context, mode=ValueIndexMode.APPROVED_DOMAIN_VALUES)
+                self._extractor = FilterValueExtractor(value_index)
+                self._grounding_service = FilterGroundingService(value_index, schema_context)
+                self._cached_fingerprint = fingerprint
+
+        grounded = False
+        clar_questions = []
+        filter_value_candidates = []
+
+        if self._grounding_service and self._extractor:
+            contract = self._extractor.extract_literals(question)
+            gf_list = self._grounding_service.ground_filters(
+                question, contract, entity_table=slots["entity"].value, metric_table=slots["metric"].value
+            )
+            for gf in gf_list:
+                if gf.requires_clarification and gf.clarification_question:
+                    clar_questions.append(gf.clarification_question)
+
+            valid_gfs = [gf for gf in gf_list if gf.selected_candidate]
+            if valid_gfs:
+                valid_gfs.sort(key=lambda x: (-x.selected_candidate.grounding_score, -sum(x.selected_candidate.grounding_signals.values())))
+                best_gf = valid_gfs[0]
+                cand = best_gf.selected_candidate
+                
+                op_map = {
+                    "equals": "equals",
+                    "not_equals": "not_equals",
+                    ">": "greater_than",
+                    "<": "less_than",
+                    ">=": "greater_than_or_equals",
+                    "<=": "less_than_or_equals",
+                    "between": "between",
+                    "in": "in",
+                    "not_in": "not_in",
+                }
+                slots["filter_column"] = RuntimeSlot(
+                    slot_name="filter_column",
+                    value=cand.column_name,
+                    source="schema_match",
+                    confidence=cand.grounding_score,
+                    alternatives=[c.column_name for c in best_gf.candidate_columns[1:]],
+                )
+                slots["filter_value"] = RuntimeSlot(
+                    slot_name="filter_value",
+                    value=cand.normalized_value,
+                    source="question",
+                    confidence=0.9,
+                )
+                slots["filter_operator"] = RuntimeSlot(
+                    slot_name="filter_operator",
+                    value=op_map.get(cand.operator, cand.operator),
+                    source="question",
+                    confidence=0.88,
+                )
+                for gf in gf_list:
+                    lit = next((l for l in contract.extracted_literals if l.literal_id == gf.literal_id), None)
+                    if lit:
+                        cand_cols = []
+                        for c in gf.candidate_columns:
+                            diag_signals = []
+                            for sig_name in c.grounding_signals.keys():
+                                if sig_name in ("exact_value_match", "fuzzy_value_match"):
+                                    diag_signals.append("value_lookup")
+                                else:
+                                    diag_signals.append(sig_name)
+                            if not diag_signals:
+                                diag_signals = ["fallback"]
+                            cand_cols.append({
+                                "column": f"{c.table_name}.{c.column_name}",
+                                "score": c.grounding_score,
+                                "signals": diag_signals,
+                            })
+                        filter_value_candidates.append({
+                            "value": lit.raw_text,
+                            "span": [lit.span_start, lit.span_end],
+                            "signals": [lit.extraction_method],
+                            "candidate_columns": cand_cols,
+                        })
+                grounded = True
+
+        if not grounded:
+            filter_value_candidates = self.extract_filter_value_candidates(question, schema_context)
+            filter_column, filter_value, filter_operator = self._filter_slots(
+                question,
+                q,
+                synonyms["dimensions"],
+                schema_context,
+                filter_value_candidates,
+            )
+            slots["filter_column"] = filter_column
+            slots["filter_value"] = filter_value
+            slots["filter_operator"] = filter_operator
 
         template_id = selected_template.get("template_id")
         if template_id in {"count_records"} and not slots["metric"].value:
@@ -56,7 +167,7 @@ class SlotResolver:
 
         return {
             "slots": {key: value.model_dump() for key, value in slots.items()},
-            "clarification_questions": [],
+            "clarification_questions": clar_questions,
             "filter_value_candidates": filter_value_candidates,
         }
 

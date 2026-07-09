@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from inference.prediction_models import is_abstained_prediction
+from evaluation.semantic_pass import compute_simple_query_semantic_pass, compute_semantic_evaluation_metrics
 
 
 class DatasetScaleEvaluator:
@@ -96,6 +97,23 @@ class DatasetScaleEvaluator:
             linking = _linking_diagnostics(gold, pred, row)
             projection = _projection_diagnostics(gold, pred)
             abstained = _row_abstained(row)
+
+            # --- Strict semantic pass (all applicable checks) ---
+            final_sql = row.get("predicted_sql") or row.get("rendered_sql")
+            validation_for_pass = row.get("sql_validation") or {}
+            semantic_pass_result = compute_simple_query_semantic_pass(
+                gold, pred, final_sql, validation_for_pass
+            )
+
+            # Route telemetry
+            predicted_route = (
+                row.get("predicted_route")
+                or row.get("route")
+                or row.get("prediction_source")
+                or pred.get("source")
+                or "unknown"
+            )
+
             per_example.append({
                 "example_id": row.get("example_id"),
                 "question": row.get("question"),
@@ -120,6 +138,9 @@ class DatasetScaleEvaluator:
                 "execution_match": bool(row.get("execution_match", False)),
                 "unnecessary_join": bool(_pred_joins and not _gold_joins),
                 "wrong_table": gold.get("base_table") != pred.get("base_table"),
+                # Strict semantic pass (replaces weak simple_query_pass as blocking metric)
+                "semantic_pass": semantic_pass_result.model_dump(),
+                "predicted_route": predicted_route,
                 # Bootstrap promotion fields (required by promotion_policy.py)
                 "simple_query_pass": _simple_query_pass,
                 "gold_comparison_score": float(
@@ -192,6 +213,51 @@ class DatasetScaleEvaluator:
             sum(bool(value) for value in simple_results) / len(simple_results)
             if simple_results else 0.0
         )
+
+        # --- Strict semantic evaluation metrics (applicability-aware) ---
+        semantic_metrics = compute_semantic_evaluation_metrics(per_example)
+        summary["semantic_evaluation"] = semantic_metrics.model_dump()
+        # Flatten key semantic rates into the top-level summary for compatibility
+        summary["simple_query_semantic_pass_rate"] = semantic_metrics.simple_query_semantic_pass_rate
+        summary["simple_query_safety_pass_rate"] = semantic_metrics.simple_query_safety_pass_rate
+        summary["simple_query_validity_pass_rate"] = semantic_metrics.simple_query_validity_pass_rate
+        summary["simple_query_table_pass_rate"] = semantic_metrics.simple_query_table_pass_rate
+        summary["simple_query_projection_pass_rate"] = semantic_metrics.simple_query_projection_pass_rate
+        summary["simple_query_filter_pass_rate"] = semantic_metrics.simple_query_filter_pass_rate
+
+        # --- Route-level telemetry ---
+        route_counter: Counter = Counter()
+        route_semantic_pass: dict[str, list[bool]] = defaultdict(list)
+        route_filter_match: dict[str, list[bool]] = defaultdict(list)
+        route_projection_match: dict[str, list[bool]] = defaultdict(list)
+        for item in per_example:
+            route = item.get("predicted_route") or "unknown"
+            route_counter[route] += 1
+            sp = item.get("semantic_pass") or {}
+            route_semantic_pass[route].append(sp.get("passed", False))
+            fl = item.get("filter_linking") or {}
+            if fl.get("filter_column_match") is not None:
+                route_filter_match[route].append(bool(fl["filter_column_match"]))
+            pj = item.get("projection") or {}
+            if pj.get("exact_match") is not None:
+                route_projection_match[route].append(bool(pj["exact_match"]))
+        total_route = sum(route_counter.values()) or 1
+        summary["route_telemetry"] = {
+            "route_distribution": dict(route_counter),
+            "route_percentage": {r: c / total_route for r, c in route_counter.items()},
+            "semantic_accuracy_by_route": {
+                r: sum(v) / len(v) if v else 0.0
+                for r, v in route_semantic_pass.items()
+            },
+            "filter_accuracy_by_route": {
+                r: sum(v) / len(v) if v else 0.0
+                for r, v in route_filter_match.items()
+            },
+            "projection_accuracy_by_route": {
+                r: sum(v) / len(v) if v else 0.0
+                for r, v in route_projection_match.items()
+            },
+        }
         predictions_total = len(rows)
         abstention_count = sum(1 for item in per_example if item.get("abstained"))
         generated_count = sum(

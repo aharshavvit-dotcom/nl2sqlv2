@@ -122,8 +122,25 @@ class IRValidationResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-def diff_query_ir(predicted_ir: QueryIR | dict[str, Any] | None, gold_ir: QueryIR | dict[str, Any] | None) -> dict[str, Any]:
-    """Return a deterministic, slot-level semantic diff between two QueryIR values."""
+def diff_query_ir(
+    predicted_ir: QueryIR | dict[str, Any] | None,
+    gold_ir: QueryIR | dict[str, Any] | None,
+    schema_context: Any | None = None,
+) -> dict[str, Any]:
+    """Return a deterministic, slot-level semantic diff between two QueryIR values.
+
+    This is the single canonical diff used by all evaluation, regression,
+    promotion comparison, quality gate, and failure artifact generation.
+
+    Args:
+        predicted_ir: The predicted QueryIR or dict.
+        gold_ir: The gold/expected QueryIR or dict.
+        schema_context: Optional schema context for alias canonicalization.
+
+    Returns:
+        Dict with per-slot match booleans, projection detail, failure categories,
+        and primary_failure_slot.
+    """
     predicted = _ir_payload(predicted_ir)
     gold = _ir_payload(gold_ir)
 
@@ -134,15 +151,36 @@ def diff_query_ir(predicted_ir: QueryIR | dict[str, Any] | None, gold_ir: QueryI
     predicted_filters = _items(predicted, "filters")
     gold_filters = _items(gold, "filters")
 
-    checks = {
+    # --- Projection detail (set-based, order-invariant) ---
+    pred_proj_set = _column_set(predicted_dimensions)
+    gold_proj_set = _column_set(gold_dimensions)
+    extra_projection_columns = sorted(pred_proj_set - gold_proj_set)
+    missing_projection_columns = sorted(gold_proj_set - pred_proj_set)
+
+    # --- Dimension comparison (separate from projection) ---
+    # Dimensions are the columns used for grouping/breakdown, not just displayed
+    pred_dim_sigs = _signatures(predicted_dimensions, ("table", "column"))
+    gold_dim_sigs = _signatures(gold_dimensions, ("table", "column"))
+
+    checks: dict[str, Any] = {
         "intent_match": _scalar(predicted.get("intent")) == _scalar(gold.get("intent")),
         "base_table_match": _scalar(predicted.get("base_table")) == _scalar(gold.get("base_table")),
+        # Projection: exact set match of dimension expressions
         "projection_match": _signatures(predicted_dimensions, ("expression", "table", "column"))
         == _signatures(gold_dimensions, ("expression", "table", "column")),
+        "projection_exact_match": pred_proj_set == gold_proj_set,
+        "projection_contains_gold": gold_proj_set.issubset(pred_proj_set),
+        "extra_projection_columns": extra_projection_columns,
+        "missing_projection_columns": missing_projection_columns,
+        # Metric comparison
         "metric_match": _signatures(predicted_metrics, ("expression", "column"))
         == _signatures(gold_metrics, ("expression", "column")),
         "aggregation_match": _signatures(predicted_metrics, ("aggregation",))
         == _signatures(gold_metrics, ("aggregation",)),
+        # Dimension comparison (separate from projection — Review #9)
+        "dimension_match": pred_dim_sigs == gold_dim_sigs,
+        "dimension_column_match": pred_dim_sigs == gold_dim_sigs,
+        # Filter comparisons
         "filter_column_match": _signatures(predicted_filters, ("table", "column"))
         == _signatures(gold_filters, ("table", "column")),
         "filter_value_match": _signatures(predicted_filters, ("value",), normalize_values=True)
@@ -174,14 +212,52 @@ def diff_query_ir(predicted_ir: QueryIR | dict[str, Any] | None, gold_ir: QueryI
         )
         == _signatures(_items(gold, "order_by"), ("expression", "alias", "direction"), ordered=True),
         "limit_match": int(predicted.get("limit") or 100) == int(gold.get("limit") or 100),
+        "distinct_match": bool(predicted.get("distinct")) == bool(gold.get("distinct")),
     }
-    checks["dimension_match"] = checks["projection_match"]
-    checks["selected_columns_match"] = checks["projection_match"]
+
+    # Backward compatibility aliases
+    checks["selected_columns_match"] = checks["projection_exact_match"]
     checks["filters_match"] = bool(
         checks["filter_column_match"]
         and checks["filter_value_match"]
         and checks["filter_operator_match"]
     )
+
+    # --- Failure categories ---
+    failure_categories: list[str] = []
+    if not checks["intent_match"]:
+        failure_categories.append("intent_mismatch")
+    if not checks["base_table_match"]:
+        failure_categories.append("base_table_mismatch")
+    if missing_projection_columns:
+        failure_categories.append("projection_missing_column")
+    if extra_projection_columns:
+        failure_categories.append("projection_extra_column")
+    if not checks["projection_exact_match"]:
+        failure_categories.append("projection_mismatch")
+    if not checks["metric_match"]:
+        failure_categories.append("metric_column_mismatch")
+    if not checks["dimension_match"]:
+        failure_categories.append("dimension_column_mismatch")
+    if not checks["filter_column_match"]:
+        failure_categories.append("filter_column_mismatch")
+    if not checks["filter_operator_match"]:
+        failure_categories.append("filter_operator_mismatch")
+    if not checks["filter_value_match"]:
+        failure_categories.append("filter_value_mismatch")
+    if not checks["date_filter_match"]:
+        failure_categories.append("date_filter_mismatch")
+    if not checks["aggregation_match"]:
+        failure_categories.append("aggregation_mismatch")
+    if not checks["group_by_match"]:
+        failure_categories.append("group_by_mismatch")
+    if not checks["join_match"]:
+        failure_categories.append("join_mismatch")
+    if not checks["order_by_match"]:
+        failure_categories.append("order_by_mismatch")
+    if not checks["limit_match"]:
+        failure_categories.append("limit_mismatch")
+    checks["failure_categories"] = failure_categories
 
     failure_order = (
         "filter_column",
@@ -190,6 +266,7 @@ def diff_query_ir(predicted_ir: QueryIR | dict[str, Any] | None, gold_ir: QueryI
         "projection",
         "aggregation",
         "metric",
+        "dimension",
         "base_table",
         "join",
         "group_by",
@@ -197,6 +274,7 @@ def diff_query_ir(predicted_ir: QueryIR | dict[str, Any] | None, gold_ir: QueryI
         "limit",
         "date_filter",
         "intent",
+        "distinct",
     )
     checks["primary_failure_slot"] = next(
         (slot for slot in failure_order if checks.get(f"{slot}_match") is False),
@@ -226,6 +304,21 @@ def _normalize(value: Any) -> str:
     text = str(value if value is not None else "").strip().lower().replace('"', "").replace("`", "")
     text = re.sub(r"\b[a-z_][a-z0-9_]*\.", "", text)
     return " ".join(text.split())
+
+
+def _column_set(items: list[dict[str, Any]]) -> set[str]:
+    """Extract a set of normalized column identities from IR items."""
+    result = set()
+    for item in items:
+        table = item.get("table")
+        column = item.get("column")
+        if table and column:
+            result.add(_normalize(f"{table}.{column}"))
+        elif column:
+            result.add(_normalize(str(column)))
+        elif item.get("expression"):
+            result.add(_normalize(str(item["expression"])))
+    return result
 
 
 def _signatures(

@@ -19,6 +19,8 @@ class EarlyStopping:
         ``"max"`` (higher is better) or ``"min"`` (lower is better).
     min_delta:
         Minimum improvement to count as an actual improvement.
+    regression_threshold:
+        Maximum allowed drop from the best value before halting immediately.
     """
 
     def __init__(
@@ -27,11 +29,13 @@ class EarlyStopping:
         metric_name: str = "loss",
         mode: str = "min",
         min_delta: float = 0.0,
+        regression_threshold: float = 0.50,
     ) -> None:
         self.patience = patience
         self.metric_name = metric_name
         self.mode = mode
         self.min_delta = min_delta
+        self.regression_threshold = regression_threshold
         self._best: float | None = None
         self._counter: int = 0
 
@@ -49,6 +53,14 @@ class EarlyStopping:
             self._best = value
             self._counter = 0
             return False
+
+        # Abort immediately if a significant regression is detected
+        if self.mode == "max" and value < self._best - self.regression_threshold:
+            print(f"Early Stopping: Significant regression detected! Metric {self.metric_name} fell from best {self._best:.4f} to {value:.4f} (limit: -{self.regression_threshold})")
+            return True
+        elif self.mode == "min" and value > self._best + self.regression_threshold:
+            print(f"Early Stopping: Significant regression detected! Metric {self.metric_name} rose from best {self._best:.4f} to {value:.4f} (limit: +{self.regression_threshold})")
+            return True
 
         improved = (
             (value > self._best + self.min_delta) if self.mode == "max"

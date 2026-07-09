@@ -50,6 +50,7 @@ class OptionAIRModel(nn.Module):
         )
         head_dim = hidden_dim * 2
         self.intent_head = nn.Linear(head_dim, label_sizes["intent"])
+        self.span_head = nn.Linear(head_dim, 2)
         self.base_table_head = nn.Linear(head_dim, self.max_tables)
         self.metric_aggregation_head = nn.Linear(head_dim, label_sizes["metric_aggregation"])
         self.metric_column_head = nn.Linear(head_dim, self.max_columns)
@@ -98,6 +99,7 @@ class OptionAIRModel(nn.Module):
         filter_column_logits = self._add_link_scores(self.filter_column_head(fused), schema_link_scores, self.filter_link_scale)
         return {
             "intent_logits": self.intent_head(fused),
+            "span_logits": self.span_head(question_out),
             "base_table_logits": masked_logits(base_table_logits, table_candidate_mask),
             "metric_aggregation_logits": self.metric_aggregation_head(fused),
             "metric_column_logits": masked_logits(metric_column_logits, _preferred_mask(metric_column_mask, column_candidate_mask)),

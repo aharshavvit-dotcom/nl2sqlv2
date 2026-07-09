@@ -291,9 +291,38 @@ def run_optimized_training(
         mode=best_mode,
     )
 
+    # Load baseline performance comparison
+    baseline_score = None
+    prev_meta_path = Path(output_dir) / "checkpoint_metadata.json"
+    if prev_meta_path.exists():
+        try:
+            prev_meta = json.loads(prev_meta_path.read_text(encoding="utf-8"))
+            baseline_score = prev_meta.get("best_metric_value")
+        except Exception:
+            pass
+
+    # Run data leakage audit
+    from dataset_training.leakage_checker import DatasetLeakageChecker
+    try:
+        leakage_checker = DatasetLeakageChecker()
+        leakage_res = leakage_checker.check_leakage(train_path, val_path)
+        leakage_summary = {
+            "ok": leakage_res.ok,
+            "total_issues": len(leakage_res.issues),
+            "issues": [str(issue) for issue in leakage_res.issues],
+        }
+    except Exception as exc:
+        leakage_summary = {
+            "ok": False,
+            "total_issues": 1,
+            "issues": [f"Leakage audit execution failed: {exc}"],
+        }
+
     # Diagnostics
     diagnostics = TrainingDiagnostics(output_dir)
     diagnostics.set_config(config.to_dict())
+    diagnostics.set_baseline_score(baseline_score)
+    diagnostics.set_leakage_summary(leakage_summary)
     diagnostics.observe_dataset_item(train_dataset[0])
     diagnostics.start_training()
 
@@ -363,6 +392,17 @@ def run_optimized_training(
                     head_losses["hard_negative"] = hn_loss
                     hard_negative_batches_used += 1
 
+            # Span loss
+            if "span" in batch["labels"] and "span_logits" in outputs:
+                span_logits = outputs["span_logits"]
+                span_target = batch["labels"]["span"]
+                span_loss = torch.nn.functional.cross_entropy(
+                    span_logits.view(-1, 2),
+                    span_target.view(-1),
+                    ignore_index=-1
+                )
+                head_losses["span"] = span_loss
+
             combined = loss_weighter.combine(head_losses)
             loss = combined["total_loss"]
             loss.backward()
@@ -405,6 +445,9 @@ def run_optimized_training(
         train_metrics["overall_slot_accuracy"] = (
             sum(epoch_correct.get(k, 0) / max(epoch_total.get(k, 0), 1) for k in keys) / max(len(keys), 1)
         )
+        train_metrics["support_weighted_semantic_score"] = (
+            sum(epoch_correct.values()) / max(sum(epoch_total.values()), 1)
+        )
 
         # ── Validate ─────────────────────────────────────────────
         val_metrics: dict[str, float] = {}
@@ -427,6 +470,17 @@ def run_optimized_training(
                         mask = batch.get(HEAD_TO_MASK.get(head, ""))
                         loss_name = _HEAD_LOSS_NAME.get(head, head.replace("_logits", ""))
                         head_losses_v[loss_name] = masked_cross_entropy_fn(outputs[head], target, mask=mask, ignore_index=-1)
+                    
+                    if "span" in batch["labels"] and "span_logits" in outputs:
+                        span_logits_v = outputs["span_logits"]
+                        span_target_v = batch["labels"]["span"]
+                        span_loss_v = torch.nn.functional.cross_entropy(
+                            span_logits_v.view(-1, 2),
+                            span_target_v.view(-1),
+                            ignore_index=-1
+                        )
+                        head_losses_v["span"] = span_loss_v
+
                     combined_v = loss_weighter.combine(head_losses_v)
                     bs = int(batch["question_ids"].size(0))
                     val_loss_total += float(combined_v["total_loss"].item()) * bs
@@ -439,6 +493,16 @@ def run_optimized_training(
                         pred = outputs[head].argmax(dim=-1)
                         val_correct[label_key] = val_correct.get(label_key, 0) + int(pred.eq(target).logical_and(valid).sum().item())
                         val_total[label_key] = val_total.get(label_key, 0) + int(valid.sum().item())
+
+                    if "span" in batch["labels"] and "span_logits" in outputs:
+                        span_pred_v = outputs["span_logits"].argmax(dim=-1)
+                        span_target_v = batch["labels"]["span"]
+                        valid_span_v = span_target_v.ne(-1)
+                        if valid_span_v.any():
+                            c_span = int(span_pred_v.eq(span_target_v).logical_and(valid_span_v).sum().item())
+                            t_span = int(valid_span_v.sum().item())
+                            val_correct["span"] = val_correct.get("span", 0) + c_span
+                            val_total["span"] = val_total.get("span", 0) + t_span
 
             val_metrics["loss"] = val_loss_total / max(val_items, 1)
             for lk in val_total:
@@ -455,6 +519,9 @@ def run_optimized_training(
                 val_metrics.get("overall_slot_accuracy", 0.0),
             ]
             val_metrics["validation_composite_score"] = sum(composite_parts) / len(composite_parts)
+            val_metrics["support_weighted_semantic_score"] = (
+                sum(val_correct.values()) / max(sum(val_total.values()), 1)
+            )
 
         epoch_time = time.time() - epoch_start
         current_lr = optimizer.param_groups[0]["lr"]
@@ -493,16 +560,16 @@ def run_optimized_training(
             else:
                 scheduler.step()
 
-        # Early stopping
-        if early_stopper.step(check_metrics):
-            print(f"  Early stopping at epoch {epoch}")
-            break
-
         history.append({
             "epoch": epoch,
             **{f"train_{k}": v for k, v in train_metrics.items()},
             **{f"val_{k}": v for k, v in val_metrics.items()},
         })
+
+        # Early stopping
+        if early_stopper.step(check_metrics):
+            print(f"  Early stopping at epoch {epoch}")
+            break
 
     # Save final model.pt (best model)
     best_ckpt = ckpt_manager.load_best()
@@ -750,7 +817,7 @@ def _hard_negative_loss(
             continue
         gold_index = labels[gold_label]
         negative_index = labels[label_key]
-        valid = gold_index.ge(0) & negative_index.ge(0)
+        valid = gold_index.ge(0) & negative_index.ge(0) & (gold_index != negative_index)
         if not valid.any():
             continue
         logits = outputs[head]

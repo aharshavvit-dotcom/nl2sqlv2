@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
+import os
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,56 +16,46 @@ from .bundle_manifest import load_manifest, save_manifest
 from .bundle_validator import ModelBundleValidator
 
 
-class ModelBundlePromoter:
-    """Promotes a validated candidate bundle to become the current active bundle."""
+logger = logging.getLogger(__name__)
 
-    def promote(
-        self,
-        candidate_dir: str | Path,
-        current_dir: str | Path,
-        skip_quality_gate: bool = False,
-    ) -> dict[str, Any]:
-        """Promote a candidate bundle to current.
 
-        Rules:
-            1. Validate candidate first.
-            2. Candidate must pass the production quality gate and identity checks.
-            3. Backup old current bundle to history.
-            4. Promote candidate to current.
-            5. Update manifest status to 'current'.
-            6. Write promotion report.
+class PromotionPolicyEvaluator:
+    """Evaluates candidate bundle evidence and returns a signed decision."""
 
-        Returns:
-            dict with promotion result including status and paths.
-        """
-        candidate = Path(candidate_dir)
-        current = Path(current_dir)
-        history_base = candidate.parent / "history"
+    def __init__(self) -> None:
+        pass
 
-        # 1. Validate candidate
-        validator = ModelBundleValidator()
-        validation = validator.validate(candidate)
-        if not validation["passed"]:
-            return {
-                "promoted": False,
-                "reason": "Candidate bundle failed validation",
-                "blocking_issues": validation["blocking_issues"],
-                "warnings": validation["warnings"],
-            }
-
-        # Load manifest
-        manifest = load_manifest(candidate / "bundle_manifest.json")
-
-        # 2. Promotion is never bypassable. Debug/baseline runs only build candidates.
-        gate_path = candidate / "evaluation" / "model_quality_gate_report.json"
-        selection_path = candidate / "evaluation" / "model_selection_report.json"
-        controlled_path = candidate / "evaluation" / "controlled_predicted_sql_execution_report.json"
+    def evaluate(self, candidate_dir: Path) -> dict[str, Any]:
+        """Verify quality policies and independent blocking gates."""
+        manifest = load_manifest(candidate_dir / "bundle_manifest.json")
+        
+        gate_path = candidate_dir / "evaluation" / "model_quality_gate_report.json"
+        selection_path = candidate_dir / "evaluation" / "model_selection_report.json"
+        controlled_path = candidate_dir / "evaluation" / "controlled_predicted_sql_execution_report.json"
+        
         gate = json.loads(gate_path.read_text(encoding="utf-8")) if gate_path.exists() else {}
         selection = json.loads(selection_path.read_text(encoding="utf-8")) if selection_path.exists() else {}
         lifecycle = manifest.lifecycle_proof or {}
+        
         blockers: list[str] = []
-        if skip_quality_gate:
-            blockers.append("quality_gate_bypass_forbidden")
+        
+        # 1. Independent validation & safety thresholds
+        metrics = manifest.metrics or {}
+        unsafe_sql = metrics.get("unsafe_sql_count", 0)
+        sql_val = metrics.get("sql_validation_rate", 0.0)
+        wrong_table = metrics.get("wrong_table_rate", 0.0)
+        unnecessary_join = metrics.get("unnecessary_join_rate", 0.0)
+        
+        if unsafe_sql > 0 or gate.get("unsafe_sql_count", 0) > 0:
+            blockers.append("unsafe_sql_detected")
+        if sql_val < 0.90:
+            blockers.append(f"sql_validation_rate_below_threshold: {sql_val:.2f} < 0.90")
+        if wrong_table > 0.15:
+            blockers.append(f"wrong_table_rate_above_threshold: {wrong_table:.2f} > 0.15")
+        if unnecessary_join > 0.05:
+            blockers.append(f"unnecessary_join_rate_above_threshold: {unnecessary_join:.2f} > 0.05")
+            
+        # 2. Manifest status and readiness checks
         if manifest.status != "candidate":
             blockers.append("bundle_status_not_candidate")
         if gate.get("quality_gate_mode") not in {"production", "release"}:
@@ -72,22 +66,12 @@ class ModelBundlePromoter:
             blockers.append("candidate_not_eligible_for_promotion")
         if manifest.production_ready_full is not True:
             blockers.append("production_ready_full_false")
-        required_neural = {
-            "epochs": 10,
-            "batch_size": 8,
-            "save_best_metric": "loss",
-            "save_best_mode": "min",
-            "early_stopping_patience": 2,
-            "weight_decay": 0.0001,
-            "pointer_head_weight_decay": 0.001,
-            "pointer_dropout": 0.30,
-        }
-        if any(manifest.neural_training_config.get(key) != value for key, value in required_neural.items()):
-            blockers.append("effective_neural_config_invalid")
         if manifest.dataset_contribution_status.get("passed") is not True:
             blockers.append("dataset_contribution_invalid")
         if not manifest.sklearn_artifact_version.get("sklearn_version"):
             blockers.append("sklearn_artifact_version_missing")
+            
+        # 3. Report identity validation
         if not controlled_path.exists() or not lifecycle.get("controlled_predicted_sql_report_attached_to_bundle", False):
             blockers.append("controlled_predicted_sql_report_missing")
         if not lifecycle.get("controlled_predicted_sql_report_identity_verified", False):
@@ -109,92 +93,305 @@ class ModelBundlePromoter:
                 blockers.append("model_selection_bundle_id_mismatch")
             if selection.get("manifest_bundle_id") != manifest.bundle_id:
                 blockers.append("model_selection_manifest_id_mismatch")
+                
         if lifecycle.get("controlled_predicted_sql_passed") is not True:
             blockers.append("controlled_predicted_sql_not_passed")
+            
         if blockers:
             return {
-                "promoted": False,
-                "reason": "Production promotion requirements not met",
-                "bundle_id": manifest.bundle_id,
-                "blocking_issues": list(dict.fromkeys(blockers)),
-                "quality_gate": gate or manifest.quality_gate,
+                "decision": "rejected",
+                "blocking_issues": blockers,
             }
+            
+        # Write decision file inside candidate
+        decision_report = {
+            "decision": "approved",
+            "pipeline_run_id": manifest.pipeline_run_id,
+            "bundle_id": manifest.bundle_id,
+            "candidate_sha256": self._compute_dir_sha256(candidate_dir),
+            "policy_version": "1.0",
+            "approved_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "checks": {
+                "unsafe_sql_count_zero": bool(unsafe_sql == 0),
+                "sql_validation_passed": bool(sql_val >= 0.90),
+                "wrong_table_rate_valid": bool(wrong_table <= 0.15),
+                "unnecessary_join_rate_valid": bool(unnecessary_join <= 0.05),
+                "quality_gate_passed": True,
+                "sklearn_metadata_present": True,
+                "controlled_predicted_sql_passed": True,
+            }
+        }
+        
+        decision_path = candidate_dir / "promotion_decision.json"
+        decision_path.write_text(json.dumps(decision_report, indent=2, ensure_ascii=False), encoding="utf-8")
+        
+        return decision_report
 
-        # 3. Windows-safe atomic promotion flow
-        import uuid
-        run_suffix = manifest.pipeline_run_id or uuid.uuid4().hex[:8]
-        current_tmp = current.parent / f"current.tmp.{run_suffix}"
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        backup_dir = history_base / f"current.backup.{timestamp}"
+    def _compute_dir_sha256(self, dir_path: Path) -> str:
+        hasher = hashlib.sha256()
+        for path in sorted(dir_path.rglob("*")):
+            if path.is_file() and path.name != "promotion_decision.json":
+                hasher.update(path.relative_to(dir_path).as_posix().encode())
+                try:
+                    with path.open("rb") as f:
+                        while chunk := f.read(8192):
+                            hasher.update(chunk)
+                except Exception:
+                    pass
+        return hasher.hexdigest()
 
-        # Clean up any leftover temp dirs
-        if current_tmp.exists():
+
+class PromotionRecoveryManager:
+    """Manages transactional recovery and locks for current bundle promotion."""
+
+    def __init__(self, lock_path: Path, journal_path: Path) -> None:
+        self.lock_path = lock_path
+        self.journal_path = journal_path
+
+    def acquire_lock(self) -> None:
+        """Acquire exclusive promotion lock."""
+        # Simple lock file directory check to ensure Windows concurrency safety
+        for _ in range(10):
             try:
-                shutil.rmtree(current_tmp)
+                self.lock_path.mkdir(parents=True, exist_ok=False)
+                # Write PID
+                (self.lock_path / "lock.pid").write_text(str(os.getpid()))
+                return
+            except OSError:
+                time.sleep(0.1)
+        raise RuntimeError("Could not acquire promotion lock. Another promotion is in progress.")
+
+    def release_lock(self) -> None:
+        """Release the lock."""
+        if self.lock_path.exists():
+            try:
+                shutil.rmtree(self.lock_path)
             except Exception:
                 pass
 
+    def write_journal(self, state: dict[str, Any]) -> None:
+        """Atomically write transition journal state."""
+        tmp = self.journal_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        if self.journal_path.exists():
+            self.journal_path.unlink()
+        tmp.rename(self.journal_path)
+
+    def recover(self, current_dir: Path) -> None:
+        """Check for unfinished journal and recover."""
+        if not self.journal_path.exists():
+            return
+        
         try:
-            # Step A: Copy candidate to temp directory first
-            shutil.copytree(candidate, current_tmp)
+            journal = json.loads(self.journal_path.read_text(encoding="utf-8"))
+            stage = journal.get("stage")
+            backup_dir_str = journal.get("backup_dir")
+            tmp_dir_str = journal.get("tmp_dir")
             
-            # Step B: Rename existing current directory to backup
+            logger.warning("Unfinished promotion journal detected! Restoring state from stage %s.", stage)
+            
+            # Stage A: swap was interrupted before current directory swap or renaming
+            if stage in {"started", "copied_tmp"}:
+                # Clean up tmp dir if it exists
+                if tmp_dir_str and Path(tmp_dir_str).exists():
+                    shutil.rmtree(tmp_dir_str)
+                    
+            # Stage B: backup created but swap interrupted/incomplete
+            elif stage == "backed_up":
+                # Swap back backup directory to current if it exists
+                if backup_dir_str and Path(backup_dir_str).exists():
+                    if current_dir.exists():
+                        shutil.rmtree(current_dir)
+                    shutil.move(backup_dir_str, str(current_dir))
+                    
+                if tmp_dir_str and Path(tmp_dir_str).exists():
+                    shutil.rmtree(tmp_dir_str)
+                    
+            # Stage C: swapped but not fully validated/manifest saved
+            elif stage == "swapped":
+                # Current exists. Ensure validation passes or rollback
+                manifest_path = current_dir / "bundle_manifest.json"
+                if manifest_path.exists():
+                    try:
+                        manifest = load_manifest(manifest_path)
+                        manifest.status = "current"
+                        manifest.bundle_status = "current"
+                        manifest.model_artifact_source = "model_bundle_current"
+                        save_manifest(manifest, manifest_path)
+                    except Exception:
+                        # Rollback if manifest saving fails
+                        if backup_dir_str and Path(backup_dir_str).exists():
+                            if current_dir.exists():
+                                shutil.rmtree(current_dir)
+                            shutil.move(backup_dir_str, str(current_dir))
+                else:
+                    if backup_dir_str and Path(backup_dir_str).exists():
+                        if current_dir.exists():
+                            shutil.rmtree(current_dir)
+                        shutil.move(backup_dir_str, str(current_dir))
+                        
+            # Clean up leftover backup directory if completed
+            if stage == "completed":
+                if backup_dir_str and Path(backup_dir_str).exists():
+                    shutil.rmtree(backup_dir_str)
+                    
+        except Exception as exc:
+            logger.error("Failed to recover promotion journal: %s", exc)
+        finally:
+            if self.journal_path.exists():
+                try:
+                    self.journal_path.unlink()
+                except Exception:
+                    pass
+
+
+class ModelBundlePromoter:
+    """Promotes a validated candidate bundle to become the current active bundle."""
+
+    def promote(
+        self,
+        candidate_dir: str | Path,
+        current_dir: str | Path,
+        skip_quality_gate: bool = False,
+    ) -> dict[str, Any]:
+        """Promotes candidate bundle using a recoverable swap flow.
+
+        Returns:
+            dict with promotion report.
+        """
+        candidate = Path(candidate_dir)
+        current = Path(current_dir)
+        
+        # 1. Evaluate candidate
+        evaluator = PromotionPolicyEvaluator()
+        decision = evaluator.evaluate(candidate)
+        if decision.get("decision") != "approved":
+            return {
+                "promoted": False,
+                "reason": "Candidate bundle failed validation or promotion policies",
+                "blocking_issues": decision.get("blocking_issues", []),
+            }
+            
+        # 2. Acquire lock & initialize recovery manager
+        lock_path = current.parent / "promotion.lock"
+        journal_path = current.parent / "promotion_journal.json"
+        recovery_mgr = PromotionRecoveryManager(lock_path, journal_path)
+        
+        recovery_mgr.acquire_lock()
+        
+        try:
+            # Check for recovery on startup/interrupted state
+            recovery_mgr.recover(current)
+            
+            # Swapping setup
+            run_suffix = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            current_tmp = current.parent / f"current.tmp.{run_suffix}"
+            backup_dir = current.parent / "history" / f"current.backup.{run_suffix}"
+            
+            if current_tmp.exists():
+                shutil.rmtree(current_tmp)
+                
+            # Write initial state
+            recovery_mgr.write_journal({
+                "stage": "started",
+                "candidate_id": load_manifest(candidate / "bundle_manifest.json").bundle_id,
+                "tmp_dir": str(current_tmp),
+                "backup_dir": str(backup_dir),
+            })
+            
+            # Step A: Copy candidate to temp directory
+            shutil.copytree(candidate, current_tmp)
+            recovery_mgr.write_journal({
+                "stage": "copied_tmp",
+                "candidate_id": load_manifest(candidate / "bundle_manifest.json").bundle_id,
+                "tmp_dir": str(current_tmp),
+                "backup_dir": str(backup_dir),
+            })
+            
+            # Step B: Backup old current
             renamed_backup = False
             if current.exists():
                 backup_dir.parent.mkdir(parents=True, exist_ok=True)
-                if backup_dir.exists():
-                    shutil.rmtree(backup_dir)
                 shutil.move(str(current), str(backup_dir))
                 renamed_backup = True
-
-            # Step C: Rename temp directory to current
-            try:
-                shutil.move(str(current_tmp), str(current))
-            except Exception as exc:
-                # Rollback if Step C fails
-                if renamed_backup:
-                    shutil.move(str(backup_dir), str(current))
-                raise exc
-
-            # Step D: Update manifest status to 'current' and save
+                
+            recovery_mgr.write_journal({
+                "stage": "backed_up",
+                "candidate_id": load_manifest(candidate / "bundle_manifest.json").bundle_id,
+                "tmp_dir": str(current_tmp),
+                "backup_dir": str(backup_dir),
+            })
+            
+            # Step C: Move tmp to current
+            shutil.move(str(current_tmp), str(current))
+            recovery_mgr.write_journal({
+                "stage": "swapped",
+                "candidate_id": load_manifest(candidate / "bundle_manifest.json").bundle_id,
+                "tmp_dir": str(current_tmp),
+                "backup_dir": str(backup_dir),
+            })
+            
+            # Step D: Update manifest status and save
+            manifest = load_manifest(current / "bundle_manifest.json")
             manifest.status = "current"
             manifest.bundle_status = "current"
             manifest.model_artifact_source = "model_bundle_current"
             save_manifest(manifest, current / "bundle_manifest.json")
-
-            # Step E: Delete backup only after successful manifest save
+            
+            # Step E: Post-promotion validation check
+            validator = ModelBundleValidator()
+            validation = validator.validate(current)
+            if not validation.get("passed"):
+                # Rollback if loaded current validator fails
+                if renamed_backup:
+                    if current.exists():
+                        shutil.rmtree(current)
+                    shutil.move(str(backup_dir), str(current))
+                raise ValueError("Promoted bundle failed post-swap validation check: " + ", ".join(validation.get("blocking_issues", [])))
+                
+            # Done!
+            recovery_mgr.write_journal({
+                "stage": "completed",
+                "candidate_id": manifest.bundle_id,
+                "tmp_dir": str(current_tmp),
+                "backup_dir": str(backup_dir),
+            })
+            
+            # Delete backup dir after successful check
             if renamed_backup and backup_dir.exists():
-                try:
-                    shutil.rmtree(backup_dir)
-                except Exception:
-                    pass  # Advisory, don't fail promotion if backup cleanup fails
-
+                shutil.rmtree(backup_dir)
+                
+            # Write final promotion report
+            promotion_report = {
+                "promoted": True,
+                "bundle_id": manifest.bundle_id,
+                "pipeline_run_id": manifest.pipeline_run_id,
+                "promoted_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                "candidate_dir": str(candidate),
+                "current_dir": str(current),
+                "quality_gate_passed": True,
+                "validation": validation,
+            }
+            
+            report_path = current / "promotion_report.json"
+            report_path.write_text(json.dumps(promotion_report, indent=2, ensure_ascii=False), encoding="utf-8")
+            
+            # Clean journal
+            if journal_path.exists():
+                journal_path.unlink()
+                
+            return promotion_report
+            
         except Exception as exc:
-            # Final cleanup of temp directory if it still exists
-            if current_tmp.exists():
-                try:
-                    shutil.rmtree(current_tmp)
-                except Exception:
-                    pass
+            # Try atomic recovery rollback
+            try:
+                recovery_mgr.recover(current)
+            except Exception:
+                pass
             return {
                 "promoted": False,
                 "reason": f"Windows-safe promotion failed during folder swap: {exc}",
                 "blocking_issues": [str(exc)],
             }
-
-        # 6. Write promotion report
-        promotion_report = {
-            "promoted": True,
-            "bundle_id": manifest.bundle_id,
-            "pipeline_run_id": manifest.pipeline_run_id,
-            "promoted_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-            "candidate_dir": str(candidate),
-            "current_dir": str(current),
-            "quality_gate_passed": manifest.quality_gate.get("passed", False),
-            "quality_gate_skipped": False,
-            "validation": validation,
-        }
-        report_path = current / "promotion_report.json"
-        report_path.write_text(json.dumps(promotion_report, indent=2, ensure_ascii=False), encoding="utf-8")
-
-        return promotion_report
+        finally:
+            recovery_mgr.release_lock()

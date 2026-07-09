@@ -95,6 +95,168 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
     full_bundle_runtime_used = test_artifact_source == "model_bundle"
     calibration_loaded = full_bundle_runtime_used  # bundle path loads calibration via RetrievalNL2SQLModel.load
     pipeline_run_id = getattr(args, "pipeline_run_id", "") or ""
+
+    # --- Explicit row accounting ---
+    standard_rows_evaluated = int(test_eval.get("rows_evaluated", 0))
+    unseen_db_rows_evaluated = int(unseen_eval.get("rows_evaluated", 0))
+    total_rows_evaluated = standard_rows_evaluated + unseen_db_rows_evaluated
+    standard_predictions_generated = int(test_eval.get("real_predictions_generated", 0))
+    unseen_db_predictions_generated = int(unseen_eval.get("real_predictions_generated", 0))
+    total_predictions_generated = standard_predictions_generated + unseen_db_predictions_generated
+
+    # --- Promotion eligibility (Review #5) ---
+    # The evaluator describes evidence; promotion policy makes the final decision.
+    # Artifact-dir evaluations NEVER get eligible_for_promotion = True.
+    promotion_blockers: list[str] = []
+    if test_artifact_source in {"artifact_dirs", "neural_only_artifact_dirs"}:
+        promotion_blockers.append("model_artifact_source_is_artifact_dirs")
+    if not overall_valid:
+        promotion_blockers.append("evaluation_not_valid_for_quality_gate")
+    if test_mode != "real_model_predictions":
+        promotion_blockers.append("evaluation_mode_not_real_model_predictions")
+    if gold_replay_used:
+        promotion_blockers.append("gold_replay_used")
+    if not full_bundle_runtime_used:
+        promotion_blockers.append("full_bundle_runtime_not_used")
+    if total_rows_evaluated == 0:
+        promotion_blockers.append("zero_rows_evaluated")
+    eligible_for_promotion = len(promotion_blockers) == 0
+
+    report_identity_strength = (
+        "strong" if pipeline_run_id and full_bundle_runtime_used
+        else "weak" if pipeline_run_id
+        else "missing"
+    )
+
+    # --- Checkpoint identity tracking ---
+    checkpoint_info = {
+        "selected_checkpoint_file": None,
+        "selected_checkpoint_epoch": None,
+        "selected_checkpoint_sha256": None,
+        "runtime_export_file": None,
+        "runtime_export_source_sha256": None,
+        "runtime_export_equivalent_to_selected_checkpoint": None,
+    }
+    
+    resolved_neural_dir = None
+    if getattr(args, "model_bundle_dir", None):
+        bundle_path = Path(args.model_bundle_dir)
+        manifest_path = bundle_path / "bundle_manifest.json"
+        if manifest_path.exists():
+            try:
+                manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                paths = manifest_data.get("paths") or {}
+                rel_path = paths.get("neural_ir") or paths.get("neural")
+                if rel_path:
+                    resolved = bundle_path / rel_path
+                    if resolved.exists():
+                        resolved_neural_dir = resolved
+            except Exception:
+                pass
+    if not resolved_neural_dir and getattr(args, "neural_model_dir", None):
+        resolved_neural_dir = Path(args.neural_model_dir)
+
+    if resolved_neural_dir and resolved_neural_dir.exists():
+        import hashlib
+        def file_hash(p: Path) -> str:
+            digest = hashlib.sha256()
+            with p.open("rb") as f:
+                for chunk in iter(lambda: f.read(8192), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+
+        metadata_path = resolved_neural_dir / "checkpoint_metadata.json"
+        best_model_path = resolved_neural_dir / "best_model.pt"
+        runtime_model_path = resolved_neural_dir / "model.pt"
+
+        if metadata_path.exists():
+            try:
+                meta = json.loads(metadata_path.read_text(encoding="utf-8"))
+                checkpoint_info["selected_checkpoint_file"] = "best_model.pt"
+                checkpoint_info["selected_checkpoint_epoch"] = meta.get("best_epoch")
+                checkpoint_info["selected_checkpoint_sha256"] = meta.get("best_checkpoint_sha256")
+            except Exception:
+                pass
+
+        if not checkpoint_info["selected_checkpoint_sha256"] and best_model_path.exists():
+            try:
+                checkpoint_info["selected_checkpoint_file"] = "best_model.pt"
+                checkpoint_info["selected_checkpoint_sha256"] = file_hash(best_model_path)
+            except Exception:
+                pass
+
+        if runtime_model_path.exists():
+            try:
+                checkpoint_info["runtime_export_file"] = "model.pt"
+                checkpoint_info["runtime_export_source_sha256"] = file_hash(runtime_model_path)
+            except Exception:
+                pass
+
+        best_sha = checkpoint_info["selected_checkpoint_sha256"]
+        runtime_sha = checkpoint_info["runtime_export_source_sha256"]
+        if best_sha and runtime_sha:
+            checkpoint_info["runtime_export_equivalent_to_selected_checkpoint"] = (best_sha == runtime_sha)
+        elif best_model_path.exists() and runtime_model_path.exists():
+            try:
+                checkpoint_info["runtime_export_equivalent_to_selected_checkpoint"] = (file_hash(best_model_path) == file_hash(runtime_model_path))
+            except Exception:
+                pass
+
+    # Resolve retrieval directory
+    resolved_retrieval_dir = None
+    if getattr(args, "model_bundle_dir", None):
+        bundle_path = Path(args.model_bundle_dir)
+        manifest_path = bundle_path / "bundle_manifest.json"
+        if manifest_path.exists():
+            try:
+                manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                paths = manifest_data.get("paths") or {}
+                rel_retrieval = paths.get("retrieval_ir") or paths.get("retrieval")
+                if rel_retrieval:
+                    resolved_retrieval_dir = bundle_path / rel_retrieval
+            except Exception:
+                pass
+    if not resolved_retrieval_dir and getattr(args, "retrieval_model_dir", None):
+        resolved_retrieval_dir = Path(args.retrieval_model_dir)
+
+    # Validate sklearn and calibration metadata
+    sklearn_info = {
+        "retrieval_sklearn_metadata_valid": True,
+        "retrieval_checksums_valid": True,
+        "calibration_metadata_valid": True,
+    }
+    
+    if resolved_retrieval_dir and resolved_retrieval_dir.exists():
+        from retrieval.artifact_compatibility import validate_sklearn_metadata, validate_file_checksums
+        try:
+            val = validate_sklearn_metadata(resolved_retrieval_dir, mode="runtime")
+            sklearn_info["retrieval_sklearn_metadata_valid"] = bool(val.get("compatible", False))
+        except Exception:
+            sklearn_info["retrieval_sklearn_metadata_valid"] = False
+
+        try:
+            chk = validate_file_checksums(resolved_retrieval_dir)
+            sklearn_info["retrieval_checksums_valid"] = bool(chk.get("valid", False))
+        except Exception:
+            sklearn_info["retrieval_checksums_valid"] = False
+
+        cal_path = resolved_retrieval_dir / "confidence_calibration.json"
+        if not cal_path.exists() and resolved_neural_dir:
+            cal_path = resolved_neural_dir / "confidence_calibration.json"
+        if not cal_path.exists() and resolved_neural_dir:
+            cal_path = resolved_neural_dir / "option_a_calibration.json"
+            
+        if cal_path.exists():
+            try:
+                cal_data = json.loads(cal_path.read_text(encoding="utf-8"))
+                required_keys = ["sklearn_version", "numpy_version", "python_version", "source_dataset_hash"]
+                sklearn_info["calibration_metadata_valid"] = all(k in cal_data for k in required_keys)
+            except Exception:
+                sklearn_info["calibration_metadata_valid"] = False
+        else:
+            if test_mode == "real_model_predictions":
+                sklearn_info["calibration_metadata_valid"] = False
+
     report = {
         "pipeline_run_id": pipeline_run_id,
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
@@ -108,9 +270,25 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
         "calibration_runtime_active": calibration_loaded,
         "is_valid_for_quality_gate": overall_valid,
         "is_valid_for_full_bundle_quality_gate": overall_valid and full_bundle_runtime_used,
-        "eligible_for_promotion": bool(overall_valid and test_mode == "real_model_predictions"),
-        "rows_evaluated": int(test_eval.get("rows_evaluated", 0)),
-        "real_predictions_generated": int(test_eval.get("real_predictions_generated", 0)),
+        # --- Checkpoint identity ---
+        "checkpoint": checkpoint_info,
+        # --- Sklearn & Calibration integrity ---
+        "sklearn_info": sklearn_info,
+        # --- Promotion eligibility evidence (not the final decision) ---
+        "eligible_for_promotion": eligible_for_promotion,
+        "promotion_blockers": promotion_blockers,
+        "evaluation_scope": "model_bundle" if full_bundle_runtime_used else "artifact_dirs",
+        "report_identity_strength": report_identity_strength,
+        "valid_as_production_evidence": eligible_for_promotion,
+        # --- Row accounting ---
+        "rows_evaluated": standard_rows_evaluated,
+        "standard_rows_evaluated": standard_rows_evaluated,
+        "unseen_db_rows_evaluated": unseen_db_rows_evaluated,
+        "total_rows_evaluated": total_rows_evaluated,
+        "real_predictions_generated": standard_predictions_generated,
+        "standard_predictions_generated": standard_predictions_generated,
+        "unseen_db_predictions_generated": unseen_db_predictions_generated,
+        "total_predictions_generated": total_predictions_generated,
         "prediction_failures": int(test_eval.get("prediction_failures", 0)),
         "summary": {
             "test_examples": len(test_rows),
@@ -122,7 +300,8 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
             "test_source": "real_model_predictions" if test_mode == "real_model_predictions" else "gold_replay_baseline",
             "gold_replay_used": gold_replay_used,
             "is_valid_for_quality_gate": overall_valid,
-            "eligible_for_promotion": bool(overall_valid and test_mode == "real_model_predictions"),
+            "eligible_for_promotion": eligible_for_promotion,
+            "promotion_blockers": promotion_blockers,
         },
         "test_performance": test_eval,
         "unseen_db_performance": unseen_eval,
@@ -206,6 +385,30 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
         "invalid_sql_count",
     ):
         report[key] = report["summary"].get(key)
+
+    # --- Surface semantic evaluation metrics at report level ---
+    semantic_eval = test_summary.get("semantic_evaluation", {})
+    report["summary"]["simple_query_semantic_pass_rate"] = semantic_eval.get("simple_query_semantic_pass_rate", 0.0)
+    report["summary"]["simple_query_safety_pass_rate"] = semantic_eval.get("simple_query_safety_pass_rate", 0.0)
+    report["summary"]["simple_query_validity_pass_rate"] = semantic_eval.get("simple_query_validity_pass_rate", 0.0)
+    report["summary"]["simple_query_table_pass_rate"] = semantic_eval.get("simple_query_table_pass_rate", 0.0)
+    report["summary"]["simple_query_projection_pass_rate"] = semantic_eval.get("simple_query_projection_pass_rate", 0.0)
+    report["summary"]["simple_query_filter_pass_rate"] = semantic_eval.get("simple_query_filter_pass_rate", 0.0)
+    report["summary"]["semantic_evaluation"] = semantic_eval
+
+    # --- Failure category breakdown ---
+    per_example = test_eval.get("per_example") or []
+    failure_category_counter: dict[str, int] = {}
+    for item in per_example:
+        sp = item.get("semantic_pass") or {}
+        for check in sp.get("failed_checks") or []:
+            failure_category_counter[check] = failure_category_counter.get(check, 0) + 1
+    report["summary"]["semantic_failure_category_breakdown"] = failure_category_counter
+
+    # --- Route telemetry ---
+    route_telemetry = test_summary.get("route_telemetry", {})
+    report["summary"]["route_telemetry"] = route_telemetry
+
     thresholds = _load_thresholds(args.thresholds)
     report["thresholds"] = compare_thresholds(report, thresholds)
     save_report_pair(args.output, report, "Generic Model Evaluation Report")
@@ -243,6 +446,11 @@ def _simple_query_failures(
             "simple_query_pass": False,
             "simple_query_failure_reason": reason,
             "query_ir_diff": difference,
+            # Enhanced failure attribution
+            "failure_categories": difference.get("failure_categories", []),
+            "primary_failure_slot": difference.get("primary_failure_slot"),
+            "semantic_pass": item.get("semantic_pass"),
+            "predicted_route": item.get("predicted_route"),
         })
     return failures
 

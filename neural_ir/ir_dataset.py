@@ -75,6 +75,7 @@ class IRTrainingDataset(Dataset):
         labels = self.label_encoder.encode(row["query_ir"], schema_items)
         labels = self._add_hard_negative_labels(row, schema_items, labels)
         labels = self._cap_pointer_labels(labels)
+        labels["span"] = self._get_span_labels(row, question)
         self._force_gold_masks(candidate_masks, labels)
         candidate_metadata = build_candidate_metadata(candidates, schema_items, self.max_tables)
         unified_candidate_token_ids = self._unified_candidate_token_ids(candidate_metadata, self.max_tables + self.max_columns)
@@ -203,6 +204,54 @@ class IRTrainingDataset(Dataset):
             tokens = tokenize(str(name))
             rows[index] = self.vocab.encode(tokens, self.max_candidate_tokens)
         return rows
+
+    def _get_span_labels(self, row: dict[str, Any], question: str) -> list[int]:
+        import re
+        token_re = re.compile(r"[a-z0-9_]+")
+        span_labels = [0] * self.max_question_len
+        query_ir = row.get("query_ir")
+        if not isinstance(query_ir, dict):
+            return span_labels
+            
+        filters = query_ir.get("filters") or []
+        values = []
+        for filt in filters:
+            if isinstance(filt, dict) and "value" in filt:
+                val = filt["value"]
+                if val is not None:
+                    if isinstance(val, list):
+                        values.extend(val)
+                    else:
+                        values.append(val)
+                        
+        if not values:
+            return span_labels
+            
+        token_spans = []
+        for m in token_re.finditer(question.lower()):
+            token_spans.append((m.start(), m.end()))
+            
+        for val in values:
+            val_str = str(val).strip()
+            if not val_str:
+                continue
+                
+            patterns = [re.escape(val_str)]
+            if isinstance(val, (int, float)):
+                patterns.append(re.escape(f"{val:,}"))
+                
+            for pattern in patterns:
+                for m in re.finditer(pattern, question, re.IGNORECASE):
+                    val_start, val_end = m.start(), m.end()
+                    overlapping_indices = []
+                    for idx, (t_start, t_end) in enumerate(token_spans):
+                        if max(t_start, val_start) < min(t_end, val_end):
+                            overlapping_indices.append(idx)
+                    for idx in overlapping_indices:
+                        if 0 <= idx < self.max_question_len:
+                            span_labels[idx] = 1
+                            
+        return span_labels
 
 
 def collate_ir_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:

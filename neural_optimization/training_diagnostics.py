@@ -23,6 +23,14 @@ class TrainingDiagnostics:
         self.config_summary: dict[str, Any] = {}
         self._candidate_counts: list[int] = []
         self._candidate_padding_ratios: list[float] = []
+        self.leakage_summary: dict[str, Any] = {}
+        self.baseline_score: float | None = None
+
+    def set_leakage_summary(self, summary: dict[str, Any]) -> None:
+        self.leakage_summary = summary
+
+    def set_baseline_score(self, score: float | None) -> None:
+        self.baseline_score = score
 
     def set_config(self, config: dict[str, Any]) -> None:
         self._candidate_counts = []
@@ -75,6 +83,7 @@ class TrainingDiagnostics:
             "learning_rate": config.get("optimizer", {}).get("learning_rate"),
             "batch_size": config.get("training", {}).get("batch_size"),
             "epochs": config.get("training", {}).get("epochs"),
+            "loss_weights": config.get("loss", {}),
             "save_best_metric": config.get("training", {}).get("save_best_metric"),
             "checkpoint_monitor": config.get("training", {}).get("save_best_metric"),
             "checkpoint_mode": config.get("training", {}).get("save_best_mode"),
@@ -308,6 +317,8 @@ class TrainingDiagnostics:
             },
             "top_p95_high_loss_examples": high_loss_examples[:50],
             "top_p99_high_loss_examples": high_loss_examples[:10],
+            "leakage_summary": self.leakage_summary,
+            "baseline_score": self.baseline_score,
             "epochs": self.epochs,
         }
 
@@ -334,21 +345,58 @@ def _render_markdown(data: dict[str, Any]) -> str:
     lines.append(f"- **Gradient clipping**: {cfg.get('gradient_clipping_value', '-')}")
     lines.append(f"- **Train path**: {cfg.get('train_path', '-')}")
     lines.append(f"- **Validation path**: {cfg.get('validation_path', '-')}")
+    
+    loss_weights = cfg.get("loss_weights")
+    if loss_weights:
+        lines.append("")
+        lines.append("### Loss Weights Configuration Footprint")
+        for k, v in sorted(loss_weights.items()):
+            lines.append(f"- **{k}**: {v}")
+            
     lines.append("")
     lines.append("## Summary")
     lines.append(f"- **Total epochs**: {data.get('total_epochs', 0)}")
     lines.append(f"- **Best epoch**: {data.get('best_epoch', '-')}")
     lines.append(f"- **Best slot accuracy**: {data.get('best_overall_slot_accuracy', 0):.4f}")
+    
+    # Baseline vs Current Comparison
+    baseline = data.get("baseline_score")
+    best_epoch_data = data.get("epochs", [])[data.get("best_epoch", 0) - 1] if data.get("epochs") and data.get("best_epoch") else {}
+    current_score = best_epoch_data.get("support_weighted_semantic_score") or data.get("best_overall_slot_accuracy") or 0.0
+    
+    lines.append(f"- **Current Best Support-Weighted Semantic Score**: {current_score:.4f}")
+    if baseline is not None:
+        lines.append(f"- **Baseline Score**: {float(baseline):.4f}")
+        diff = current_score - float(baseline)
+        lines.append(f"- **Improvement over Baseline**: {diff:+.4f}")
+    else:
+        lines.append("- **Baseline Score**: Not available")
+
     total_time = data.get("total_training_time_seconds")
     if total_time is not None:
         lines.append(f"- **Total training time**: {total_time:.1f}s")
     lines.append("")
+    
+    # Data Leakage Audit Summary
+    leakage = data.get("leakage_summary") or {}
+    lines.append("## Data Leakage Audit")
+    if leakage:
+        lines.append(f"- **Status**: {'PASSED (No Leakage)' if leakage.get('ok', True) else 'FAILED (Leakage Detected)'}")
+        lines.append(f"- **Total issues found**: {leakage.get('total_issues', 0)}")
+        if leakage.get("issues"):
+            lines.append("#### Issues List:")
+            for issue in leakage.get("issues", [])[:10]:
+                lines.append(f"- {issue}")
+    else:
+        lines.append("- **Status**: Audit not available or skipped")
+    lines.append("")
+
     epochs = data.get("epochs", [])
     if epochs:
         lines.append("## Per-Epoch Metrics")
         lines.append("")
-        lines.append("| Epoch | Train Loss | Val Loss | Intent Acc | Slot Acc | LR | Time (s) |")
-        lines.append("|------:|-----------:|---------:|-----------:|---------:|---:|---------:|")
+        lines.append("| Epoch | Train Loss | Val Loss | Intent Acc | Slot Acc | Weighted Semantic Score | LR | Time (s) |")
+        lines.append("|------:|-----------:|---------:|-----------:|---------:|------------------------:|---:|---------:|")
         for epoch in epochs:
             lines.append(
                 f"| {epoch.get('epoch', '-')} "
@@ -356,6 +404,7 @@ def _render_markdown(data: dict[str, Any]) -> str:
                 f"| {epoch.get('validation_total_loss', 0):.4f} "
                 f"| {epoch.get('intent_accuracy', 0):.4f} "
                 f"| {epoch.get('overall_slot_accuracy', 0):.4f} "
+                f"| {epoch.get('support_weighted_semantic_score', 0):.4f} "
                 f"| {epoch.get('learning_rate', '-')} "
                 f"| {epoch.get('epoch_time_seconds', '-')} |"
             )

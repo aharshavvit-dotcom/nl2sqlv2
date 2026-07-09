@@ -160,3 +160,17 @@ class ModelBundleLoader:
             if not allow_candidate_debug:
                 raise current_error
         return self.load(candidate_dir, allow_candidate_debug=True)
+
+    @classmethod
+    def load_current(
+        cls,
+        bundle_root: str | Path = "artifacts/model_bundle/current",
+        runtime_mode: str = "production",
+    ) -> dict[str, Any]:
+        """Load canonical current model bundle, enforcing production constraints."""
+        import os
+        os.environ["NL2SQL_ENV"] = runtime_mode
+        # In production, we do NOT allow candidate fallback
+        loader = cls()
+        return loader.load(bundle_root, allow_candidate_debug=False)
+

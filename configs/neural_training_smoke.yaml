@@ -54,7 +54,7 @@ training:
   gradient_clipping: 1.0
   early_stopping_patience: 99
   seed: 42
-  save_best_metric: overall_slot_accuracy
+  save_best_metric: support_weighted_semantic_score
   save_best_mode: max
 
 loss:

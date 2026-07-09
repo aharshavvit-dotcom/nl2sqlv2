@@ -95,7 +95,7 @@ def calibrate_option_a_confidence(model_dir: Path, validation_path: Path, output
             }
         )
     calibrator = OptionAConfidenceCalibrator()
-    payload = calibrator.fit(prediction_rows)
+    payload = calibrator.fit(prediction_rows, dataset_path=validation_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     calibrator.save(str(output_path))
     return payload

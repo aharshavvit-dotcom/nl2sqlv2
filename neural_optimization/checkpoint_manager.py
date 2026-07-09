@@ -130,6 +130,18 @@ class CheckpointManager:
         if config:
             meta["optimizer"] = config.get("optimizer", {}).get("name")
             meta["activation"] = config.get("model", {}).get("activation")
+            if "pipeline_run_id" in config:
+                meta["pipeline_run_id"] = config["pipeline_run_id"]
+        
+        best_model_path = self.output_dir / "best_model.pt"
+        if best_model_path.exists():
+            import hashlib
+            sha256 = hashlib.sha256()
+            with best_model_path.open("rb") as f:
+                for chunk in iter(lambda: f.read(8192), b""):
+                    sha256.update(chunk)
+            meta["best_checkpoint_sha256"] = sha256.hexdigest()
+
         (self.output_dir / "checkpoint_metadata.json").write_text(
             json.dumps(meta, indent=2, default=str), encoding="utf-8",
         )

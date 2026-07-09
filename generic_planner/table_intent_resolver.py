@@ -325,6 +325,17 @@ class TableIntentResolver:
         return payload
 
     def _requested_projection_columns(self, question: str, table: str) -> list[str] | None:
+        try:
+            from inference.grounding.projection_resolver import ProjectionResolver
+            from inference.runtime_schema_context import RuntimeSchemaContext
+            ctx = RuntimeSchemaContext(self.schema_profile.schema)
+            resolver = ProjectionResolver(ctx)
+            res = resolver.resolve_projection(question, entity_table=table)
+            if res.projection_mode == "specific-column" and res.selected_columns:
+                return [col.split(".", 1)[-1] for col in res.selected_columns]
+        except Exception:
+            pass
+
         normalized = self._normalize_question(question)
         patterns = [
             r"^(?:what|which)\s+(?:is|was|are|were)?\s*(?:the\s+)?(?P<target>.+?)\s+(?:of|for|with|where|whose|when|that|who)\b",

@@ -19,7 +19,35 @@ class NeuralIRConfidenceCalibrator:
             "fitted_rows": 0,
         }
 
-    def fit(self, prediction_rows: list[dict]) -> dict:
+    def fit(self, prediction_rows: list[dict], dataset_path: str | Path | None = None) -> dict:
+        import sklearn
+        import platform
+        try:
+            import numpy
+            numpy_version = numpy.__version__
+        except ImportError:
+            numpy_version = "unknown"
+
+        ds_hash = ""
+        if dataset_path:
+            p = Path(dataset_path)
+            if p.exists() and p.is_file():
+                import hashlib
+                digest = hashlib.sha256()
+                with p.open("rb") as f:
+                    for chunk in iter(lambda: f.read(8192), b""):
+                        digest.update(chunk)
+                ds_hash = digest.hexdigest()
+
+        self.payload.update({
+            "sklearn_version": sklearn.__version__,
+            "numpy_version": numpy_version,
+            "python_version": platform.python_version(),
+            "source_dataset_hash": ds_hash,
+            "artifact_schema_version": "1.0",
+            "metadata_type": "confidence_calibration",
+        })
+
         if not prediction_rows:
             self.payload.update({"fitted_rows": 0, "bias": 0.0})
             return dict(self.payload)

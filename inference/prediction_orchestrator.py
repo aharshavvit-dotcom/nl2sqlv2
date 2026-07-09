@@ -20,6 +20,12 @@ from .candidate_generator import CandidateGenerator
 from .candidate_reranker import CandidateReranker
 from .prediction_confidence import PredictionConfidenceCalculator
 from .prediction_models import PredictionResult, SchemaMapping
+from .prediction_route import (
+    RuntimeMode,
+    PredictionRoute,
+    DiagnosticContext,
+    DiagnosticRoutingNotAllowedError,
+)
 from .runtime_join_planner import RuntimeJoinPlanner
 from .runtime_schema_context import RuntimeSchemaContext
 from .schema_aware_mapper import SchemaAwareMapper
@@ -30,9 +36,12 @@ from .template_selector import TemplateSelector
 
 # --- Internal name mapping helpers ---
 _SOURCE_MODEL_MAP = {
-    "option_c": "retrieval_ir",
-    "option_a": "neural_ir",
+    "option_c": "retrieval",
+    "retrieval_ir": "retrieval",
+    "option_a": "neural",
+    "neural_ir": "neural",
     "hybrid": "adaptive_router",
+    "generic_direct_planner": "direct_planner",
 }
 
 def _normalize_source(name: str) -> str:
@@ -49,6 +58,7 @@ class PredictionOrchestrator:
         neural_ir_threshold: float = 0.80,
         confidence_calibration_path: str | Path | None = None,
         schema_drift_baseline: dict[str, Any] | None = None,
+        bundle: dict[str, Any] | None = None,
         # Backward-compatible aliases
         option_a_model_dir: str | Path | None = None,
         use_option_a_fallback: bool | None = None,
@@ -57,23 +67,60 @@ class PredictionOrchestrator:
         self.top_k = top_k
         self.max_limit = max_limit
         root = Path(__file__).resolve().parents[1]
+        import os
 
-        # Accept old param names for backward compat
+        # Load from bundle if in production or provided
+        environment = str(os.getenv("NL2SQL_ENV", "development")).strip().lower()
+        if bundle is None and environment == "production":
+            from model_bundle.bundle_loader import ModelBundleLoader
+            bundle_root = root / "artifacts" / "model_bundle" / "current"
+            try:
+                bundle = ModelBundleLoader.load_current(bundle_root, runtime_mode="production")
+            except Exception as exc:
+                raise RuntimeError(f"Failed to load production current model bundle at {bundle_root}: {exc}") from exc
+
         _model_dir = neural_ir_model_dir or option_a_model_dir
         _use_fallback = use_neural_ir_fallback if use_option_a_fallback is None else use_option_a_fallback
         _threshold = neural_ir_threshold if option_a_threshold is None else option_a_threshold
 
+        if bundle is not None:
+            # Overwrite configuration using the loaded bundle
+            _model_dir = bundle["neural_model_dir"]
+            # Load routing policy from the bundle manifest!
+            manifest = bundle["manifest"]
+            routing_policy = manifest.get("routing_policy") or {}
+            _use_fallback = routing_policy.get("neural_fallback_enabled", routing_policy.get("neural_enabled", _use_fallback))
+            _threshold = routing_policy.get("neural_trigger_threshold", _threshold)
+            
+            # Load calibration report if present in the bundle
+            if bundle.get("calibration_report_path"):
+                confidence_calibration_path = bundle["calibration_report_path"]
+            schema_drift_baseline = schema_drift_baseline or manifest.get("percentiles") or manifest.get("schema_drift_baseline")
+            self.bundle_identity = manifest.get("bundle_id")
+        else:
+            self.bundle_identity = None
+
         self._explicit_neural_ir_model_dir = _model_dir is not None
         self.neural_ir_v2_model_dir = root / "artifacts" / "work" / "neural_ir"
         self.neural_ir_v1_model_dir = root / "artifacts" / "work" / "neural_ir"
-        self.neural_ir_model_dir = Path(_model_dir) if _model_dir else self._default_neural_ir_model_dir()
+
+        # Enforce that in production we ONLY allow the bundle directory, no fallbacks
+        if environment == "production":
+            self.neural_ir_model_dir = Path(_model_dir) if _model_dir else root / "artifacts" / "model_bundle" / "current" / "neural_ir"
+        else:
+            self.neural_ir_model_dir = Path(_model_dir) if _model_dir else self._default_neural_ir_model_dir()
+
         self.hybrid_calibration = load_hybrid_calibration(self.neural_ir_model_dir / "hybrid_calibration.json")
         calibration_path = Path(confidence_calibration_path) if confidence_calibration_path else self.neural_ir_model_dir / "confidence_calibration.json"
         self.confidence_calibration = json.loads(calibration_path.read_text(encoding="utf-8")) if calibration_path.exists() else {}
         self.schema_drift_baseline = schema_drift_baseline or {}
         self.use_neural_ir_fallback = _use_fallback
-        self.neural_ir_threshold = float(self.hybrid_calibration.get("retrieval_ir_high_confidence_threshold",
-                                        self.hybrid_calibration.get("option_c_high_confidence_threshold", _threshold)))
+        manifest_routing = (bundle.get("manifest", {}).get("routing_policy") or {}) if bundle is not None else {}
+        self.neural_ir_threshold = float(
+            manifest_routing.get("neural_trigger_threshold",
+            self.hybrid_calibration.get("retrieval_ir_high_confidence_threshold",
+            self.hybrid_calibration.get("option_c_high_confidence_threshold", _threshold)))
+        )
         self.generator = CandidateGenerator()
         self.reranker = CandidateReranker()
         self.selector = TemplateSelector()
@@ -86,6 +133,7 @@ class PredictionOrchestrator:
         self.sql_renderer = IRToSQLRenderer(max_limit=max_limit)
         self.sql_validator = SQLValidator()
         self.confidence = PredictionConfidenceCalculator()
+
 
     # Backward-compatible properties
     @property
@@ -114,23 +162,51 @@ class PredictionOrchestrator:
         validator: Any | None = None,
         use_neural_ir_fallback: bool | None = None,
         use_option_a_fallback: bool | None = None,
+        *,
+        diagnostic_context: DiagnosticContext | None = None,
     ) -> PredictionResult:
+        if diagnostic_context is not None and diagnostic_context.forced_route is not None:
+            mode = diagnostic_context.runtime_mode
+            if not isinstance(mode, RuntimeMode):
+                try:
+                    mode = RuntimeMode(mode)
+                except ValueError:
+                    raise DiagnosticRoutingNotAllowedError(f"Unknown runtime mode: {mode}. Fail closed.")
+            if mode == RuntimeMode.PRODUCTION:
+                raise DiagnosticRoutingNotAllowedError("Forced routing is forbidden in production runtime.")
+
         normalized_question = self._normalize_question(question)
         schema_context = RuntimeSchemaContext(schema)
         semantic_profile = self._build_semantic_profile(schema)
 
         direct_result = TableIntentResolver(SchemaProfile(schema)).resolve(question)
-        clarification = None if direct_result.handled else self._semantic_clarification(
-            question=question,
-            normalized_question=normalized_question,
-            schema=schema,
-            semantic_profile=semantic_profile,
-            direct_result=direct_result,
-        )
+        
+        # Bypasses clarification/direct planner resolved check when forced retrieval or neural is active
+        run_normal_routing = diagnostic_context is None or diagnostic_context.forced_route is None
+        
+        clarification = None
+        if run_normal_routing:
+            clarification = None if direct_result.handled else self._semantic_clarification(
+                question=question,
+                normalized_question=normalized_question,
+                schema=schema,
+                semantic_profile=semantic_profile,
+                direct_result=direct_result,
+            )
         if clarification is not None:
             return clarification
 
-        if direct_result.handled and direct_result.query_ir is not None:
+        is_direct = False
+        if diagnostic_context is not None and diagnostic_context.forced_route == PredictionRoute.DIRECT_PLANNER:
+            is_direct = True
+            if direct_result.query_ir is None:
+                # instantiate a mock or simple empty query ir
+                from generic_planner import QueryIR
+                direct_result.query_ir = QueryIR(intent="unknown", base_table=None, metrics=[], dimensions=[], filters=[])
+        elif run_normal_routing and direct_result.handled and direct_result.query_ir is not None:
+            is_direct = True
+
+        if is_direct:
             return self._direct_planner_prediction(
                 question=question,
                 normalized_question=normalized_question,
@@ -150,12 +226,34 @@ class PredictionOrchestrator:
         )
         candidates = self.reranker.rerank_candidates(question, candidates, schema_context)
         selected_template = self.selector.select_template(candidates, question)
+
+        neural_spans = None
+        pre_run_neural_raw = None
+        neural_ir_model_dir = self._available_neural_ir_model_dir()
+        forced_route = diagnostic_context.forced_route if diagnostic_context else None
+        should_pre_run = (self.use_neural_ir_fallback or forced_route == PredictionRoute.NEURAL)
+        
+        if should_pre_run and neural_ir_model_dir is not None:
+            try:
+                if not hasattr(self, "_cached_neural_predictors"):
+                    self._cached_neural_predictors = {}
+                model_dir_str = str(neural_ir_model_dir)
+                if model_dir_str not in self._cached_neural_predictors:
+                    from neural_ir.predictor import NeuralIRPredictor
+                    self._cached_neural_predictors[model_dir_str] = NeuralIRPredictor(model_dir_str)
+                predictor = self._cached_neural_predictors[model_dir_str]
+                pre_run_neural_raw = predictor.predict(question, schema)
+                neural_spans = pre_run_neural_raw.get("neural_spans")
+            except Exception as exc:
+                print(f"Warning: failed to pre-run neural predictor for spans: {exc}")
+
         slot_payload = self.slot_resolver.resolve_slots(
             question,
             selected_template,
             candidates,
             schema_context,
             {"metrics": metric_synonyms, "dimensions": dimension_synonyms},
+            neural_spans=neural_spans,
         )
         slots = slot_payload["slots"]
         template_id = selected_template.get("template_id")
@@ -237,7 +335,7 @@ class PredictionOrchestrator:
         retrieval_ir_result = PredictionResult(
             question=question,
             normalized_question=normalized_question,
-            source_model="retrieval_ir",
+            source_model="retrieval",
             status="abstained" if abstain else "completed",
             intent=selected_template.get("intent"),
             template_id=selected_template.get("template_id"),
@@ -277,6 +375,14 @@ class PredictionOrchestrator:
                 "original_sql": sql_repair.get("original_sql"),
                 "forced_abstention_reason": forced_abstention,
                 "filter_value_candidates": list(slot_payload.get("filter_value_candidates") or []),
+                "boundaries": {
+                    "native_query_ir": query_ir.model_dump() if hasattr(query_ir, "model_dump") else query_ir,
+                    "resolved_query_ir": query_ir.model_dump() if hasattr(query_ir, "model_dump") else query_ir,
+                    "validated_query_ir": query_ir.model_dump() if hasattr(query_ir, "model_dump") else query_ir,
+                    "rendered_sql": sql,
+                    "sql_validation": sql_validation,
+                    "execution_result": None,
+                }
             },
         )
 
@@ -287,6 +393,8 @@ class PredictionOrchestrator:
             question=question,
             schema=schema,
             enabled=self.use_neural_ir_fallback if _fallback is None else _fallback,
+            diagnostic_context=diagnostic_context,
+            pre_run_neural_raw=pre_run_neural_raw,
         )
 
     def _direct_planner_prediction(
@@ -383,7 +491,7 @@ class PredictionOrchestrator:
             clarification_questions=clarification,
             needs_clarification=bool(clarification),
             router_decision={
-                "selected": "generic_direct_planner",
+                "selected": "direct_planner",
                 "reason": direct_result.reason or "schema-safe direct query",
                 "retrieval_ir_valid": None,
                 "neural_ir_valid": None,
@@ -409,12 +517,20 @@ class PredictionOrchestrator:
                 "semantic_profile_summary": self._semantic_summary(semantic_profile),
                 "generic_planner": planner_debug,
                 "router_decision": {
-                    "selected": "generic_direct_planner",
+                    "selected": "direct_planner",
                     "reason": direct_result.reason or "schema-safe direct query",
                 },
                 "sql_repair": sql_repair,
                 "original_sql": sql_repair.get("original_sql"),
                 "forced_abstention_reason": forced_abstention,
+                "boundaries": {
+                    "native_query_ir": query_ir.model_dump() if hasattr(query_ir, "model_dump") else query_ir,
+                    "resolved_query_ir": query_ir.model_dump() if hasattr(query_ir, "model_dump") else query_ir,
+                    "validated_query_ir": query_ir.model_dump() if hasattr(query_ir, "model_dump") else query_ir,
+                    "rendered_sql": sql,
+                    "sql_validation": sql_validation,
+                    "execution_result": None,
+                }
             },
         )
 
@@ -731,26 +847,65 @@ class PredictionOrchestrator:
         question: str,
         schema: Any,
         enabled: bool,
+        *,
+        diagnostic_context: DiagnosticContext | None = None,
+        pre_run_neural_raw: dict[str, Any] | None = None,
     ) -> PredictionResult:
-        retrieval_ir_valid = bool(retrieval_ir_result.validation.get("is_valid", retrieval_ir_result.validation.get("ok", False)))
-        if not enabled:
-            self._attach_router_decision(retrieval_ir_result, 0.0, False, "retrieval_ir", "neural_ir_disabled")
+        # Check diagnostic forced route overrides first
+        forced_route = diagnostic_context.forced_route if diagnostic_context is not None else None
+        
+        if forced_route == PredictionRoute.RETRIEVAL:
+            decision = {
+                "selected": "retrieval",
+                "reason": "forced_retrieval_route",
+                "retrieval_ir_valid": bool(retrieval_ir_result.validation.get("is_valid", retrieval_ir_result.validation.get("ok", False))),
+                "neural_ir_valid": None,
+            }
+            self._attach_router_decision(retrieval_ir_result, 0.0, False, "retrieval", "forced_retrieval_route")
+            retrieval_ir_result.router_decision = decision
+            retrieval_ir_result.debug["router_decision"] = decision
             return retrieval_ir_result
-        if retrieval_ir_result.confidence >= self.neural_ir_threshold and retrieval_ir_valid:
-            self._attach_router_decision(retrieval_ir_result, 0.0, False, "retrieval_ir", "retrieval_ir_high_confidence")
-            return retrieval_ir_result
+
+        run_neural = False
+        if forced_route == PredictionRoute.NEURAL:
+            run_neural = True
+        else:
+            retrieval_ir_valid = bool(retrieval_ir_result.validation.get("is_valid", retrieval_ir_result.validation.get("ok", False)))
+            if not enabled:
+                self._attach_router_decision(retrieval_ir_result, 0.0, False, "retrieval", "neural_ir_disabled")
+                return retrieval_ir_result
+            if retrieval_ir_result.confidence >= self.neural_ir_threshold and retrieval_ir_valid:
+                self._attach_router_decision(retrieval_ir_result, 0.0, False, "retrieval", "retrieval_ir_high_confidence")
+                return retrieval_ir_result
+            run_neural = True
+
         neural_ir_model_dir = self._available_neural_ir_model_dir()
         if neural_ir_model_dir is None:
-            self._attach_router_decision(retrieval_ir_result, 0.0, False, "retrieval_ir", "neural_ir_missing")
+            # Neural route unavailable
+            self._attach_router_decision(retrieval_ir_result, 0.0, False, "retrieval", "neural_ir_missing")
+            if forced_route == PredictionRoute.NEURAL:
+                retrieval_ir_result.debug["forced_route_unavailable"] = True
+                retrieval_ir_result.debug["unavailable_reason"] = "neural_model_missing"
             return retrieval_ir_result
 
         try:
-            from neural_ir.predictor import NeuralIRPredictor
-
-            neural_ir_raw = NeuralIRPredictor(str(neural_ir_model_dir)).predict(question, schema)
+            if pre_run_neural_raw is not None:
+                neural_ir_raw = pre_run_neural_raw
+            else:
+                if not hasattr(self, "_cached_neural_predictors"):
+                    self._cached_neural_predictors = {}
+                model_dir_str = str(neural_ir_model_dir)
+                if model_dir_str not in self._cached_neural_predictors:
+                    from neural_ir.predictor import NeuralIRPredictor
+                    self._cached_neural_predictors[model_dir_str] = NeuralIRPredictor(model_dir_str)
+                predictor = self._cached_neural_predictors[model_dir_str]
+                neural_ir_raw = predictor.predict(question, schema)
         except Exception as exc:
-            self._attach_router_decision(retrieval_ir_result, 0.0, False, "retrieval_ir", "neural_ir_error")
+            self._attach_router_decision(retrieval_ir_result, 0.0, False, "retrieval", "neural_ir_error")
             retrieval_ir_result.debug["neural_ir_error"] = str(exc)
+            if forced_route == PredictionRoute.NEURAL:
+                retrieval_ir_result.debug["forced_route_unavailable"] = True
+                retrieval_ir_result.debug["unavailable_reason"] = f"neural_predictor_error: {exc}"
             return retrieval_ir_result
 
         neural_query_ir = neural_ir_raw.get("query_ir") or {}
@@ -784,25 +939,34 @@ class PredictionOrchestrator:
         neural_ir_valid = bool(neural_ir_validation.get("is_valid", neural_ir_validation.get("ok", False)))
         neural_ir_confidence = float(neural_ir_raw.get("confidence") or 0.0)
         retrieval_ir_result.debug["neural_ir_result"] = neural_ir_raw
-        decision = choose_route(
-            {
-                "confidence": retrieval_ir_result.confidence,
-                "validation": retrieval_ir_result.validation,
-            },
-            {
-                "confidence": neural_ir_confidence,
-                "sql_validation": neural_ir_validation,
-                "repairs_applied": neural_ir_raw.get("repairs_applied", []),
-                "debug": neural_ir_raw.get("debug", {}),
-            },
-            self.hybrid_calibration,
-        )
+        
+        if forced_route == PredictionRoute.NEURAL:
+            decision = {
+                "selected": "neural",
+                "reason": "forced_neural_route",
+                "retrieval_ir_valid": bool(retrieval_ir_result.validation.get("is_valid", retrieval_ir_result.validation.get("ok", False))),
+                "neural_ir_valid": neural_ir_valid,
+            }
+        else:
+            decision = choose_route(
+                {
+                    "confidence": retrieval_ir_result.confidence,
+                    "validation": retrieval_ir_result.validation,
+                },
+                {
+                    "confidence": neural_ir_confidence,
+                    "sql_validation": neural_ir_validation,
+                    "repairs_applied": neural_ir_raw.get("repairs_applied", []),
+                    "debug": neural_ir_raw.get("debug", {}),
+                },
+                self.hybrid_calibration,
+            )
 
         # Normalize decision field names
-        selected = _normalize_source(decision.get("selected", "retrieval_ir"))
+        selected = _normalize_source(decision.get("selected", "retrieval"))
         decision["selected"] = selected
 
-        if neural_ir_valid and selected == "neural_ir":
+        if forced_route == PredictionRoute.NEURAL or (neural_ir_valid and selected == "neural"):
             query_ir = neural_ir_raw.get("query_ir") or {}
             ir_validation = neural_ir_raw.get("ir_validation") or {}
             warnings = []
@@ -816,10 +980,11 @@ class PredictionOrchestrator:
             clarification = []
             if runtime_confidence["abstain"]:
                 clarification = ["I am not confident enough in the schema mapping. Which table or business field should I use?"]
+            
             result = PredictionResult(
                 question=question,
                 normalized_question=self._normalize_question(question),
-                source_model="neural_ir",
+                source_model="neural",
                 status="abstained" if runtime_confidence["abstain"] else "completed",
                 intent=query_ir.get("intent"),
                 template_id=query_ir.get("template_id"),
@@ -863,6 +1028,14 @@ class PredictionOrchestrator:
                     "router_decision": decision,
                     "original_sql": neural_original_sql,
                     "sql_repair": neural_ir_raw.get("sql_repair") or {},
+                    "boundaries": {
+                        "native_query_ir": neural_query_ir,
+                        "resolved_query_ir": neural_query_ir,
+                        "validated_query_ir": neural_query_ir,
+                        "rendered_sql": neural_ir_raw.get("sql"),
+                        "sql_validation": neural_ir_validation_sql,
+                        "execution_result": None,
+                    }
                 },
             )
             return result

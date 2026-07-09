@@ -79,8 +79,8 @@ _DEFAULT_TRAINING = {
     "gradient_clipping": 1.0,
     "early_stopping_patience": 2,
     "seed": 42,
-    "save_best_metric": "loss",
-    "save_best_mode": "min",
+    "save_best_metric": "support_weighted_semantic_score",
+    "save_best_mode": "max",
 }
 
 _DEFAULT_LOSS = {

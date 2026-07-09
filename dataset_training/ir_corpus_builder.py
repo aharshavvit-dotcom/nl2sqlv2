@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import re
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -100,28 +103,34 @@ class GenericIRCorpusBuilder:
             else:
                 unsupported_rows.append(self._unsupported_row(example, result))
 
-        augmentation_report = {"augmented_examples_count": 0, "augmentation_modes_used": [], "by_dataset": {}}
+        augmentation_report = {"augmented_examples_count": 0, "augmentation_modes_used": [], "by_dataset": {}, "quarantined_count": 0}
         if (schema_renaming or {}).get("enabled", False):
-            augmented = self._augment_schema_renaming(
+            augmented, quarantined = self._augment_schema_renaming(
                 supported_rows,
                 multiplier=max(1, int((schema_renaming or {}).get("multiplier", 1))),
                 modes=(schema_renaming or {}).get("modes") or ["neutral_names"],
+                config=schema_renaming,
             )
             supported_rows.extend(augmented)
             augmentation_report = {
                 "augmented_examples_count": len(augmented),
                 "augmentation_modes_used": list((schema_renaming or {}).get("modes") or ["neutral_names"]),
                 "by_dataset": dict(Counter(str(row.get("dataset_name") or "unknown") for row in augmented)),
+                "quarantined_count": len(quarantined),
             }
+            write_jsonl(artifacts / "quarantined_augmentations.jsonl", quarantined)
 
         splits = self.split_manager.split_by_database([*supported_rows, *unsupported_rows])
         self._write_split_files(output, splits)
 
         leakage_report = DatasetLeakageChecker().run_all_checks(splits)
+        
+        split_keys = [name for name in ["train", "validation", "model_selection_validation", "test"] if name in splits]
         quality_report = CorpusQualityAnalyzer().analyze(
-            [row for name in ["train", "validation", "test", "unseen_db_test"] for row in splits[name]],
+            [row for name in split_keys for row in splits[name]],
             splits["unsupported"],
         )
+        
         split_report = {
             "pipeline_run_id": pipeline_run_id or "",
             "datasets_requested": requested,
@@ -159,21 +168,40 @@ class GenericIRCorpusBuilder:
             "unsupported_sql_report": unsupported_report,
             "output_files": {
                 name: str(output / f"generic_ir_{name}.jsonl")
-                for name in ["train", "validation", "test", "unseen_db_test", "unsupported"]
+                for name in splits.keys()
             },
         }
 
-    @staticmethod
     def _augment_schema_renaming(
+        self,
         rows: list[dict[str, Any]],
         multiplier: int,
         modes: list[str],
-    ) -> list[dict[str, Any]]:
+        config: dict[str, Any] | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        cfg = config or {}
+        max_ratio = cfg.get("max_augmented_to_original_ratio", 0.50)
+        max_per_example = cfg.get("max_per_source_example", 3)
+        max_ratio_per_intent = cfg.get("max_ratio_per_intent", 0.50)
+        max_ratio_per_database = cfg.get("max_ratio_per_database", 0.50)
+        
         maps = {
             "neutral_names": {"orders": "service_records", "customers": "entities", "products": "assets", "order_items": "asset_events"},
             "domain_shift_names": {"orders": "work_requests", "customers": "accounts", "products": "resources", "order_items": "resource_events"},
         }
-        augmented = []
+        
+        orig_total = len(rows)
+        orig_by_intent = Counter(row.get("intent") or "unknown" for row in rows)
+        orig_by_db = Counter(row.get("db_id") or "unknown" for row in rows)
+        
+        aug_total = 0
+        aug_by_intent = Counter()
+        aug_by_db = Counter()
+        aug_per_example = Counter()
+        
+        accepted = []
+        quarantined = []
+        
         for repetition in range(multiplier):
             for mode in modes:
                 replacements = maps.get(str(mode), {})
@@ -182,17 +210,100 @@ class GenericIRCorpusBuilder:
                     active = {source: target for source, target in replacements.items() if source in schema_tables}
                     if not active:
                         continue
+                        
+                    orig_id = row.get("example_id")
+                    intent = row.get("intent") or "unknown"
+                    db_id = row.get("db_id") or "unknown"
+                    
+                    if aug_total >= orig_total * max_ratio:
+                        continue
+                    if aug_per_example[orig_id] >= max_per_example:
+                        continue
+                    if orig_by_intent[intent] > 0 and aug_by_intent[intent] >= orig_by_intent[intent] * max_ratio_per_intent:
+                        continue
+                    if orig_by_db[db_id] > 0 and aug_by_db[db_id] >= orig_by_db[db_id] * max_ratio_per_database:
+                        continue
+                        
                     clone = _replace_identifiers(copy.deepcopy(row), active)
-                    clone["example_id"] = f"{row.get('example_id')}__aug_{mode}_{repetition + 1}"
+                    aug_id = f"{row.get('example_id')}__aug_{mode}_{repetition + 1}"
+                    clone["example_id"] = aug_id
+                    
+                    rendered_sql = self.renderer.render(clone["query_ir"])
+                    clone["rendered_sql"] = rendered_sql
+                    clone["source_sql"] = rendered_sql
+                    
+                    orig_tables = (row.get("query_ir") or {}).get("required_tables") or []
+                    aug_tables = (clone.get("query_ir") or {}).get("required_tables") or []
+                    orig_joins = (row.get("query_ir") or {}).get("joins") or []
+                    aug_joins = (clone.get("query_ir") or {}).get("joins") or []
+                    orig_filters = (row.get("query_ir") or {}).get("filters") or []
+                    aug_filters = (clone.get("query_ir") or {}).get("filters") or []
+                    
+                    invariant_ok = True
+                    details = ""
+                    if len(orig_tables) != len(aug_tables):
+                        invariant_ok = False
+                        details = f"Table count mismatch: {len(orig_tables)} vs {len(aug_tables)}"
+                    elif (row.get("query_ir") or {}).get("intent") != (clone.get("query_ir") or {}).get("intent"):
+                        invariant_ok = False
+                        details = "Intent mismatch"
+                    elif len(orig_joins) != len(aug_joins):
+                        invariant_ok = False
+                        details = f"Join count mismatch: {len(orig_joins)} vs {len(aug_joins)}"
+                    elif len(orig_filters) != len(aug_filters):
+                        invariant_ok = False
+                        details = f"Filter count mismatch: {len(orig_filters)} vs {len(aug_filters)}"
+                    elif row.get("complexity") != clone.get("complexity"):
+                        invariant_ok = False
+                        details = "Complexity mismatch"
+                        
+                    if not invariant_ok:
+                        quarantined.append({
+                            "example_id": aug_id,
+                            "original_example_id": row.get("example_id"),
+                            "augmentation_method": f"schema_renaming_{mode}",
+                            "reason": "invariant_violation",
+                            "details": details
+                        })
+                        continue
+                        
+                    val_res = self.sql_validator.validate(rendered_sql, schema=clone.get("schema"))
+                    if not val_res.get("is_valid"):
+                        quarantined.append({
+                            "example_id": aug_id,
+                            "original_example_id": row.get("example_id"),
+                            "augmentation_method": f"schema_renaming_{mode}",
+                            "reason": "validation_failed",
+                            "issues": val_res.get("issues", [])
+                        })
+                        continue
+                        
                     clone["metadata"] = {
                         **(clone.get("metadata") or {}),
                         "augmented": True,
                         "augmentation_mode": mode,
                         "schema_renaming": active,
                         "original_example_id": row.get("example_id"),
+                        "augmentation_parent_id": row.get("example_id"),
+                        "repetition": repetition + 1,
+                        "method": "schema_renaming",
+                        "version": "1.0",
+                        "augmentation_method": f"schema_renaming_{mode}",
+                        "augmentation_version": "1.0",
+                        "source_split": row.get("split", "train"),
+                        "question_hash": hashlib.sha256(clone.get("question", "").encode("utf-8")).hexdigest(),
+                        "query_ir_hash": hashlib.sha256(json.dumps(clone.get("query_ir", {}), sort_keys=True).encode("utf-8")).hexdigest(),
+                        "sql_hash": hashlib.sha256(rendered_sql.encode("utf-8")).hexdigest(),
+                        "validation_status": "passed"
                     }
-                    augmented.append(clone)
-        return augmented
+                    
+                    accepted.append(clone)
+                    aug_total += 1
+                    aug_by_intent[intent] += 1
+                    aug_by_db[db_id] += 1
+                    aug_per_example[orig_id] += 1
+                    
+        return accepted, quarantined
 
     def _load_examples(
         self,
@@ -287,8 +398,8 @@ class GenericIRCorpusBuilder:
             },
         }
 
-    @staticmethod
     def _dataset_contribution_report(
+        self,
         requested: list[str],
         registry_report: dict[str, dict[str, Any]],
         examples: list[Text2SQLExample],
@@ -297,7 +408,6 @@ class GenericIRCorpusBuilder:
         min_converted_examples_required: dict[str, int] | None = None,
         pipeline_run_id: str | None = None,
     ) -> dict[str, Any]:
-        from datetime import datetime, timezone
         by_dataset: dict[str, dict[str, Any]] = {}
         all_names = list(dict.fromkeys([*requested, "wikisql", "spider", "bird-mini", "bird-full"]))
         raw_counts = Counter(example.dataset_name for example in examples)
@@ -309,14 +419,16 @@ class GenericIRCorpusBuilder:
         }
         minimum_failures: list[dict[str, Any]] = []
         for name in all_names:
+            split_keys = ["train", "validation", "model_selection_validation", "test", "unseen_db_test", "unsupported"]
             split_counts = {
                 split_name: sum(1 for row in splits.get(split_name, []) if row.get("dataset_name") == name)
-                for split_name in ["train", "validation", "test", "unseen_db_test", "unsupported"]
+                for split_name in split_keys
             }
             converted = int(
                 split_counts["train"]
                 + split_counts["validation"]
-                + split_counts["test"]
+                + split_counts.get("model_selection_validation", 0)
+                + split_counts.get("test", 0)
                 + split_counts["unseen_db_test"]
             )
             minimum_required = int(minimums.get(name, 0))
@@ -346,7 +458,8 @@ class GenericIRCorpusBuilder:
                 "converted_query_ir_examples": converted,
                 "used_in_train": int(split_counts["train"]),
                 "used_in_validation": int(split_counts["validation"]),
-                "used_in_test": int(split_counts["test"]),
+                "used_in_model_selection_validation": int(split_counts.get("model_selection_validation", 0)),
+                "used_in_test": int(split_counts.get("test", 0)),
                 "used_in_unseen_db_test": int(split_counts["unseen_db_test"]),
                 "unsupported": int(split_counts["unsupported"]),
                 "unsupported_sql_count": int(split_counts["unsupported"]),
@@ -448,8 +561,8 @@ class GenericIRCorpusBuilder:
 
     @staticmethod
     def _write_split_files(output: Path, splits: dict[str, list[dict[str, Any]]]) -> None:
-        for name in ["train", "validation", "test", "unseen_db_test", "unsupported"]:
-            write_jsonl(output / f"generic_ir_{name}.jsonl", splits.get(name, []))
+        for name, rows in splits.items():
+            write_jsonl(output / f"generic_ir_{name}.jsonl", rows)
 
     @staticmethod
     def _schema_dict(schema: Any) -> dict[str, Any]:

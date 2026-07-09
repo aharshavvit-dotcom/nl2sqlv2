@@ -70,6 +70,7 @@ class PredictionResult(BaseModel):
     normalized_question: str
     status: Literal["completed", "abstained"] = "completed"
     source_model: Literal["generic_direct_planner", "retrieval_ir", "neural_ir", "adaptive_router",
+                          "direct_planner", "retrieval", "neural", "clarification", "abstention",
                           # Backward-compatible values:
                           "option_c", "option_a", "hybrid"] = "retrieval_ir"
     intent: str | None = None

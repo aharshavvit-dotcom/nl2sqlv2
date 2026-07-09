@@ -166,6 +166,10 @@ class NeuralIRPredictor:
             ir_payload = {"is_valid": False, "errors": [str(exc)], "warnings": [], "issues": []}
             warnings.append(str(exc))
             confidence = min(confidence, 0.10)
+        neural_spans = []
+        if "span_logits" in outputs:
+            neural_spans = _decode_spans(question, outputs["span_logits"])
+            
         return {
             "source_model": "neural_ir",
             "neural_ir_version": str(self.config.get("model_version") or "schema_aware_queryir_v1"),
@@ -179,6 +183,7 @@ class NeuralIRPredictor:
             "raw_confidence": raw_confidence,
             "calibrated_confidence": confidence,
             "confidence": confidence,
+            "neural_spans": neural_spans,
             "warnings": list(dict.fromkeys(warnings)),
             "debug": {
                 "decoded_prediction": decoded,
@@ -277,6 +282,36 @@ def _attention_debug(outputs: dict[str, Any]) -> dict[str, Any]:
         weights = outputs["attention_weights"].detach().cpu()
         payload["shape"] = list(weights.shape)
     return payload
+
+
+def _decode_spans(question: str, span_logits: torch.Tensor) -> list[str]:
+    import re
+    token_re = re.compile(r"[a-z0-9_]+")
+    token_spans = []
+    for m in token_re.finditer(question.lower()):
+        token_spans.append((m.start(), m.end(), m.group()))
+        
+    preds = span_logits.squeeze(0).argmax(dim=-1).cpu().tolist()
+    spans = []
+    current_span = []
+    for idx, pred in enumerate(preds):
+        if idx >= len(token_spans):
+            break
+        if pred == 1:
+            current_span.append(idx)
+        else:
+            if current_span:
+                spans.append(current_span)
+                current_span = []
+    if current_span:
+        spans.append(current_span)
+        
+    extracted_values = []
+    for span in spans:
+        start_char = token_spans[span[0]][0]
+        end_char = token_spans[span[-1]][1]
+        extracted_values.append(question[start_char:end_char])
+    return extracted_values
 
 
 # Backward-compatible alias

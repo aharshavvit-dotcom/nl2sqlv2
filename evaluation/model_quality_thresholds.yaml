@@ -64,3 +64,27 @@ quality_gate_modes:
   baseline: "Run full diagnostics; unavailable execution and feedback are advisory."
   production: "Require configured execution, feedback, SQL safety, and controlled predicted-SQL proof."
   release: "Production requirements plus release regression and comparison evidence."
+
+semantic:
+  minimum_applicable_cases: 50
+  projection_exact_match_rate:
+    development_min: 0.50
+    rc_min: 0.65
+    production_min: 0.70
+  filter_column_accuracy_rate:
+    development_min: 0.55
+    rc_min: 0.65
+    production_min: 0.70
+  filter_value_accuracy_rate:
+    development_min: 0.45
+    rc_min: 0.60
+    production_min: 0.70
+  dimension_column_accuracy_rate:
+    development_min: 0.50
+    rc_min: 0.60
+    production_min: 0.65
+  safe_but_wrong_sql_rate_max:
+    development_max: 0.50
+    rc_max: 0.35
+    production_max: 0.30
+
