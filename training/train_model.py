@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import uuid
@@ -42,6 +43,8 @@ def parse_args() -> argparse.Namespace:
                         help="Stop pipeline after this step")
     parser.add_argument("--resume", action="store_true",
                         help="Skip already-completed steps")
+    parser.add_argument("--resume-run-id", type=str, default=None,
+                        help="Resume an existing pipeline run ID without generating a new one")
     parser.add_argument("--force", action="store_true",
                         help="Continue past input/output validation failures")
     parser.add_argument("--dry-run", action="store_true",
@@ -124,11 +127,14 @@ def config_to_pipeline_config(config: dict[str, Any], steps: list[str]) -> dict[
     quality_gate = config.get("quality_gate", {})
     effective_neural = config.get("_effective_neural_config") or resolve_effective_neural_config(config)
     evaluation_dir = ROOT / evaluation.get("output_dir", "artifacts/evaluation")
-    candidate_bundle_dir = ROOT / paths.get("candidate_bundle_dir", "artifacts/model_bundle/candidate")
+    candidate_bundle_dir = ROOT / paths.get("candidate_bundle_dir", "artifacts/model_bundle/candidates")
     current_bundle_dir = ROOT / paths.get("current_bundle_dir", "artifacts/model_bundle/current")
 
     # Map to the existing PipelineConfig format
     pipeline_run_id = config.get("_pipeline_run_id", "")
+    run_dir = ROOT / "artifacts" / "pipeline" / "runs" / pipeline_run_id if pipeline_run_id else ROOT / "artifacts" / "pipeline"
+    if pipeline_run_id:
+        candidate_bundle_dir = ROOT / "artifacts" / "model_bundle" / "candidates" / pipeline_run_id
     return {
         "pipeline_name": pipeline.get("name", "integrated_training"),
         "pipeline_run_id": pipeline_run_id,
@@ -162,6 +168,8 @@ def config_to_pipeline_config(config: dict[str, Any], steps: list[str]) -> dict[
             "current_bundle_dir": str(current_bundle_dir),
             "bundle_dir": str(candidate_bundle_dir),
             "calibration_report_path": str(evaluation_dir / "calibration_report.json"),
+            "pipeline_run_dir": str(run_dir),
+            "pipeline_state_path": str(run_dir / "pipeline_state.json"),
         },
         "steps": steps,
         # Extended fields for new steps
@@ -173,21 +181,38 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> dict[str, 
     """Run the training pipeline."""
     steps = build_pipeline_steps(config)
     pipeline_config_dict = config_to_pipeline_config(config, steps)
+    pipeline_run_id = config.get("_pipeline_run_id", "")
+    run_dir = ROOT / "artifacts" / "pipeline" / "runs" / pipeline_run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     # Write pipeline config for the runner
-    pipeline_config_path = ROOT / "artifacts" / "pipeline" / "_current_pipeline_config.yaml"
+    pipeline_config_path = run_dir / "effective_config.yaml"
     pipeline_config_path.parent.mkdir(parents=True, exist_ok=True)
     pipeline_config_path.write_text(
         yaml.dump(pipeline_config_dict, default_flow_style=False), encoding="utf-8"
     )
+    latest_pointer = ROOT / "artifacts" / "pipeline" / "latest_run.json"
+    latest_pointer.parent.mkdir(parents=True, exist_ok=True)
+    latest_pointer.write_text(
+        json.dumps(
+            {
+                "pipeline_run_id": pipeline_run_id,
+                "run_dir": str(run_dir),
+                "effective_config": str(pipeline_config_path),
+                "legacy_pointer_only": True,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     from orchestration.pipeline_runner import PipelineRunner
-    runner = PipelineRunner(state_path=ROOT / "artifacts" / "pipeline" / "pipeline_state.json")
+    runner = PipelineRunner(state_path=run_dir / "pipeline_state.json")
     report = runner.run(
         str(pipeline_config_path),
         start_at=args.start_at,
         stop_after=args.stop_after,
-        resume=args.resume,
+        resume=args.resume or bool(args.resume_run_id),
         force=args.force,
         dry_run=args.dry_run,
     )
@@ -196,7 +221,8 @@ def run_pipeline(config: dict[str, Any], args: argparse.Namespace) -> dict[str, 
 
 def write_training_report(report: dict[str, Any], config: dict[str, Any]) -> None:
     """Write the final training report."""
-    output_dir = ROOT / "artifacts" / "pipeline"
+    pipeline_run_id = config.get("_pipeline_run_id", "")
+    output_dir = ROOT / "artifacts" / "pipeline" / "runs" / pipeline_run_id
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # JSON report
@@ -205,6 +231,9 @@ def write_training_report(report: dict[str, Any], config: dict[str, Any]) -> Non
         "pipeline_run_id": config.get("_pipeline_run_id", ""),
         "completed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "config_path": config.get("_config_path", ""),
+        "run_dir": str(output_dir),
+        "legacy_global_pipeline_state_valid_as_evidence": False,
+        "effective_config_hash": _config_hash(config),
         "effective_neural_config": config.get("_effective_neural_config", {}),
     }
     (output_dir / "train_model_report.json").write_text(
@@ -234,6 +263,30 @@ def write_training_report(report: dict[str, Any], config: dict[str, Any]) -> Non
             lines.append(f"  - Reason: {step['reason']}")
     lines.append("")
     (output_dir / "train_model_report.md").write_text("\n".join(lines), encoding="utf-8")
+    pointer = {
+        "pipeline_run_id": pipeline_run_id,
+        "run_dir": str(output_dir),
+        "train_model_report": str(output_dir / "train_model_report.json"),
+        "legacy_pointer_only": True,
+        "valid_as_production_evidence": False,
+    }
+    legacy_dir = ROOT / "artifacts" / "pipeline"
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    (legacy_dir / "train_model_report.json").write_text(
+        json.dumps(pointer, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _config_hash(config: dict[str, Any]) -> str:
+    stable = {
+        key: value
+        for key, value in config.items()
+        if key not in {"_pipeline_run_id"}
+    }
+    return hashlib.sha256(
+        json.dumps(stable, sort_keys=True, default=str, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
 
 
 def main() -> int:
@@ -248,8 +301,11 @@ def main() -> int:
     config = load_training_config(args.config)
     pipeline_name = config.get("pipeline", {}).get("name", "integrated_training")
 
-    # Generate immutable pipeline run ID for this execution
-    pipeline_run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8]
+    # Generate immutable pipeline run ID for this execution, or resume an existing one.
+    if args.resume_run_id:
+        pipeline_run_id = args.resume_run_id
+    else:
+        pipeline_run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:8]
     config["_pipeline_run_id"] = pipeline_run_id
     print(f"Pipeline: {pipeline_name}")
     print(f"Run ID:   {pipeline_run_id}")
@@ -321,11 +377,11 @@ def main() -> int:
 
     if status == "completed":
         print(f"\nReports written to:")
-        print(f"  artifacts/pipeline/train_model_report.json")
-        print(f"  artifacts/pipeline/train_model_report.md")
+        print(f"  artifacts/pipeline/runs/{pipeline_run_id}/train_model_report.json")
+        print(f"  artifacts/pipeline/runs/{pipeline_run_id}/train_model_report.md")
         bundle_cfg = config.get("bundle", {})
         if bundle_cfg.get("build", True):
-            print(f"  artifacts/model_bundle/candidate/bundle_manifest.json")
+            print(f"  artifacts/model_bundle/candidates/{pipeline_run_id}/bundle_manifest.json")
         if bundle_cfg.get("promote_if_quality_gate_passes", False):
             print(f"  artifacts/model_bundle/current/bundle_manifest.json (if promoted)")
     elif failed > 0:

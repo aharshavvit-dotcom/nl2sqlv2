@@ -25,6 +25,64 @@ def _read_json(path: Path | None) -> dict[str, Any]:
         return {}
 
 
+def _normalize_dataset_names(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    return [str(item).strip().lower() for item in values if str(item).strip()]
+
+
+def _validate_dataset_alignment(
+    config: dict[str, Any],
+    contribution_report: dict[str, Any],
+    retrieval_manifest: dict[str, Any],
+) -> None:
+    requested = _normalize_dataset_names((config.get("datasets") or {}).get("names") or [])
+    if not requested:
+        return
+
+    mismatches: list[str] = []
+    contribution_requested = _normalize_dataset_names(contribution_report.get("datasets_requested") or [])
+    if contribution_requested and set(contribution_requested) != set(requested):
+        mismatches.append(
+            "dataset contribution report requested "
+            f"{sorted(contribution_requested)} but config requested {sorted(requested)}"
+        )
+
+    contribution_by_dataset = contribution_report.get("by_dataset") or {}
+    expected_datasets = set(requested)
+    if isinstance(contribution_by_dataset, dict):
+        training_datasets = {
+            str(name).strip().lower()
+            for name, stats in contribution_by_dataset.items()
+            if isinstance(stats, dict)
+            and str(name).strip()
+            and int(stats.get("used_in_train", 0) or 0) > 0
+        }
+        if training_datasets:
+            expected_datasets = training_datasets
+
+    retrieval_counts = retrieval_manifest.get("by_dataset") or {}
+    if isinstance(retrieval_counts, dict) and retrieval_counts:
+        retrieval_datasets = {
+            str(name).strip().lower()
+            for name, count in retrieval_counts.items()
+            if str(name).strip() and int(count or 0) > 0
+        }
+        if retrieval_datasets != expected_datasets:
+            mismatches.append(
+                "RAG manifest contains "
+                f"{sorted(retrieval_datasets)} but expected {sorted(expected_datasets)}"
+            )
+
+    if mismatches:
+        raise ValueError(
+            "Artifact dataset mismatch: "
+            + "; ".join(mismatches)
+            + ". Re-run from build_generic_ir_corpus/build_retrieval_rag_index "
+              "or use the config that produced the existing artifacts."
+        )
+
+
 class ModelBundleBuilder:
     """Assembles a candidate model bundle from training artifacts."""
 
@@ -134,6 +192,7 @@ class ModelBundleBuilder:
         retrieval_manifest = _read_json(
             retrieval_src / "manifest.json" if retrieval_src else None
         )
+        _validate_dataset_alignment(config, contribution_report, retrieval_manifest)
         sklearn_artifact_version = dict(retrieval_manifest.get("sklearn_artifact_metadata") or {})
         # Extract controlled fixture results from pipeline_report if available
         _steps = [s for s in (pipeline_report or {}).get("steps", []) if isinstance(s, dict)]

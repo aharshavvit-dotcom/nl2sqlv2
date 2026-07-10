@@ -31,6 +31,44 @@ def test_question_leakage_detected() -> None:
     assert report["question_overlap_count"] == 1
 
 
+def test_generic_count_overlap_is_reported_but_not_blocking() -> None:
+    splits = {
+        "train": [
+            {
+                "example_id": "t1",
+                "db_id": "db1",
+                "question": "Count the number of customers.",
+                "source_sql": "SELECT count(*) FROM Customers",
+                "schema": {"tables": {"Customers": {"columns": {"id": {}, "name": {}}}}},
+                "query_ir": {"query_ir_id": "t1", "intent": "count_records", "base_table": "Customers"},
+            }
+        ],
+        "validation": [
+            {
+                "example_id": "v1",
+                "db_id": "db2",
+                "question": "count the number of customers.",
+                "source_sql": "SELECT count(*) FROM Customers",
+                "schema": {"tables": {"Customers": {"columns": {"customer_id": {}, "region": {}}}}},
+                "query_ir": {"query_ir_id": "v1", "intent": "count_records", "base_table": "Customers"},
+            }
+        ],
+        "test": [],
+        "unseen_db_test": [],
+    }
+
+    report = DatasetLeakageChecker().run_all_checks(splits)
+
+    assert report["generic_template_overlap_count"] == 1
+    assert report["generic_sql_overlap_count"] == 1
+    assert report["generic_sql_ast_overlap_count"] == 1
+    assert report["has_question_leakage"] is False
+    assert report["has_sql_leakage"] is False
+    assert report["has_sql_ast_leakage"] is False
+    assert report["has_near_duplicate_leakage"] is False
+    assert report["strict_passed"] is True
+
+
 def test_clean_split_passes() -> None:
     splits = {
         "train": [{"db_id": "db1", "question": "List users", "source_sql": "select 1"}],

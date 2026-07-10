@@ -6,6 +6,8 @@ Saves best and last model checkpoints along with metadata.
 from __future__ import annotations
 
 import json
+import math
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +55,8 @@ class CheckpointManager:
         value = float(metrics.get(self.metric_name,
                        metrics.get("overall_slot_accuracy",
                        metrics.get("sql_validation_rate", 0.0))))
+        if not math.isfinite(value):
+            return False
         is_better = self._is_improvement(value)
         if is_better:
             self._best_value = value
@@ -135,13 +139,34 @@ class CheckpointManager:
         
         best_model_path = self.output_dir / "best_model.pt"
         if best_model_path.exists():
-            import hashlib
             sha256 = hashlib.sha256()
             with best_model_path.open("rb") as f:
                 for chunk in iter(lambda: f.read(8192), b""):
                     sha256.update(chunk)
             meta["best_checkpoint_sha256"] = sha256.hexdigest()
+            try:
+                checkpoint = torch.load(best_model_path, map_location="cpu", weights_only=False)
+                state_dict = checkpoint.get("model_state_dict") if isinstance(checkpoint, dict) else checkpoint
+                if isinstance(state_dict, dict):
+                    meta["best_checkpoint_state_dict_sha256"] = _state_dict_sha256(state_dict)
+            except Exception as exc:
+                meta["best_checkpoint_state_dict_sha256_error"] = str(exc)
 
         (self.output_dir / "checkpoint_metadata.json").write_text(
             json.dumps(meta, indent=2, default=str), encoding="utf-8",
         )
+
+
+def _state_dict_sha256(state_dict: dict[str, Any]) -> str:
+    hasher = hashlib.sha256()
+    for key in sorted(state_dict):
+        value = state_dict[key]
+        hasher.update(str(key).encode("utf-8"))
+        if hasattr(value, "detach"):
+            tensor = value.detach().cpu().contiguous()
+            hasher.update(str(tensor.dtype).encode("utf-8"))
+            hasher.update(str(tuple(tensor.shape)).encode("utf-8"))
+            hasher.update(tensor.numpy().tobytes())
+        else:
+            hasher.update(repr(value).encode("utf-8"))
+    return hasher.hexdigest()

@@ -18,7 +18,7 @@ from validation.sql_validator import SQLValidator
 
 from .corpus_quality import CorpusQualityAnalyzer
 from .dataset_registry import DatasetRegistry
-from .leakage_checker import DatasetLeakageChecker
+from .leakage_checker import DatasetLeakageChecker, DatasetLeakageError
 from .reporting import save_report_pair
 from .split_manager import DatasetSplitManager
 from .utils import model_dump, normalize_dataset_name, write_jsonl
@@ -124,6 +124,7 @@ class GenericIRCorpusBuilder:
         self._write_split_files(output, splits)
 
         leakage_report = DatasetLeakageChecker().run_all_checks(splits)
+        leakage_failed = not leakage_report.get("strict_passed", False)
         
         split_keys = [name for name in ["train", "validation", "model_selection_validation", "test"] if name in splits]
         quality_report = CorpusQualityAnalyzer().analyze(
@@ -143,6 +144,8 @@ class GenericIRCorpusBuilder:
         save_report_pair(artifacts / "dataset_split_report.json", split_report, "Dataset Split Report")
         self.split_manager.save_split_report(splits, str(artifacts / "split_distribution_report.json"))
         save_report_pair(artifacts / "leakage_report.json", leakage_report, "Dataset Leakage Report")
+        if leakage_failed:
+            raise DatasetLeakageError(leakage_report)
         save_report_pair(artifacts / "corpus_quality_report.json", quality_report, "Corpus Quality Report")
         contribution_report = self._dataset_contribution_report(
             requested=requested,
@@ -344,11 +347,21 @@ class GenericIRCorpusBuilder:
         query_ir = result["query_ir"]
         rendered_sql = result.get("roundtrip_sql") or self.renderer.render(query_ir)
         sql_features = self.extractor.extract(example.sql)
+        content_hash = self._example_content_hash(example)
+        source_dataset_version = self._source_dataset_version(example)
         return {
             "example_id": example.example_id,
             "dataset_name": example.dataset_name,
+            "source_dataset": example.dataset_name,
+            "source_dataset_version": source_dataset_version,
+            "source_split": example.split,
+            "source_example_id": example.example_id,
             "db_id": example.db_id,
+            "database_id": example.db_id,
             "split": example.split,
+            "internal_split": example.split,
+            "eligible_for_training": example.split == "train",
+            "content_hash": content_hash,
             "question": example.question,
             "serialized_schema": self._serialized_schema(schema),
             "schema": self._schema_dict(schema),
@@ -365,7 +378,11 @@ class GenericIRCorpusBuilder:
             "metadata": {
                 "difficulty": example.difficulty,
                 "source_file": example.source_file,
+                "source_dataset": example.dataset_name,
+                "source_dataset_version": source_dataset_version,
                 "source_split": example.split,
+                "source_example_id": example.example_id,
+                "content_hash": content_hash,
                 "conversion_warnings": result.get("warnings", []),
             },
         }
@@ -376,14 +393,24 @@ class GenericIRCorpusBuilder:
         result: dict[str, Any],
         reason: str | None = None,
     ) -> dict[str, Any]:
+        content_hash = GenericIRCorpusBuilder._example_content_hash(example)
+        source_dataset_version = GenericIRCorpusBuilder._source_dataset_version(example)
         return {
             "example_id": example.example_id,
             "dataset": example.dataset_name,
             "dataset_name": example.dataset_name,
+            "source_dataset": example.dataset_name,
+            "source_dataset_version": source_dataset_version,
+            "source_split": example.split,
+            "source_example_id": example.example_id,
             "db_id": example.db_id,
+            "database_id": example.db_id,
             "question": example.question,
             "gold_sql": example.sql,
             "source_sql": example.sql,
+            "internal_split": "unsupported",
+            "eligible_for_training": False,
+            "content_hash": content_hash,
             "unsupported_reason": reason or result.get("unsupported_reason") or "unsupported",
             "unsupported_feature": GenericIRCorpusBuilder._unsupported_feature(
                 reason or result.get("unsupported_reason") or "unsupported",
@@ -394,6 +421,11 @@ class GenericIRCorpusBuilder:
                 "difficulty": example.difficulty,
                 "source_file": example.source_file,
                 "split": example.split,
+                "source_dataset": example.dataset_name,
+                "source_dataset_version": source_dataset_version,
+                "source_split": example.split,
+                "source_example_id": example.example_id,
+                "content_hash": content_hash,
                 "warnings": result.get("warnings", []),
             },
         }
@@ -529,6 +561,27 @@ class GenericIRCorpusBuilder:
                 for row in unsupported_rows[:20]
             ],
         }
+
+    @staticmethod
+    def _example_content_hash(example: Text2SQLExample) -> str:
+        payload = {
+            "source_dataset": example.dataset_name,
+            "source_split": example.split,
+            "source_example_id": example.example_id,
+            "database_id": example.db_id,
+            "question": example.question,
+            "source_sql": example.sql,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def _source_dataset_version(example: Text2SQLExample) -> str:
+        source_file = str(example.source_file or "")
+        if source_file:
+            return source_file
+        return "unknown"
 
     @staticmethod
     def _unsupported_feature(reason: str, message: str | None = None) -> str:

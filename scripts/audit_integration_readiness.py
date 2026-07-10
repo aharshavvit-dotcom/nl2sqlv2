@@ -266,8 +266,8 @@ def run_audit() -> dict[str, Any]:
             item.get("config_path") == "configs/neural_training_default.yaml"
             and item.get("epochs") == 10
             and item.get("batch_size") == 8
-            and item.get("save_best_metric") == "loss"
-            and item.get("save_best_mode") == "min"
+            and item.get("save_best_metric") == "support_weighted_semantic_score"
+            and item.get("save_best_mode") == "max"
             and item.get("early_stopping_patience") == 2
             for item in resolved.values()
         )

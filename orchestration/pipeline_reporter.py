@@ -10,7 +10,14 @@ class PipelineReporter:
         path = Path(output_dir)
         path.mkdir(parents=True, exist_ok=True)
         (path / "pipeline_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-        lines = ["# Training Pipeline Report", "", f"Pipeline: {report.get('pipeline_name')}", f"Status: {report.get('status')}", ""]
+        lines = [
+            "# Training Pipeline Report",
+            "",
+            f"Pipeline: {report.get('pipeline_name')}",
+            f"Run ID: {report.get('pipeline_run_id', '')}",
+            f"Status: {report.get('status')}",
+            "",
+        ]
         lines.append("## Steps")
         for step in report.get("steps", []):
             lines.append(f"- {step.get('step')}: {step.get('status')}")

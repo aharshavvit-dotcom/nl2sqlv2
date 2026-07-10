@@ -38,7 +38,7 @@ from neural_optimization.training_config import (
 )
 from neural_optimization.optimizer_factory import build_optimizer
 from neural_optimization.scheduler_factory import build_scheduler
-from neural_optimization.checkpoint_manager import CheckpointManager
+from neural_optimization.checkpoint_manager import CheckpointManager, _state_dict_sha256
 from neural_optimization.early_stopping import EarlyStopping
 from neural_optimization.loss_weighter import MultiTaskLossWeighter
 from neural_optimization.training_diagnostics import TrainingDiagnostics
@@ -252,7 +252,7 @@ def run_optimized_training(
     vocab_size = len(vocab)
     label_sizes = train_dataset.label_encoder.label_sizes
     model = SchemaAwareOptionAIRModel(model_config, vocab_size, label_sizes)
-    device = torch.device("cpu")
+    device = _resolve_torch_device(str(config.training.get("device", "auto")))
     model.to(device)
 
     # Build optimizer & scheduler
@@ -445,9 +445,7 @@ def run_optimized_training(
         train_metrics["overall_slot_accuracy"] = (
             sum(epoch_correct.get(k, 0) / max(epoch_total.get(k, 0), 1) for k in keys) / max(len(keys), 1)
         )
-        train_metrics["support_weighted_semantic_score"] = (
-            sum(epoch_correct.values()) / max(sum(epoch_total.values()), 1)
-        )
+        train_metrics.update(_semantic_checkpoint_metrics(epoch_correct, epoch_total, config))
 
         # ── Validate ─────────────────────────────────────────────
         val_metrics: dict[str, float] = {}
@@ -519,9 +517,7 @@ def run_optimized_training(
                 val_metrics.get("overall_slot_accuracy", 0.0),
             ]
             val_metrics["validation_composite_score"] = sum(composite_parts) / len(composite_parts)
-            val_metrics["support_weighted_semantic_score"] = (
-                sum(val_correct.values()) / max(sum(val_total.values()), 1)
-            )
+            val_metrics.update(_semantic_checkpoint_metrics(val_correct, val_total, config))
 
         epoch_time = time.time() - epoch_start
         current_lr = optimizer.param_groups[0]["lr"]
@@ -549,6 +545,7 @@ def run_optimized_training(
 
             # Also save as model.pt for predictor compatibility
             torch.save(model.state_dict(), output_dir / "model.pt")
+            _record_runtime_export_identity(output_dir, model.state_dict())
 
         ckpt_manager.save_last(model, optimizer, epoch, check_metrics, config.to_dict())
 
@@ -576,6 +573,7 @@ def run_optimized_training(
     if best_ckpt:
         model.load_state_dict(best_ckpt["model_state_dict"])
         torch.save(model.state_dict(), output_dir / "model.pt")
+        _record_runtime_export_identity(output_dir, model.state_dict())
 
     # Save label encoder artifacts
     train_dataset.label_encoder.save(str(output_dir / "label_maps.json"))
@@ -637,6 +635,11 @@ def run_optimized_training(
         "weight_decay": float(config.optimizer.get("weight_decay", 0.0001)),
         "pointer_head_weight_decay": float(config.optimizer.get("pointer_head_weight_decay", 0.001)),
         "pointer_dropout": float(config.model.get("pointer_dropout", 0.30)),
+        "device": str(device),
+        "precision": str(config.training.get("precision", "float32")),
+        "determinism_mode": str(config.training.get("determinism_mode", "seeded")),
+        "torch_num_threads": torch.get_num_threads(),
+        "torch_version": torch.__version__,
         "effective_config_hash": _effective_config_hash(config),
         "best_val_loss": best_epoch.get("validation_total_loss"),
         "current_val_loss": val_metrics.get("loss"),
@@ -797,6 +800,23 @@ def _model_outputs(model, batch: dict[str, Any], keys: list[str]) -> dict[str, t
     return model(**kwargs)
 
 
+def _resolve_torch_device(requested: str) -> torch.device:
+    mode = requested.strip().lower()
+    if mode == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+    if mode == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("Configured training.device=cuda but CUDA is not available.")
+    if mode == "mps" and not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
+        raise RuntimeError("Configured training.device=mps but MPS is not available.")
+    if mode not in {"cpu", "cuda", "mps"}:
+        raise ValueError("training.device must be one of: auto, cpu, cuda, mps")
+    return torch.device(mode)
+
+
 def _hard_negative_loss(
     outputs: dict[str, torch.Tensor],
     labels: dict[str, torch.Tensor],
@@ -827,6 +847,99 @@ def _hard_negative_loss(
     if not losses:
         return None
     return torch.stack(losses).sum()
+
+
+def _semantic_checkpoint_metrics(
+    correct: dict[str, int],
+    total: dict[str, int],
+    config: NeuralTrainingConfig,
+) -> dict[str, Any]:
+    weights = {
+        "intent_macro_f1": 0.20,
+        "projection_exact_match": 0.15,
+        "filter_column_accuracy": 0.20,
+        "filter_value_accuracy": 0.20,
+        "dimension_column_accuracy": 0.10,
+        "semantic_pass_rate": 0.15,
+    }
+    weights.update(config.training.get("semantic_score_weights") or {})
+    minimum_support = int(config.training.get("semantic_score_min_support", 1) or 1)
+
+    label_map = {
+        "intent_macro_f1": "intent_label",
+        "projection_exact_match": "metric_column_index",
+        "filter_column_accuracy": "filter_column_index",
+        "filter_value_accuracy": "span",
+        "dimension_column_accuracy": "dimension_column_index",
+    }
+
+    metric_values: dict[str, float | None] = {}
+    metric_supports: dict[str, int] = {}
+    missing_metrics: list[str] = []
+    for metric_name, label_key in label_map.items():
+        support = int(total.get(label_key, 0))
+        metric_supports[metric_name] = support
+        if support < minimum_support:
+            metric_values[metric_name] = None
+            missing_metrics.append(metric_name)
+            continue
+        metric_values[metric_name] = float(correct.get(label_key, 0)) / max(support, 1)
+
+    available = [value for value in metric_values.values() if value is not None]
+    if available:
+        metric_values["semantic_pass_rate"] = min(float(value) for value in available)
+        metric_supports["semantic_pass_rate"] = min(
+            support for name, support in metric_supports.items()
+            if metric_values.get(name) is not None
+        )
+    else:
+        metric_values["semantic_pass_rate"] = None
+        metric_supports["semantic_pass_rate"] = 0
+        missing_metrics.append("semantic_pass_rate")
+
+    weighted_value = 0.0
+    available_weight = 0.0
+    for metric_name, weight in weights.items():
+        value = metric_values.get(metric_name)
+        if value is None:
+            continue
+        weighted_value += float(weight) * float(value)
+        available_weight += float(weight)
+    semantic_score = weighted_value / available_weight if available_weight else 0.0
+    return {
+        "support_weighted_semantic_score": semantic_score,
+        "semantic_checkpoint_score": semantic_score,
+        "semantic_checkpoint_score_definition_version": "2.0",
+        "semantic_checkpoint_score_weights": weights,
+        "semantic_checkpoint_metric_values": metric_values,
+        "semantic_checkpoint_metric_supports": metric_supports,
+        "semantic_checkpoint_missing_metrics": sorted(set(missing_metrics)),
+        "semantic_checkpoint_minimum_support": minimum_support,
+        "semantic_checkpoint_score_valid_for_production": not missing_metrics,
+    }
+
+
+def _record_runtime_export_identity(output_dir: Path, runtime_state_dict: dict[str, Any]) -> None:
+    metadata_path = output_dir / "checkpoint_metadata.json"
+    if not metadata_path.exists():
+        return
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except ValueError:
+        return
+    runtime_hash = _state_dict_sha256(runtime_state_dict)
+    selected_hash = metadata.get("best_checkpoint_state_dict_sha256")
+    metadata.update({
+        "selected_checkpoint_file": "best_model.pt",
+        "selected_checkpoint_epoch": metadata.get("best_epoch"),
+        "selected_checkpoint_state_dict_sha256": selected_hash,
+        "runtime_export_file": "model.pt",
+        "runtime_export_state_dict_sha256": runtime_hash,
+        "runtime_export_equivalent_to_selected_checkpoint": (
+            bool(selected_hash) and selected_hash == runtime_hash
+        ),
+    })
+    metadata_path.write_text(json.dumps(metadata, indent=2, default=str), encoding="utf-8")
 
 
 if __name__ == "__main__":

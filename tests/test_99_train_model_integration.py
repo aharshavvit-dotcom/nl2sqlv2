@@ -355,8 +355,89 @@ class TestTrainModelIntegration:
         result = validator.validate(tmp_path)
         assert result["passed"], f"Unexpected issues: {result['blocking_issues']}"
 
+    def test_bundle_validator_tolerates_zero_examples_for_optional_dataset(self, tmp_path, monkeypatch):
+        """24. BundleValidator allows a requested dataset with zero retrieval examples when contribution data is otherwise valid."""
+        sys.path.insert(0, str(ROOT))
+        import sklearn
+        import model_bundle.bundle_validator as bundle_validator
+        from model_bundle.bundle_manifest import BundleManifest, save_manifest
+        from model_bundle.bundle_validator import ModelBundleValidator
+
+        monkeypatch.setattr(
+            bundle_validator,
+            "_validate_retrieval_runtime",
+            lambda *_args, **_kwargs: {"passed": True, "calibration_loaded": True},
+        )
+
+        manifest = BundleManifest(
+            bundle_id="test_optional_dataset",
+            status="candidate",
+            datasets=["bird-mini"],
+            paths={
+                "retrieval_ir": "retrieval_ir/",
+                "evaluation": "evaluation/",
+                "generic_training": "generic_training/",
+                "configs": "configs/",
+            },
+            artifacts={
+                "retrieval_manifest": "retrieval_ir/manifest.json",
+                "dataset_contribution_report": "generic_training/dataset_contribution_report.json",
+                "unsupported_sql_report": "generic_training/unsupported_sql_report.json",
+            },
+            metrics={
+                "unsafe_sql_count": 0,
+                "sql_validation_rate": 1.0,
+                "query_ir_validity_rate": 1.0,
+                "unnecessary_join_rate": 0.0,
+                "wrong_table_rate": 0.0,
+            },
+            quality_gate={"passed": True, "required": False, "report_path": "evaluation/model_quality_gate_report.json"},
+        )
+        save_manifest(manifest, tmp_path / "bundle_manifest.json")
+        retrieval = tmp_path / "retrieval_ir"
+        retrieval.mkdir()
+        for name in ["example_index.pkl", "schema_index.pkl", "pattern_index.pkl"]:
+            (retrieval / name).write_bytes(b"")
+        (retrieval / "sklearn_artifact_metadata.json").write_text(
+            json.dumps({"sklearn_version": sklearn.__version__}),
+            encoding="utf-8",
+        )
+        (retrieval / "manifest.json").write_text(
+            json.dumps({
+                "source_train_file": "train.jsonl",
+                "total_examples": 1,
+                "by_dataset": {"spider": 1},
+                "intent_distribution": {"show_records": 1},
+                "sql_complexity_distribution": {"simple": 1},
+            }),
+            encoding="utf-8",
+        )
+        evaluation = tmp_path / "evaluation"
+        evaluation.mkdir()
+        (evaluation / "generic_model_evaluation_report.json").write_text(
+            json.dumps({"summary": {}, "is_valid_for_quality_gate": True}),
+            encoding="utf-8",
+        )
+        generic_training = tmp_path / "generic_training"
+        generic_training.mkdir()
+        (generic_training / "dataset_contribution_report.json").write_text(
+            json.dumps({
+                "datasets_requested": ["bird-mini"],
+                "leakage_check_passed": True,
+                "by_dataset": {"bird-mini": {"converted_to_queryir": 0}},
+            }),
+            encoding="utf-8",
+        )
+        (generic_training / "unsupported_sql_report.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "configs").mkdir()
+
+        validator = ModelBundleValidator()
+        result = validator.validate(tmp_path)
+        assert result["passed"], f"Unexpected blocking issues: {result['blocking_issues']}"
+        assert any("bird-mini" in warning for warning in result["warnings"])
+
     def test_streamlit_has_bundle_loader(self):
-        """24. Streamlit app uses ModelBundleLoader."""
+        """25. Streamlit app uses ModelBundleLoader."""
         app_path = ROOT / "app" / "streamlit_app.py"
         assert app_path.exists()
         source = app_path.read_text(encoding="utf-8")
@@ -692,6 +773,90 @@ class TestTrainModelIntegration:
             # Clean up
             import shutil
             shutil.rmtree(ROOT / "artifacts" / "model_bundle" / "_test_prod_ready", ignore_errors=True)
+
+    def test_bundle_builder_rejects_stale_dataset_artifacts(self, tmp_path):
+        """A resumed bundle build must not pair one config with another run's artifacts."""
+        sys.path.insert(0, str(ROOT))
+        from model_bundle.bundle_builder import ModelBundleBuilder
+
+        work = tmp_path / "artifacts"
+        retrieval = work / "work" / "retrieval_ir"
+        retrieval.mkdir(parents=True)
+        (retrieval / "manifest.json").write_text(
+            json.dumps({"by_dataset": {"wikisql": 1, "spider": 1}}),
+            encoding="utf-8",
+        )
+        generic = work / "generic_training"
+        generic.mkdir(parents=True)
+        (generic / "dataset_contribution_report.json").write_text(
+            json.dumps({"datasets_requested": ["wikisql", "spider"]}),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="Artifact dataset mismatch") as exc:
+            ModelBundleBuilder().build_candidate_bundle(
+                work_dir=work,
+                output_dir=tmp_path / "candidate",
+                config={"datasets": {"names": ["wikisql", "bird-mini"]}},
+                pipeline_report={"steps": []},
+            )
+
+        assert "bird-mini" in str(exc.value)
+
+    def test_build_model_bundle_rebuilds_stale_artifacts_when_dataset_mismatch(self, monkeypatch, tmp_path):
+        """A resumed bundle build should rebuild stale corpora before packaging the bundle."""
+        sys.path.insert(0, str(ROOT))
+        import model_bundle.bundle_builder as bundle_module
+        import orchestration.step_runner as step_runner_module
+        from orchestration.pipeline_config import PipelineConfig
+        from orchestration.step_runner import StepRunner
+
+        calls: list[str] = []
+        should_raise = True
+
+        class FakeBundleBuilder:
+            def build_candidate_bundle(self, *args, **kwargs):
+                nonlocal should_raise
+                calls.append("bundle")
+                if should_raise:
+                    should_raise = False
+                    raise ValueError("Artifact dataset mismatch: RAG manifest contains ['wikisql'] but config requested ['bird-mini', 'wikisql']")
+                return {"bundle_dir": str(tmp_path / "candidate"), "manifest_path": str(tmp_path / "candidate" / "manifest.json")}
+
+        def fake_run_build_generic_ir_corpus(self, config):
+            calls.append("corpus")
+            return {"status": "completed"}
+
+        def fake_run_build_retrieval_rag_index(self, config):
+            calls.append("rag")
+            return {"status": "completed"}
+
+        monkeypatch.setattr(bundle_module, "ModelBundleBuilder", FakeBundleBuilder)
+        monkeypatch.setattr(step_runner_module, "_artifacts", lambda config: {
+            "generic_training_dir": str(tmp_path / "generic_training"),
+            "retrieval_model_dir": str(tmp_path / "retrieval_ir"),
+            "neural_model_dir": str(tmp_path / "neural_ir"),
+            "adaptive_ranker_dir": str(tmp_path / "adaptive_ranker"),
+            "self_training_dir": str(tmp_path / "self_training"),
+            "evaluation_dir": str(tmp_path / "evaluation"),
+            "schema_dir": str(tmp_path / "schema"),
+            "connected_db_regression_dir": str(tmp_path / "connected_db_regressions"),
+            "candidate_bundle_dir": str(tmp_path / "candidate"),
+            "current_bundle_dir": str(tmp_path / "current"),
+            "bundle_dir": str(tmp_path / "candidate"),
+            "pipeline_run_dir": str(tmp_path / "pipeline"),
+            "pipeline_state_path": str(tmp_path / "pipeline" / "pipeline_state.json"),
+        })
+        monkeypatch.setattr(step_runner_module, "_candidate_bundle_dir", lambda config: tmp_path / "candidate")
+        monkeypatch.setattr(StepRunner, "_run_build_generic_ir_corpus", fake_run_build_generic_ir_corpus)
+        monkeypatch.setattr(StepRunner, "_run_build_retrieval_rag_index", fake_run_build_retrieval_rag_index)
+
+        config = PipelineConfig(pipeline_name="test", training={"_integrated_config": {"datasets": {"names": ["bird-mini", "wikisql"]}}})
+        result = StepRunner()._run_build_model_bundle(config)
+
+        assert result["status"] == "completed"
+        assert calls.count("corpus") == 1
+        assert calls.count("rag") == 1
 
     def test_step_runner_recognizes_controlled_fixture_step(self):
         """35. StepRunner can get contract for run_controlled_fixture_evaluation."""

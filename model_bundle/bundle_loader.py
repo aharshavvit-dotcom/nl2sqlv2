@@ -47,6 +47,7 @@ class ModelBundleLoader:
         bundle_dir: str | Path,
         *,
         allow_candidate_debug: bool = False,
+        runtime_mode: str | None = None,
     ) -> dict[str, Any]:
         """Load a bundle and return resolved artifact paths.
 
@@ -72,7 +73,7 @@ class ModelBundleLoader:
             )
 
         manifest = load_manifest(manifest_path)
-        environment = str(os.getenv("NL2SQL_ENV", "development")).strip().lower()
+        environment = str(runtime_mode or os.getenv("NL2SQL_ENV", "development")).strip().lower()
         if environment not in {"development", "staging", "production"}:
             raise ValueError(f"Invalid NL2SQL_ENV={environment!r}; expected development, staging, or production.")
         if environment == "production" and manifest.status != "current":
@@ -152,14 +153,15 @@ class ModelBundleLoader:
         candidate_dir: str | Path,
         *,
         allow_candidate_debug: bool = False,
+        runtime_mode: str | None = None,
     ) -> dict[str, Any]:
         """Load current first; candidate fallback requires an explicit debug flag."""
         try:
-            return self.load(current_dir)
+            return self.load(current_dir, runtime_mode=runtime_mode)
         except (FileNotFoundError, ValueError) as current_error:
             if not allow_candidate_debug:
                 raise current_error
-        return self.load(candidate_dir, allow_candidate_debug=True)
+        return self.load(candidate_dir, allow_candidate_debug=True, runtime_mode=runtime_mode)
 
     @classmethod
     def load_current(
@@ -168,9 +170,6 @@ class ModelBundleLoader:
         runtime_mode: str = "production",
     ) -> dict[str, Any]:
         """Load canonical current model bundle, enforcing production constraints."""
-        import os
-        os.environ["NL2SQL_ENV"] = runtime_mode
         # In production, we do NOT allow candidate fallback
         loader = cls()
-        return loader.load(bundle_root, allow_candidate_debug=False)
-
+        return loader.load(bundle_root, allow_candidate_debug=False, runtime_mode=runtime_mode)

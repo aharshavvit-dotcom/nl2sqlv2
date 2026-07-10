@@ -39,6 +39,8 @@ class SlotResolver:
         candidates: list[RetrievedCandidate],
         schema_context: RuntimeSchemaContext,
         synonym_config: dict[str, Any] | None = None,
+        *,
+        neural_spans: list[str] | None = None,
     ) -> dict[str, Any]:
         q = question.lower()
         synonyms = self._synonym_config(synonym_config, schema_context)

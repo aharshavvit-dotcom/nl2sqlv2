@@ -1093,21 +1093,44 @@ class StepRunner:
         artifacts = _artifacts(config)
         eval_path = Path(artifacts["evaluation_dir"]) / "generic_model_evaluation_report.json"
         qg_path = Path(artifacts["evaluation_dir"]) / "model_quality_gate_report.json"
-        pipeline_path = ROOT / "artifacts/pipeline/train_model_report.json"
-        live_pipeline_path = ROOT / "artifacts/pipeline/pipeline_report.json"
+        run_dir = Path(artifacts.get("pipeline_run_dir") or ROOT / "artifacts/pipeline")
+        pipeline_path = run_dir / "train_model_report.json"
+        live_pipeline_path = run_dir / "pipeline_report.json"
+        legacy_pipeline_path = ROOT / "artifacts/pipeline/train_model_report.json"
+        legacy_live_pipeline_path = ROOT / "artifacts/pipeline/pipeline_report.json"
         pipeline_report = {}
         if pipeline_path.exists():
             pipeline_report = json.loads(pipeline_path.read_text(encoding="utf-8"))
         elif live_pipeline_path.exists():
             pipeline_report = json.loads(live_pipeline_path.read_text(encoding="utf-8"))
-        result = ModelBundleBuilder().build_candidate_bundle(
-            work_dir=ROOT / "artifacts",
-            output_dir=_candidate_bundle_dir(config),
-            config=integrated,
-            pipeline_report=pipeline_report,
-            evaluation_report=json.loads(eval_path.read_text(encoding="utf-8")) if eval_path.exists() else None,
-            quality_gate_report=json.loads(qg_path.read_text(encoding="utf-8")) if qg_path.exists() else None,
-        )
+        elif legacy_pipeline_path.exists():
+            pipeline_report = json.loads(legacy_pipeline_path.read_text(encoding="utf-8"))
+        elif legacy_live_pipeline_path.exists():
+            pipeline_report = json.loads(legacy_live_pipeline_path.read_text(encoding="utf-8"))
+
+        builder = ModelBundleBuilder()
+        try:
+            result = builder.build_candidate_bundle(
+                work_dir=ROOT / "artifacts",
+                output_dir=_candidate_bundle_dir(config),
+                config=integrated,
+                pipeline_report=pipeline_report,
+                evaluation_report=json.loads(eval_path.read_text(encoding="utf-8")) if eval_path.exists() else None,
+                quality_gate_report=json.loads(qg_path.read_text(encoding="utf-8")) if qg_path.exists() else None,
+            )
+        except ValueError as exc:
+            if "Artifact dataset mismatch" not in str(exc):
+                raise
+            self._run_build_generic_ir_corpus(config)
+            self._run_build_retrieval_rag_index(config)
+            result = builder.build_candidate_bundle(
+                work_dir=ROOT / "artifacts",
+                output_dir=_candidate_bundle_dir(config),
+                config=integrated,
+                pipeline_report=pipeline_report,
+                evaluation_report=json.loads(eval_path.read_text(encoding="utf-8")) if eval_path.exists() else None,
+                quality_gate_report=json.loads(qg_path.read_text(encoding="utf-8")) if qg_path.exists() else None,
+            )
         return {"status": "completed", "summary": result}
 
     def _run_validate_model_bundle(self, config: PipelineConfig) -> dict[str, Any]:
@@ -1144,7 +1167,7 @@ def _candidate_bundle_dir(config: PipelineConfig) -> Path:
     run_id = config.pipeline_run_id or integrated.get("_pipeline_run_id", "")
     if run_id:
         return ROOT / "artifacts" / "model_bundle" / "candidates" / run_id
-    return ROOT / integrated.get("paths", {}).get("candidate_bundle_dir", "artifacts/model_bundle/candidate")
+    return ROOT / integrated.get("paths", {}).get("candidate_bundle_dir", "artifacts/model_bundle/candidates")
 
 
 def _predicted_sql_bundle_identity(
@@ -1208,7 +1231,7 @@ def _artifacts(config: PipelineConfig) -> dict[str, str]:
         "evaluation_dir": str(ROOT / "artifacts/work/evaluation"),
         "schema_dir": str(ROOT / "artifacts/schema"),
         "connected_db_regression_dir": str(ROOT / "artifacts/connected_db_regressions"),
-        "candidate_bundle_dir": str(ROOT / "artifacts/model_bundle/candidate"),
+        "candidate_bundle_dir": str(ROOT / "artifacts/model_bundle/candidates"),
         "current_bundle_dir": str(ROOT / "artifacts/model_bundle/current"),
         "bundle_dir": "",
         "calibration_report_path": str(ROOT / "artifacts/work/evaluation/calibration_report.json"),

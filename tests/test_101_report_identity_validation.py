@@ -99,6 +99,96 @@ def test_manifest_pipeline_run_id_file_roundtrip(tmp_path):
     assert loaded.pipeline_run_id == "run-456"
 
 
+def test_bundle_validator_records_identity_proof_without_lifecycle_warning(tmp_path, monkeypatch):
+    import model_bundle.bundle_validator as bundle_validator
+    import orchestration.report_identity as report_identity
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    manifest = BundleManifest(
+        bundle_id="bundle-1",
+        status="candidate",
+        pipeline_run_id="run-1",
+        datasets=["wikisql"],
+        paths={
+            "retrieval_ir": "retrieval_ir/",
+            "evaluation": "evaluation/",
+            "generic_training": "generic_training/",
+            "configs": "configs/",
+        },
+        metrics={
+            "unsafe_sql_count": 0,
+            "sql_validation_rate": 1.0,
+            "query_ir_validity_rate": 1.0,
+            "unnecessary_join_rate": 0.0,
+            "wrong_table_rate": 0.0,
+        },
+        quality_gate={"passed": True, "required": False, "report_path": "evaluation/model_quality_gate_report.json"},
+    )
+    save_manifest(manifest, bundle / "bundle_manifest.json")
+
+    retrieval = bundle / "retrieval_ir"
+    retrieval.mkdir()
+    for name in ["example_index.pkl", "schema_index.pkl", "pattern_index.pkl", "sklearn_artifact_metadata.json"]:
+        (retrieval / name).write_bytes(b"{}" if name.endswith(".json") else b"")
+    (retrieval / "manifest.json").write_text(
+        json.dumps({
+            "source_train_file": "train.jsonl",
+            "total_examples": 1,
+            "by_dataset": {"wikisql": 1},
+            "intent_distribution": {"show_records": 1},
+            "sql_complexity_distribution": {"simple": 1},
+        }),
+        encoding="utf-8",
+    )
+    evaluation = bundle / "evaluation"
+    evaluation.mkdir()
+    (evaluation / "generic_model_evaluation_report.json").write_text(
+        json.dumps({"summary": {}, "is_valid_for_quality_gate": True}),
+        encoding="utf-8",
+    )
+    generic = bundle / "generic_training"
+    generic.mkdir()
+    (generic / "dataset_contribution_report.json").write_text(
+        json.dumps({
+            "datasets_requested": ["wikisql"],
+            "leakage_check_passed": True,
+            "by_dataset": {"wikisql": {"converted_to_queryir": 1}},
+        }),
+        encoding="utf-8",
+    )
+    (generic / "unsupported_sql_report.json").write_text("{}", encoding="utf-8")
+    (bundle / "configs").mkdir()
+
+    monkeypatch.setattr(
+        report_identity,
+        "validate_bundle_report_identities",
+        lambda *_args, **_kwargs: {
+            "valid": True,
+            "issues": [],
+            "reports": [
+                {
+                    "report_name": "generic_evaluation",
+                    "valid": True,
+                    "pipeline_run_id": "run-1",
+                    "bundle_id": "bundle-1",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        bundle_validator,
+        "_validate_retrieval_runtime",
+        lambda *_args, **_kwargs: {"passed": True, "calibration_loaded": True},
+    )
+
+    result = ModelBundleValidator().validate(bundle, config={"_pipeline_run_id": "run-1"})
+
+    assert not any("lifecycle_proof" in warning for warning in result["warnings"])
+    assert result["lifecycle_proof"]["generic_evaluation_identity_verified"] is True
+    assert result["lifecycle_proof"]["generic_evaluation_pipeline_run_id"] == "run-1"
+
+
 def test_pipeline_run_id_alone_fails_identity():
     manifest = BundleManifest(
         bundle_id="bundle-123",

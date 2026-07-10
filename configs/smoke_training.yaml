@@ -25,7 +25,7 @@ paths:
   artifacts_dir: artifacts
   model_bundle_dir: artifacts/model_bundle
   current_bundle_dir: artifacts/model_bundle/current
-  candidate_bundle_dir: artifacts/model_bundle/candidate
+  candidate_bundle_dir: artifacts/model_bundle/candidates
 
 retrieval:
   enabled: true

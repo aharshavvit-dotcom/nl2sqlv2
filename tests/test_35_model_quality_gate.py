@@ -357,6 +357,33 @@ def test_execution_unavailable_blocks_production_when_required() -> None:
     assert any(item["metric"] == "execution_unavailable" for item in result["failed_checks"])
 
 
+def test_execution_unavailable_failure_is_deduplicated() -> None:
+    report = _mode_report("production")
+    report["feedback_regression"] = {"enabled": False, "required_for_production": False}
+    report["execution_aware_evaluation"] = {
+        "enabled": True,
+        "required": True,
+        "summary": {
+            "execution_available": 0,
+            "execution_unavailable": True,
+            "execution_unavailable_reason": "no_database_connection",
+        },
+    }
+    thresholds = {
+        "minimums": {
+            **THRESHOLDS["minimums"],
+            "execution_match_rate_min": 0.60,
+        },
+        "classification_metrics": {
+            "final_sql_execution_accuracy_min": {"production_min": 0.70},
+        },
+    }
+
+    result = ModelQualityGate().evaluate(report, thresholds)
+
+    assert sum(item["metric"] == "execution_unavailable" for item in result["failed_checks"]) == 1
+
+
 def test_missing_feedback_blocks_only_when_production_required() -> None:
     thresholds = {"minimums": {**THRESHOLDS["minimums"]}}
     production = _mode_report("production")
@@ -383,6 +410,24 @@ def test_feedback_report_metric_contributes_when_present() -> None:
     report["feedback_regression_pass_rate"] = 1.0
     result = ModelQualityGate().evaluate(report, THRESHOLDS)
     assert result["metrics"]["feedback_regression_pass_rate"] == 1.0
+
+
+def test_controlled_predicted_sql_required_is_policy_not_metric() -> None:
+    report = _mode_report("production")
+    report["feedback_regression"] = {"enabled": False, "required_for_production": False}
+    thresholds = {
+        "minimums": {
+            **THRESHOLDS["minimums"],
+            "controlled_predicted_sql_required": False,
+        }
+    }
+
+    result = ModelQualityGate().evaluate(report, thresholds)
+
+    failed = {item["metric"] for item in result["failed_checks"]}
+    assert "controlled_predicted_sql_required" not in failed
+    assert "controlled_predicted_sql_required" not in result["missing_metrics"]
+    assert result["passed"] is True
 
 
 def test_required_controlled_predicted_sql_blocks_zero_prediction_report() -> None:

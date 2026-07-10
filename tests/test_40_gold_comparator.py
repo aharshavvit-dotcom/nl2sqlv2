@@ -66,6 +66,12 @@ class TestCompareQueryIR:
         assert result.is_exact_match
         assert result.match_score == 1.0
 
+    def test_list_filter_values_are_compared_safely(self, comparator):
+        pred = {"filters": [{"expression": "status", "operator": "in", "value": ["active", "pending"]}]}
+        gold = {"filters": [{"expression": "status", "operator": "in", "value": ["active", "pending"]}]}
+        result = comparator.compare_query_ir(pred, gold)
+        assert result.field_matches["filters"]
+
     def test_partial_match_threshold(self, comparator):
         """A partial match needs match_score >= 0.5 and not exact."""
         pred = {

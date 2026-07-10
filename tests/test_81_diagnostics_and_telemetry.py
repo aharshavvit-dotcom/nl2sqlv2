@@ -25,23 +25,33 @@ def test_prediction_cache() -> None:
         assert key1 == key2
         
         # Test put & get
-        prediction = {"sql": "SELECT *", "confidence": 0.9}
+        prediction = {
+            "status": "completed",
+            "sql": "SELECT *",
+            "confidence": 0.9,
+            "query_ir": {"intent": "show_records", "filters": [{"column": "amount", "value": 10}]},
+            "validation": {"is_valid": True},
+        }
         cache.put("query 1", {"tables": {}}, "path/to/model", prediction, {"opt": 1})
         
         cached = cache.get("query 1", {"tables": {}}, "path/to/model", {"opt": 1})
-        assert cached == prediction
+        assert cached is not None
+        assert cached["status"] == "completed"
+        assert "question" not in cached
+        assert cached["query_ir"]["filters"][0]["value"] == "[REDACTED]"
         
         # Test bypass_cache
         cached_bypass = cache.get("query 1", {"tables": {}}, "path/to/model", {"opt": 1}, bypass_cache=True)
         assert cached_bypass is None
         
         # Test eviction
-        cache.put("query 2", {}, "", {}, {"p": 2})
-        cache.put("query 3", {}, "", {}, {"p": 3})
-        cache.put("query 4", {}, "", {"p": 4}, {"p": 4}) # Evicts query 1 (LRU)
+        valid_prediction = {"status": "completed", "query_ir": {"intent": "show"}, "validation": {"is_valid": True}}
+        cache.put("query 2", {}, "", valid_prediction, {"p": 2})
+        cache.put("query 3", {}, "", valid_prediction, {"p": 3})
+        cache.put("query 4", {}, "", valid_prediction, {"p": 4}) # Evicts query 1 (LRU)
         
         assert cache.get("query 1", {"tables": {}}, "path/to/model", {"opt": 1}) is None
-        assert cache.get("query 4", {}, "", {"p": 4}) == {"p": 4}
+        assert cache.get("query 4", {}, "", {"p": 4}) == valid_prediction
 
 
 def test_telemetry_logger() -> None:
@@ -63,15 +73,17 @@ def test_telemetry_logger() -> None:
         
         entry1 = json.loads(lines[0])
         assert entry1["event_type"] == "prediction"
-        assert entry1["question"] == "query 1"
+        assert "question_hash" in entry1
+        assert "raw_question" not in entry1
         assert entry1["duration_ms"] == 45.2
-        assert entry1["sql"] == "SELECT 1"
+        assert "raw_sql" not in entry1
         
         entry2 = json.loads(lines[1])
         assert entry2["event_type"] == "feedback"
-        assert entry2["question"] == "query 1"
+        assert "question_hash" in entry2
+        assert "raw_question" not in entry2
         assert entry2["is_correct"] is True
-        assert entry2["comments"] == "Great result"
+        assert "comments" not in entry2
 
 
 def test_curriculum_difficulty_shuffling() -> None:

@@ -54,8 +54,19 @@ training:
   gradient_clipping: 1.0
   early_stopping_patience: 99
   seed: 42
+  device: auto
+  precision: float32
+  determinism_mode: seeded
   save_best_metric: support_weighted_semantic_score
   save_best_mode: max
+  semantic_score_min_support: 1
+  semantic_score_weights:
+    intent_macro_f1: 0.20
+    projection_exact_match: 0.15
+    filter_column_accuracy: 0.20
+    filter_value_accuracy: 0.20
+    dimension_column_accuracy: 0.10
+    semantic_pass_rate: 0.15
 
 loss:
   intent: 1.0

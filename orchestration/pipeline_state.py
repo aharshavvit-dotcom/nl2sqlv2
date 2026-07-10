@@ -7,13 +7,33 @@ from typing import Any
 
 
 class PipelineState:
-    def __init__(self, path: str | Path = "artifacts/pipeline/pipeline_state.json"):
+    def __init__(
+        self,
+        path: str | Path = "artifacts/pipeline/pipeline_state.json",
+        *,
+        pipeline_run_id: str = "",
+        effective_config_hash: str = "",
+    ):
         self.path = Path(path)
-        self.state: dict[str, Any] = {"steps": {}, "last_completed_step": None, "failed_step": None}
+        self.pipeline_run_id = pipeline_run_id
+        self.effective_config_hash = effective_config_hash
+        self.state: dict[str, Any] = {
+            "state_schema_version": "1.0",
+            "pipeline_run_id": pipeline_run_id,
+            "effective_config_hash": effective_config_hash,
+            "steps": {},
+            "last_completed_step": None,
+            "failed_step": None,
+        }
 
     def load(self) -> dict[str, Any]:
         if self.path.exists():
             self.state = json.loads(self.path.read_text(encoding="utf-8"))
+        self.state.setdefault("state_schema_version", "1.0")
+        if self.pipeline_run_id and not self.state.get("pipeline_run_id"):
+            self.state["pipeline_run_id"] = self.pipeline_run_id
+        if self.effective_config_hash and not self.state.get("effective_config_hash"):
+            self.state["effective_config_hash"] = self.effective_config_hash
         return self.state
 
     def save(self) -> None:
@@ -32,6 +52,13 @@ class PipelineState:
             "outputs": (details or {}).get("outputs", existing.get("outputs", [])),
             "error": (details or {}).get("error"),
             "skip_reason": (details or {}).get("skip_reason") or (details or {}).get("reason"),
+            "pipeline_run_id": (details or {}).get("pipeline_run_id")
+            or self.state.get("pipeline_run_id")
+            or self.pipeline_run_id,
+            "effective_config_hash": (details or {}).get("effective_config_hash")
+            or self.state.get("effective_config_hash")
+            or self.effective_config_hash,
+            "step_contract_version": (details or {}).get("step_contract_version", "1.0"),
             "details": details or {},
         }
         self.state["steps"][step] = entry
@@ -46,6 +73,17 @@ class PipelineState:
         """Return the status of a specific step, or None if not recorded."""
         entry = self.state.get("steps", {}).get(step)
         return entry.get("status") if entry else None
+
+    def can_reuse_step(self, step: str, *, pipeline_run_id: str, effective_config_hash: str) -> bool:
+        entry = self.state.get("steps", {}).get(step)
+        if not entry or entry.get("status") != "completed":
+            return False
+        return (
+            str(entry.get("pipeline_run_id") or self.state.get("pipeline_run_id") or "") == str(pipeline_run_id)
+            and str(entry.get("effective_config_hash") or self.state.get("effective_config_hash") or "")
+            == str(effective_config_hash)
+            and str(entry.get("step_contract_version") or "") == "1.0"
+        )
 
     def all_steps_summary(self) -> list[dict[str, Any]]:
         """Return a summary list of all recorded step states."""

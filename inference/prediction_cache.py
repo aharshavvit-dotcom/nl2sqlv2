@@ -11,11 +11,20 @@ import json
 import logging
 import re
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class BundleIdentity:
+    bundle_id: str
+    checkpoint_state_dict_hash: str
+    retrieval_artifact_hash: str
+    routing_policy_hash: str
 
 
 class PredictionCache:
@@ -50,7 +59,8 @@ class PredictionCache:
     def _init_db(self) -> None:
         """Create the cache table and indices if they do not exist."""
         self.cache_db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._get_connection() as conn:
+        conn = self._get_connection()
+        try:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS prediction_cache (
                     hash_key TEXT PRIMARY KEY,
@@ -69,6 +79,8 @@ class PredictionCache:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_prediction_cache_last_accessed ON prediction_cache(last_accessed_at)")
             conn.commit()
+        finally:
+            conn.close()
 
     def generate_hash_key(
         self,
@@ -76,7 +88,9 @@ class PredictionCache:
         schema: dict[str, Any] | None,
         model_checkpoint_path: str | Path | None,
         routing_policy: dict[str, Any] | None = None,
-        cache_schema_version: str = "1.0",
+        cache_schema_version: str = "2.1",
+        bundle_identity: BundleIdentity | None = None,
+        prediction_config: dict[str, Any] | None = None,
     ) -> str:
         """Generate a deterministic SHA256 key from inputs."""
         # 1. Normalize and hash question (never cache raw questions)
@@ -93,14 +107,23 @@ class PredictionCache:
             
         tenant_id = schema_dict.get("tenant_id", "default")
         dialect = schema_dict.get("dialect", "sqlite")
+        environment = schema_dict.get("environment", "development")
+        database_role = schema_dict.get("database_role", "")
+        security_context = schema_dict.get("security_context_fingerprint") or schema_dict.get("rls_security_context_fingerprint") or ""
+        sensitive_policy = schema_dict.get("sensitive_column_policy_version", "")
 
-        # 3. Resolve bundle and checkpoint identities from directory
+        # 3. Resolve bundle and checkpoint identities from validated identity first.
         bundle_id = ""
         neural_checkpoint_hash = ""
         retrieval_manifest_hash = ""
-        routing_policy_hash = ""
 
-        if model_checkpoint_path:
+        if bundle_identity is not None:
+            bundle_id = bundle_identity.bundle_id
+            neural_checkpoint_hash = bundle_identity.checkpoint_state_dict_hash
+            retrieval_manifest_hash = bundle_identity.retrieval_artifact_hash
+            routing_policy_hash = bundle_identity.routing_policy_hash
+        elif model_checkpoint_path:
+            routing_policy_hash = ""
             manifest_path = Path(model_checkpoint_path).parent / "bundle_manifest.json"
             if manifest_path.exists():
                 try:
@@ -110,10 +133,16 @@ class PredictionCache:
                     retrieval_manifest_hash = manifest.get("artifacts", {}).get("retrieval_manifest", "")
                 except Exception:
                     pass
+        else:
+            routing_policy_hash = ""
 
         # 4. Hash routing policy
-        routing_policy_hash = hashlib.sha256(
-            json.dumps(routing_policy or {}, sort_keys=True).encode("utf-8")
+        if not routing_policy_hash:
+            routing_policy_hash = hashlib.sha256(
+                json.dumps(routing_policy or {}, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+        prediction_config_hash = hashlib.sha256(
+            json.dumps(prediction_config or {}, sort_keys=True).encode("utf-8")
         ).hexdigest()
 
         payload = {
@@ -122,8 +151,13 @@ class PredictionCache:
             "neural_checkpoint_hash": neural_checkpoint_hash,
             "retrieval_manifest_hash": retrieval_manifest_hash,
             "routing_policy_hash": routing_policy_hash,
+            "prediction_config_hash": prediction_config_hash,
             "schema_fingerprint": schema_fingerprint,
             "dialect": dialect,
+            "environment": environment,
+            "database_role": database_role,
+            "rls_security_context_fingerprint": security_context,
+            "sensitive_column_policy_version": sensitive_policy,
             "question_hash": q_hash,
             "tenant_id": tenant_id,
         }
@@ -137,12 +171,21 @@ class PredictionCache:
         model_checkpoint_path: str | Path | None,
         routing_policy: dict[str, Any] | None = None,
         bypass_cache: bool = False,
+        bundle_identity: BundleIdentity | None = None,
+        prediction_config: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Retrieve prediction from cache, updating LRU order approximately."""
-        if bypass_cache:
+        if bypass_cache or self._production_context_missing(schema):
             return None
 
-        key = self.generate_hash_key(question, schema, model_checkpoint_path, routing_policy)
+        key = self.generate_hash_key(
+            question,
+            schema,
+            model_checkpoint_path,
+            routing_policy,
+            bundle_identity=bundle_identity,
+            prediction_config=prediction_config,
+        )
         
         conn = self._get_connection()
         try:
@@ -185,8 +228,12 @@ class PredictionCache:
         model_checkpoint_path: str | Path | None,
         prediction: dict[str, Any],
         routing_policy: dict[str, Any] | None = None,
+        bundle_identity: BundleIdentity | None = None,
+        prediction_config: dict[str, Any] | None = None,
     ) -> None:
         """Store a prediction, enforcing TTL and LRU evictions atomically."""
+        if self._production_context_missing(schema):
+            return
         # Rule 16: Cache only validated, successful, non-failed predictions
         status = prediction.get("status")
         sql_val = prediction.get("validation") or {}
@@ -195,12 +242,20 @@ class PredictionCache:
         is_eligible = (
             status == "completed"
             and sql_val.get("is_valid", sql_val.get("ok", False))
+            and bool((sql_val.get("checks") or {"select_only": True}).get("select_only", True))
             and bool(query_ir)
         )
         if not is_eligible:
             return
 
-        key = self.generate_hash_key(question, schema, model_checkpoint_path, routing_policy)
+        key = self.generate_hash_key(
+            question,
+            schema,
+            model_checkpoint_path,
+            routing_policy,
+            bundle_identity=bundle_identity,
+            prediction_config=prediction_config,
+        )
         normalized_q = re.sub(r"\s+", " ", question.strip().lower())
         q_hash = hashlib.sha256(normalized_q.encode("utf-8")).hexdigest()
         
@@ -216,7 +271,12 @@ class PredictionCache:
         bundle_id = ""
         neural_checkpoint_hash = ""
         retrieval_manifest_hash = ""
-        if model_checkpoint_path:
+        if bundle_identity is not None:
+            bundle_id = bundle_identity.bundle_id
+            neural_checkpoint_hash = bundle_identity.checkpoint_state_dict_hash
+            retrieval_manifest_hash = bundle_identity.retrieval_artifact_hash
+            routing_policy_hash = bundle_identity.routing_policy_hash
+        elif model_checkpoint_path:
             manifest_path = Path(model_checkpoint_path).parent / "bundle_manifest.json"
             if manifest_path.exists():
                 try:
@@ -227,9 +287,13 @@ class PredictionCache:
                 except Exception:
                     pass
 
-        routing_policy_hash = hashlib.sha256(
-            json.dumps(routing_policy or {}, sort_keys=True).encode("utf-8")
-        ).hexdigest()
+            routing_policy_hash = hashlib.sha256(
+                json.dumps(routing_policy or {}, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+        else:
+            routing_policy_hash = hashlib.sha256(
+                json.dumps(routing_policy or {}, sort_keys=True).encode("utf-8")
+            ).hexdigest()
 
         # Sanitize prediction output (Rule 10: do not store raw question or SQL literals)
         prediction_copy = dict(prediction)
@@ -310,3 +374,16 @@ class PredictionCache:
             logger.error("Failed to clear SQLite cache: %s", exc)
         finally:
             conn.close()
+
+    @staticmethod
+    def _production_context_missing(schema: dict[str, Any] | None) -> bool:
+        schema_dict = schema or {}
+        environment = str(schema_dict.get("environment", "development")).lower()
+        if environment != "production":
+            return False
+        tenant = schema_dict.get("tenant_id")
+        security_context = (
+            schema_dict.get("security_context_fingerprint")
+            or schema_dict.get("rls_security_context_fingerprint")
+        )
+        return not tenant or not security_context

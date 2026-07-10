@@ -257,7 +257,7 @@ def check_neural_config_uniformity() -> None:
             effective = resolve_effective_neural_config(payload, root=ROOT)
             if (effective["epochs"], effective["batch_size"]) != (10, 8):
                 errors.append(f"{name}: {effective['epochs']}/{effective['batch_size']}")
-            if (effective["save_best_metric"], effective["save_best_mode"]) != ("loss", "min"):
+            if (effective["save_best_metric"], effective["save_best_mode"]) != ("support_weighted_semantic_score", "max"):
                 errors.append(f"{name}: invalid checkpoint policy")
         except Exception as exc:
             errors.append(f"{name}: {exc}")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +35,18 @@ DEFAULT_THRESHOLDS = {
 def load_thresholds(path: str | Path) -> dict[str, Any]:
     target = Path(path)
     if not target.exists():
-        return DEFAULT_THRESHOLDS
+        return deepcopy(DEFAULT_THRESHOLDS)
     payload = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
-    merged = {"minimums": {**DEFAULT_THRESHOLDS["minimums"], **(payload.get("minimums") or {})}}
+    if not isinstance(payload, dict):
+        return deepcopy(DEFAULT_THRESHOLDS)
+    return _deep_merge(DEFAULT_THRESHOLDS, payload)
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
     return merged

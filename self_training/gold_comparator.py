@@ -350,16 +350,29 @@ def _list_match(
     if not pred_list and not gold_list:
         return True, 1.0
 
-    pred_tuples = sorted(
-        tuple(item.get(k) for k in projection_keys)
-        for item in pred_list
-        if isinstance(item, dict)
-    )
-    gold_tuples = sorted(
-        tuple(item.get(k) for k in projection_keys)
-        for item in gold_list
-        if isinstance(item, dict)
-    )
+    def _normalize_item(item: Any) -> tuple[Any, ...]:
+        if not isinstance(item, dict):
+            return tuple()
+        normalized = []
+        for key in projection_keys:
+            value = item.get(key)
+            if isinstance(value, list):
+                normalized.append(tuple(_normalize_scalar(v) for v in value))
+            else:
+                normalized.append(_normalize_scalar(value))
+        return tuple(normalized)
+
+    def _normalize_scalar(value: Any) -> Any:
+        if isinstance(value, (list, tuple)):
+            return tuple(_normalize_scalar(v) for v in value)
+        if isinstance(value, dict):
+            return tuple(sorted((str(k), _normalize_scalar(v)) for k, v in value.items()))
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
+
+    pred_tuples = sorted(_normalize_item(item) for item in pred_list if isinstance(item, dict))
+    gold_tuples = sorted(_normalize_item(item) for item in gold_list if isinstance(item, dict))
 
     exact = pred_tuples == gold_tuples
 

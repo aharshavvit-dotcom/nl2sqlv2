@@ -23,6 +23,7 @@ def build_generic_ir_corpus(args: argparse.Namespace) -> dict:
             validation_ratio=args.validation_ratio,
             test_ratio=args.test_ratio,
             unseen_db_test_ratio=args.unseen_db_test_ratio,
+            force_create_new_version=True,
         ),
         sql_to_ir_converter=None,
         quality_filter=None,

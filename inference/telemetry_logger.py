@@ -97,6 +97,31 @@ class TelemetryLogger:
             r"\1: [SECRET]",
             text,
         )
+
+        # 7. JWTs and bearer/access tokens
+        text = re.sub(
+            r"\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b",
+            "[JWT]",
+            text,
+        )
+        text = re.sub(r"(?i)\bbearer\s+[a-zA-Z0-9._\-]{16,}", "Bearer [TOKEN]", text)
+
+        # 8. Connection strings and private keys
+        text = re.sub(
+            r"(?i)\b(postgres|postgresql|mysql|mssql|sqlite)://[^\s\"']+",
+            "[CONNECTION_STRING]",
+            text,
+        )
+        text = re.sub(
+            r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+            "[PRIVATE_KEY]",
+            text,
+            flags=re.DOTALL,
+        )
+
+        # 9. India-specific high-confidence identifiers.
+        text = re.sub(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b", "[PAN]", text)
+        text = re.sub(r"(?<![\d-])\d{4}[-\s]?\d{4}[-\s]?\d{4}(?![-\s]?\d)", "[AADHAAR]", text)
         return text
 
     def log_prediction(

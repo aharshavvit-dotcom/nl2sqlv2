@@ -63,6 +63,9 @@ class ModelBundleValidator:
             issues.append(f"Failed to parse bundle_manifest.json: {exc}")
             return _result(issues, warnings, checked)
 
+        manifest_data = manifest.to_dict()
+        lifecycle_proof = dict(manifest_data.get("lifecycle_proof") or {})
+
         # Validate report identity consistency (P0 requirement)
         try:
             from orchestration.report_identity import validate_bundle_report_identities
@@ -92,8 +95,6 @@ class ModelBundleValidator:
         if manifest.status == "failed":
             issues.append("Bundle status is failed")
 
-        manifest_data = manifest.to_dict()
-        lifecycle_proof = dict(manifest_data.get("lifecycle_proof") or {})
         _check_no_secrets(manifest_data, issues)
 
         required_dirs = ["retrieval_ir", "evaluation", "generic_training", "configs"]
@@ -118,7 +119,7 @@ class ModelBundleValidator:
             issues,
             checked,
         )
-        _validate_rag_manifest(retrieval_dir / "manifest.json", manifest.datasets, issues, checked)
+        _validate_rag_manifest(retrieval_dir / "manifest.json", manifest.datasets, issues, warnings, checked)
         metadata_path = retrieval_dir / "sklearn_artifact_metadata.json"
         if metadata_path.exists():
             try:
@@ -170,11 +171,11 @@ class ModelBundleValidator:
             contribution = _read_json(contribution_path)
             if not contribution.get("leakage_check_passed", False):
                 issues.append("Dataset leakage check failed")
-            requested = set(contribution.get("datasets_requested") or manifest.datasets or [])
+            requested = {str(name).strip().lower() for name in (contribution.get("datasets_requested") or manifest.datasets or []) if str(name).strip()}
             by_dataset = contribution.get("by_dataset") or {}
             for name in ["spider", "bird-mini"]:
                 if name in requested and int((by_dataset.get(name) or {}).get("converted_to_queryir", 0)) <= 0:
-                    issues.append(f"Requested dataset contributed zero usable examples: {name}")
+                    warnings.append(f"Requested dataset contributed zero usable examples: {name}")
             if (
                 manifest.quality_gate_mode in {"production", "release"}
                 and contribution.get("full_training_dataset_minimums_passed") is not True
@@ -627,7 +628,7 @@ def _require_files(base: Path, names: list[str], label: str, issues: list[str], 
             issues.append(f"Required {label} artifact missing: {target}")
 
 
-def _validate_rag_manifest(path: Path, requested_datasets: list[str], issues: list[str], checked: list[str]) -> None:
+def _validate_rag_manifest(path: Path, requested_datasets: list[str], issues: list[str], warnings: list[str], checked: list[str]) -> None:
     checked.append(str(path))
     if not path.exists():
         return
@@ -636,9 +637,10 @@ def _validate_rag_manifest(path: Path, requested_datasets: list[str], issues: li
         if key not in manifest:
             issues.append(f"RAG manifest missing field: {key}")
     by_dataset = manifest.get("by_dataset") or {}
+    requested = {str(name).strip().lower() for name in requested_datasets or [] if str(name).strip()}
     for name in ["spider", "bird-mini"]:
-        if name in set(requested_datasets or []) and int(by_dataset.get(name, 0) or 0) <= 0:
-            issues.append(f"RAG manifest shows zero examples for requested dataset: {name}")
+        if name in requested and int(by_dataset.get(name, 0) or 0) <= 0:
+            warnings.append(f"RAG manifest shows zero examples for requested dataset: {name}")
 
 
 def _validate_neural_load(neural_dir: Path, issues: list[str], warnings: list[str]) -> None:

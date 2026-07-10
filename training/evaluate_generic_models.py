@@ -133,8 +133,10 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
         "selected_checkpoint_file": None,
         "selected_checkpoint_epoch": None,
         "selected_checkpoint_sha256": None,
+        "selected_checkpoint_state_dict_sha256": None,
         "runtime_export_file": None,
         "runtime_export_source_sha256": None,
+        "runtime_export_state_dict_sha256": None,
         "runtime_export_equivalent_to_selected_checkpoint": None,
     }
     
@@ -173,8 +175,18 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
             try:
                 meta = json.loads(metadata_path.read_text(encoding="utf-8"))
                 checkpoint_info["selected_checkpoint_file"] = "best_model.pt"
-                checkpoint_info["selected_checkpoint_epoch"] = meta.get("best_epoch")
+                checkpoint_info["selected_checkpoint_epoch"] = meta.get("selected_checkpoint_epoch") or meta.get("best_epoch")
                 checkpoint_info["selected_checkpoint_sha256"] = meta.get("best_checkpoint_sha256")
+                checkpoint_info["selected_checkpoint_state_dict_sha256"] = (
+                    meta.get("selected_checkpoint_state_dict_sha256")
+                    or meta.get("best_checkpoint_state_dict_sha256")
+                )
+                checkpoint_info["runtime_export_file"] = meta.get("runtime_export_file")
+                checkpoint_info["runtime_export_state_dict_sha256"] = meta.get("runtime_export_state_dict_sha256")
+                if meta.get("runtime_export_equivalent_to_selected_checkpoint") is not None:
+                    checkpoint_info["runtime_export_equivalent_to_selected_checkpoint"] = bool(
+                        meta.get("runtime_export_equivalent_to_selected_checkpoint")
+                    )
             except Exception:
                 pass
 
@@ -194,7 +206,13 @@ def evaluate_generic_models(args: argparse.Namespace) -> dict[str, Any]:
 
         best_sha = checkpoint_info["selected_checkpoint_sha256"]
         runtime_sha = checkpoint_info["runtime_export_source_sha256"]
-        if best_sha and runtime_sha:
+        selected_state_hash = checkpoint_info["selected_checkpoint_state_dict_sha256"]
+        runtime_state_hash = checkpoint_info["runtime_export_state_dict_sha256"]
+        if selected_state_hash and runtime_state_hash:
+            checkpoint_info["runtime_export_equivalent_to_selected_checkpoint"] = (
+                selected_state_hash == runtime_state_hash
+            )
+        elif best_sha and runtime_sha:
             checkpoint_info["runtime_export_equivalent_to_selected_checkpoint"] = (best_sha == runtime_sha)
         elif best_model_path.exists() and runtime_model_path.exists():
             try:

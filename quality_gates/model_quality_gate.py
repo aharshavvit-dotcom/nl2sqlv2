@@ -23,6 +23,10 @@ SEMANTIC_CRITICAL_METRICS = [
     "dimension_column_accuracy_rate",
 ]
 
+POLICY_ONLY_THRESHOLDS = {
+    "controlled_predicted_sql_required",
+}
+
 
 class ModelQualityGate:
     def evaluate(self, evaluation_report: dict[str, Any], thresholds: dict[str, Any]) -> dict[str, Any]:
@@ -59,6 +63,8 @@ class ModelQualityGate:
                     continue
             if metric_key == "model_promotion_min_improvement" and metric_key not in metrics:
                 warnings.append("Skipping model_promotion_min_improvement; it is a promotion policy threshold, not an evaluation metric.")
+                continue
+            if metric_key in POLICY_ONLY_THRESHOLDS:
                 continue
             if metric_key in {"execution_match_rate", "final_sql_execution_accuracy"} and not execution_status.get("available"):
                 if mode in {"production", "release"} and execution_status.get("required"):
@@ -428,6 +434,7 @@ class ModelQualityGate:
                 and selection.get("candidate_bundle_id") == selection.get("manifest_bundle_id")
             )
         )
+        failed_checks = _dedupe_failed_checks(failed_checks)
         passed = not failed_checks
         return {
             "passed": passed,
@@ -719,3 +726,20 @@ def _copy_metric(metrics: dict[str, Any], present: set[str], name: str, *sources
             metrics[name] = source[min_alias]
             present.add(name)
             return
+
+
+def _dedupe_failed_checks(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for check in checks:
+        signature = (
+            check.get("metric"),
+            repr(check.get("actual")),
+            repr(check.get("expected")),
+            check.get("comparison"),
+        )
+        if signature in seen:
+            continue
+        seen.add(signature)
+        deduped.append(check)
+    return deduped

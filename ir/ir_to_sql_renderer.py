@@ -64,7 +64,8 @@ class IRToSQLRenderer:
             return cls._qualified_identifier(table, column)
         return cls._quote_expression(getattr(item, "expression", None))
 
-    def render(self, query_ir: QueryIR, dialect: str | None = None) -> str:
+    def render(self, query_ir: QueryIR | dict[str, Any], dialect: str | None = None) -> str:
+        query_ir = self._coerce_query_ir(query_ir)
         resolved_dialect = dialect or getattr(query_ir, 'dialect', 'sqlite') or 'sqlite'
         parts = [
             self.render_select(query_ir, dialect=resolved_dialect),
@@ -76,6 +77,16 @@ class IRToSQLRenderer:
             self.render_limit(query_ir),
         ]
         return self.clean_sql("\n".join(part for part in parts if part))
+
+    @staticmethod
+    def _coerce_query_ir(query_ir: QueryIR | dict[str, Any]) -> QueryIR:
+        if isinstance(query_ir, QueryIR):
+            return query_ir
+        if isinstance(query_ir, dict):
+            if hasattr(QueryIR, "model_validate"):
+                return QueryIR.model_validate(query_ir)
+            return QueryIR(**query_ir)
+        raise TypeError(f"Expected QueryIR or dict, got {type(query_ir).__name__}")
 
     def render_select(self, query_ir: QueryIR, dialect: str = "sqlite") -> str:
         template_id = query_ir.template_id
