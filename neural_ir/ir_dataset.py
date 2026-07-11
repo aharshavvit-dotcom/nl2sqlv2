@@ -7,6 +7,7 @@ from typing import Any
 import torch
 from torch.utils.data import Dataset
 
+from capabilities import ALL_CAPABILITIES
 from .candidate_builder import SchemaCandidateBuilder, build_candidate_masks, schema_link_score_vector
 from .ir_label_encoder import IRLabelEncoder
 from .schema_linearizer import SchemaLinearizer, extract_schema_items, schema_from_example
@@ -21,6 +22,22 @@ RELATION_TYPE_MAP = {
     "same_column_name": 7, "same_data_type": 8, "unrelated": 9,
 }
 RELATION_UNRELATED = RELATION_TYPE_MAP["unrelated"]
+CAPABILITY_INDEX = {capability.value: index for index, capability in enumerate(ALL_CAPABILITIES)}
+TASK_MASK_KEYS = [
+    "capability",
+    "safety",
+    "table",
+    "column",
+    "aggregation",
+    "filter",
+    "join_edge",
+    "complexity",
+    "contrastive_schema_linking",
+    "subquery",
+    "window",
+    "set_operation",
+    "full_query_ir",
+]
 
 
 class IRTrainingDataset(Dataset):
@@ -111,6 +128,8 @@ class IRTrainingDataset(Dataset):
                 self.max_tables + self.max_columns,
             ),
             "labels": labels,
+            "capability_labels": capability_label_vector(row),
+            "task_masks": task_mask_vector(row),
             "raw_example": row,
             "schema_items": schema_items,
             "schema_candidates": candidates,
@@ -278,6 +297,11 @@ def collate_ir_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
             key: torch.tensor([item["labels"][key] for item in batch], dtype=torch.long)
             for key in label_keys
         },
+        "capability_labels": torch.tensor([item["capability_labels"] for item in batch], dtype=torch.float32),
+        "task_masks": {
+            key: torch.tensor([item["task_masks"].get(key, 0.0) for item in batch], dtype=torch.float32)
+            for key in TASK_MASK_KEYS
+        },
         "raw_examples": [item["raw_example"] for item in batch],
         "schema_items": [item["schema_items"] for item in batch],
         "schema_candidates": [item["schema_candidates"] for item in batch],
@@ -418,6 +442,25 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
             if line:
                 rows.append(json.loads(line))
     return rows
+
+
+def capability_label_vector(row: dict[str, Any]) -> list[float]:
+    values = row.get("required_capabilities")
+    if values is None:
+        values = ((row.get("capability_annotation") or {}).get("required_capabilities") or [])
+    labels = [0.0] * len(CAPABILITY_INDEX)
+    for value in values or []:
+        name = str(value)
+        if name in CAPABILITY_INDEX:
+            labels[CAPABILITY_INDEX[name]] = 1.0
+    return labels
+
+
+def task_mask_vector(row: dict[str, Any]) -> dict[str, float]:
+    masks = row.get("task_masks")
+    if masks is None:
+        masks = ((row.get("capability_annotation") or {}).get("task_masks") or {})
+    return {key: float((masks or {}).get(key, 0.0) or 0.0) for key in TASK_MASK_KEYS}
 
 
 def _index_hard_negatives(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -568,4 +611,3 @@ def _candidate_pairwise_relation(
         if left.get("data_type") and left.get("data_type") == right.get("data_type"):
             return RELATION_TYPE_MAP["same_data_type"]
     return RELATION_UNRELATED
-

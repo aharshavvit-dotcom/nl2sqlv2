@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from capabilities import CapabilityDatasetReporter, SQLCapabilityExtractor
 from datasets.dataset_loader import DatasetLoader
 from datasets.models import DatabaseSchema, Text2SQLExample
 from datasets.sql_feature_extractor import SQLFeatureExtractor
@@ -53,6 +54,7 @@ class GenericIRCorpusBuilder:
         self.sql_to_ir_converter = sql_to_ir_converter or SQLToIRConverter()
         self.quality_filter = quality_filter
         self.extractor = SQLFeatureExtractor()
+        self.capability_extractor = SQLCapabilityExtractor()
         self.renderer = IRToSQLRenderer()
         self.sql_validator = SQLValidator()
 
@@ -85,6 +87,13 @@ class GenericIRCorpusBuilder:
         unsupported_rows: list[dict[str, Any]] = []
         for example in examples:
             schema = schemas.get(example.db_id) or example.schema
+            capability_annotation = self.capability_extractor.extract(
+                example.sql,
+                example_id=example.example_id,
+                dataset_source=example.dataset_name,
+                database_identifier=example.db_id,
+                schema=schema,
+            )
             result = self.sql_to_ir_converter.convert(
                 question=example.question,
                 sql=example.sql,
@@ -94,14 +103,30 @@ class GenericIRCorpusBuilder:
                 example_id=example.example_id,
                 split=example.split,
             )
+            capability_annotation = self.capability_extractor.with_conversion_result(capability_annotation, result)
             if result.get("success"):
-                row = self._supported_row(example, schema, result)
+                row = self._supported_row(example, schema, result, capability_annotation=capability_annotation)
                 if self.quality_filter and not self.quality_filter(row):
-                    unsupported_rows.append(self._unsupported_row(example, result, reason="quality_filter_rejected"))
+                    unsupported_rows.append(
+                        self._unsupported_row(
+                            example,
+                            result,
+                            reason="quality_filter_rejected",
+                            schema=schema,
+                            capability_annotation=capability_annotation,
+                        )
+                    )
                 else:
                     supported_rows.append(row)
             else:
-                unsupported_rows.append(self._unsupported_row(example, result))
+                unsupported_rows.append(
+                    self._unsupported_row(
+                        example,
+                        result,
+                        schema=schema,
+                        capability_annotation=capability_annotation,
+                    )
+                )
 
         augmentation_report = {"augmented_examples_count": 0, "augmentation_modes_used": [], "by_dataset": {}, "quarantined_count": 0}
         if (schema_renaming or {}).get("enabled", False):
@@ -157,8 +182,35 @@ class GenericIRCorpusBuilder:
             pipeline_run_id=pipeline_run_id,
         )
         unsupported_report = self._unsupported_sql_report(unsupported_rows)
+        capability_report = CapabilityDatasetReporter().build_report([*supported_rows, *unsupported_rows])
+        retention_report = CapabilityDatasetReporter().build_retention_report(unsupported_rows)
         save_report_pair(artifacts / "dataset_contribution_report.json", contribution_report, "Dataset Contribution Report")
         save_report_pair(artifacts / "unsupported_sql_report.json", unsupported_report, "Unsupported SQL Report")
+        save_report_pair(artifacts / "capability_distribution_report.json", capability_report, "Capability Distribution Report")
+        save_report_pair(artifacts / "unsupported_example_retention_report.json", retention_report, "Unsupported Example Retention Report")
+        write_jsonl(
+            output / "generic_ir_capability_annotations.jsonl",
+            [
+                row["capability_annotation"]
+                for row in [*supported_rows, *unsupported_rows]
+                if isinstance(row.get("capability_annotation"), dict)
+            ],
+        )
+        write_jsonl(
+            output / "generic_ir_partial_supervision.jsonl",
+            [
+                {
+                    "example_id": row.get("example_id"),
+                    "dataset_name": row.get("dataset_name") or row.get("dataset"),
+                    "db_id": row.get("db_id") or row.get("database_id"),
+                    "split": row.get("split") or row.get("internal_split"),
+                    "partial_supervision": row.get("partial_supervision"),
+                    "task_masks": row.get("task_masks"),
+                }
+                for row in [*supported_rows, *unsupported_rows]
+                if isinstance(row.get("partial_supervision"), dict)
+            ],
+        )
 
         return {
             "output_dir": str(output),
@@ -169,6 +221,8 @@ class GenericIRCorpusBuilder:
             "corpus_quality_report": quality_report,
             "dataset_contribution_report": contribution_report,
             "unsupported_sql_report": unsupported_report,
+            "capability_distribution_report": capability_report,
+            "unsupported_example_retention_report": retention_report,
             "output_files": {
                 name: str(output / f"generic_ir_{name}.jsonl")
                 for name in splits.keys()
@@ -343,13 +397,19 @@ class GenericIRCorpusBuilder:
             schemas.update(dataset_schemas)
         return all_examples, schemas
 
-    def _supported_row(self, example: Text2SQLExample, schema: Any, result: dict[str, Any]) -> dict[str, Any]:
+    def _supported_row(
+        self,
+        example: Text2SQLExample,
+        schema: Any,
+        result: dict[str, Any],
+        capability_annotation: Any | None = None,
+    ) -> dict[str, Any]:
         query_ir = result["query_ir"]
         rendered_sql = result.get("roundtrip_sql") or self.renderer.render(query_ir)
         sql_features = self.extractor.extract(example.sql)
         content_hash = self._example_content_hash(example)
         source_dataset_version = self._source_dataset_version(example)
-        return {
+        row = {
             "example_id": example.example_id,
             "dataset_name": example.dataset_name,
             "source_dataset": example.dataset_name,
@@ -386,16 +446,20 @@ class GenericIRCorpusBuilder:
                 "conversion_warnings": result.get("warnings", []),
             },
         }
+        row.update(self._capability_payload(capability_annotation))
+        return row
 
     @staticmethod
     def _unsupported_row(
         example: Text2SQLExample,
         result: dict[str, Any],
         reason: str | None = None,
+        schema: Any | None = None,
+        capability_annotation: Any | None = None,
     ) -> dict[str, Any]:
         content_hash = GenericIRCorpusBuilder._example_content_hash(example)
         source_dataset_version = GenericIRCorpusBuilder._source_dataset_version(example)
-        return {
+        row = {
             "example_id": example.example_id,
             "dataset": example.dataset_name,
             "dataset_name": example.dataset_name,
@@ -408,8 +472,11 @@ class GenericIRCorpusBuilder:
             "question": example.question,
             "gold_sql": example.sql,
             "source_sql": example.sql,
+            "serialized_schema": GenericIRCorpusBuilder._serialized_schema(schema),
+            "schema": GenericIRCorpusBuilder._schema_dict(schema),
             "internal_split": "unsupported",
             "eligible_for_training": False,
+            "eligible_for_auxiliary_training": True,
             "content_hash": content_hash,
             "unsupported_reason": reason or result.get("unsupported_reason") or "unsupported",
             "unsupported_feature": GenericIRCorpusBuilder._unsupported_feature(
@@ -429,6 +496,8 @@ class GenericIRCorpusBuilder:
                 "warnings": result.get("warnings", []),
             },
         }
+        row.update(GenericIRCorpusBuilder._capability_payload(capability_annotation))
+        return row
 
     def _dataset_contribution_report(
         self,
@@ -611,6 +680,31 @@ class GenericIRCorpusBuilder:
         if "roundtrip" in text or "render" in text:
             return "renderer_failed"
         return reason
+
+    @staticmethod
+    def _capability_payload(annotation: Any | None) -> dict[str, Any]:
+        if annotation is None:
+            return {}
+        payload = annotation.model_dump(mode="json") if hasattr(annotation, "model_dump") else dict(annotation)
+        partial = payload.get("partial_supervision") or {}
+        task_masks = payload.get("task_masks") or {}
+        return {
+            "annotation_version": payload.get("annotation_version"),
+            "parser_version": payload.get("parser_version"),
+            "schema_fingerprint": payload.get("schema_fingerprint"),
+            "extraction_status": payload.get("extraction_status"),
+            "validation_errors": payload.get("validation_errors", []),
+            "understood": payload.get("understood"),
+            "required_capabilities": payload.get("required_capabilities", []),
+            "supported_capabilities": payload.get("supported_capabilities", []),
+            "currently_supported": payload.get("currently_supported"),
+            "unsupported_required_capabilities": payload.get("unsupported_required_capabilities", []),
+            "safety_labels": payload.get("safety_labels", []),
+            "full_query_ir_supported": partial.get("full_query_ir_supported", False),
+            "partial_supervision": partial,
+            "task_masks": task_masks,
+            "capability_annotation": payload,
+        }
 
     @staticmethod
     def _write_split_files(output: Path, splits: dict[str, list[dict[str, Any]]]) -> None:

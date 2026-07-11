@@ -309,6 +309,47 @@ python training/train_model.py --config configs/training.yaml --dry-run
 python training/train_model.py --config configs/training.yaml --resume
 ```
 
+### Stepwise Developer Commands
+
+The one-command training pipeline above is the normal path. The commands below are for audits, debugging, release checks, or replaying individual stages when a report points to a specific failure.
+
+Dataset-driven gold learning is the primary self-improvement loop. Manual feedback remains optional and is preserved for human-in-the-loop corrections, but it is not the main source of production training data.
+
+```bash
+# Generic readiness and corpus stages
+python scripts/audit_generic_nl2sql_readiness.py
+python training/build_generic_ir_corpus.py
+python training/build_capability_annotations.py
+python training/build_retrieval_rag_index.py
+python training/train_neural_ir_model.py
+python training/evaluate_generic_models.py
+
+# Feedback and self-training stages
+python scripts/audit_self_training_readiness.py
+python training/evaluate_against_gold.py
+python training/mine_validation_errors.py
+python training/build_corrections_from_gold.py
+python training/train_ranking_from_gold.py
+python training/run_self_improvement_loop.py
+python training/build_feedback_training_data.py
+python training/rebuild_feedback_index.py
+
+# Execution, selection, promotion, and release gates
+python scripts/audit_execution_pipeline_readiness.py
+python training/run_execution_aware_evaluation.py
+python training/select_best_model.py
+python training/promote_model_if_better.py
+python training/run_full_training_pipeline.py
+python training/generate_connected_db_regressions.py
+python training/run_connected_db_regressions.py
+python training/run_model_quality_gate.py
+python training/run_regression_suite.py
+python training/run_release_readiness_check.py
+
+# Runtime
+streamlit run app/streamlit_app.py
+```
+
 ---
 
 ## Run Tests
