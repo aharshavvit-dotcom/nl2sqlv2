@@ -99,6 +99,7 @@ class RegressionSuite:
         passed = [row for row in [*case_results, *safety_results] if row["status"] == "pass"]
         warnings = [row for row in case_results if row["status"] == "warning"]
         total = len(case_results) + len(safety_results)
+        blocking_passed = total - len(blocking)
         return {
             "passed": not blocking,
             "summary": {
@@ -107,6 +108,7 @@ class RegressionSuite:
                 "failed": len(blocking),
                 "warnings": len(warnings),
                 "pass_rate": len(passed) / total if total else 1.0,
+                "blocking_pass_rate": blocking_passed / total if total else 1.0,
             },
             "case_results": case_results,
             "safety_regression_results": safety_results,

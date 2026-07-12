@@ -1,0 +1,19 @@
+{
+  "phase_1_commit": "a80542868985756836c064e0b5f1f2d6230fde94",
+  "phase_2a_commit": "uncommitted_working_tree",
+  "phase_2b_commit": "uncommitted_working_tree",
+  "remaining_program_start_commit": "TBD_after_2a_2b_committed",
+  "working_tree_clean": false,
+  "untracked_v2_files": 37,
+  "modified_files": 2,
+  "tests_collected": 806,
+  "baseline_capabilities_supported": 9,
+  "baseline_capabilities_total": 34,
+  "v1_parity_expected": 3075,
+  "production_policy": {
+    "model_output_query_ir_version": "v1",
+    "runtime_preferred_query_ir_version": "v1",
+    "native_v2_or_rendering": "disabled",
+    "relation_aware_attention": "disabled"
+  }
+}

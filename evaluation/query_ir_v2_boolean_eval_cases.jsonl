@@ -1,0 +1,12 @@
+{"id":"simple_or","category":"simple_or","sql":"SELECT id FROM customers WHERE region = 'US' OR region = 'CA'"}
+{"id":"or_with_and","category":"mixed_and_or","sql":"SELECT id FROM customers WHERE (region = 'US' OR region = 'CA') AND status = 'ACTIVE'"}
+{"id":"nested_or","category":"nested_or","sql":"SELECT id FROM customers WHERE region = 'US' OR (region = 'CA' OR region = 'MX')"}
+{"id":"nested_and","category":"nested_and","sql":"SELECT id FROM customers WHERE (status = 'ACTIVE' AND tier = 'GOLD') OR region = 'CA'"}
+{"id":"not_over_or","category":"not","sql":"SELECT id FROM customers WHERE NOT (region = 'US' OR region = 'CA')"}
+{"id":"or_with_null","category":"null_or","sql":"SELECT id FROM customers WHERE deleted_at IS NULL OR status IS NOT NULL"}
+{"id":"or_across_tables","category":"or_across_tables","sql":"SELECT customers.id FROM customers JOIN orders ON customers.id = orders.customer_id WHERE customers.region = 'US' OR orders.status = 'OPEN'"}
+{"id":"or_with_dates","category":"date_or","sql":"SELECT id FROM customers WHERE created_at < '2026-01-01' OR created_at >= '2026-06-01'"}
+{"id":"reordered_equivalent_a","category":"equivalent_reordered","sql":"SELECT id FROM customers WHERE status = 'ACTIVE' OR region = 'US'"}
+{"id":"reordered_equivalent_b","category":"equivalent_reordered","sql":"SELECT id FROM customers WHERE region = 'US' OR status = 'ACTIVE'"}
+{"id":"precedence_without_parentheses","category":"precedence_pair","sql":"SELECT id FROM customers WHERE region = 'US' OR region = 'CA' AND status = 'ACTIVE'"}
+{"id":"precedence_with_parentheses","category":"precedence_pair","sql":"SELECT id FROM customers WHERE (region = 'US' OR region = 'CA') AND status = 'ACTIVE'"}

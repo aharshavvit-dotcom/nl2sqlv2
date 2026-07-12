@@ -159,6 +159,14 @@ class SQLValidator:
             issues.append("SELECT * is not allowed.")
         select_aliases = {expression.alias for expression in select.expressions if expression.alias}
 
+        # Collect CTE names (these are valid table references, not physical tables)
+        cte_names: set[str] = set()
+        with_clause = select.args.get("with_") or select.args.get("with")
+        if with_clause is not None:
+            for cte in getattr(with_clause, "expressions", []):
+                if cte.alias:
+                    cte_names.add(str(cte.alias).lower())
+
         for table in select.find_all(exp.Table):
             if table.name:
                 referenced_tables.append(table.name)
@@ -181,6 +189,7 @@ class SQLValidator:
         if dangerous:
             issues.append("Dangerous SQL function(s): " + ", ".join(dangerous))
 
+        # LIMIT check — only enforced on the outermost query, not inner CTEs/subqueries
         limit = select.args.get("limit")
         checks["limit_present"] = limit is not None
         if not checks["limit_present"]:
@@ -191,7 +200,11 @@ class SQLValidator:
 
         schema_tables = self._schema_tables(schema)
         if schema_tables:
-            unknown_tables = [table for table in referenced_tables if table not in schema_tables]
+            # CTE names are valid references — don't flag them as unknown
+            unknown_tables = [
+                table for table in referenced_tables
+                if table not in schema_tables and table.lower() not in cte_names
+            ]
             checks["tables_exist"] = not unknown_tables
             if unknown_tables:
                 issues.append("Unknown table(s): " + ", ".join(sorted(set(unknown_tables))))
@@ -200,6 +213,9 @@ class SQLValidator:
             for qualified in referenced_columns:
                 if "." in qualified:
                     table, column = qualified.split(".", 1)
+                    # Skip CTE-referenced columns (we don't have their schema)
+                    if table.lower() in cte_names:
+                        continue
                     if table in schema_tables and column not in schema_tables[table]:
                         unknown_columns.append(qualified)
                     continue

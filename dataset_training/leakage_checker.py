@@ -497,3 +497,93 @@ def _looks_like_generic_count_sql(sql: str) -> bool:
             flags=re.IGNORECASE,
         )
     )
+
+
+def check_template_leakage(
+    splits: dict[str, list[dict[str, Any]]],
+    dialect: str = "sqlite",
+) -> dict[str, Any]:
+    """Check for structural SQL template leakage across splits.
+
+    Two queries share a "template" if they have the same structural shape
+    (all literals replaced with ?). This catches cases where train/test
+    differ only in literal values, which gives artificially inflated metrics.
+    """
+    train_templates: dict[str, list[str]] = defaultdict(list)
+    for row in splits.get("train", []):
+        sql = row.get("source_sql")
+        if sql:
+            sig = get_structural_ast_signature(sql, dialect)
+            train_templates[sig].append(str(row.get("example_id", "")))
+
+    violations: list[dict[str, Any]] = []
+    for split_name in _comparison_split_names(splits):
+        for row in splits.get(split_name, []):
+            sql = row.get("source_sql")
+            if not sql:
+                continue
+            sig = get_structural_ast_signature(sql, dialect)
+            if sig in train_templates:
+                violations.append({
+                    "template_signature": sig,
+                    "test_example_id": str(row.get("example_id", "")),
+                    "test_split": split_name,
+                    "train_example_ids": train_templates[sig][:3],  # sample
+                    "test_sql": sql,
+                })
+
+    return {
+        "has_template_leakage": bool(violations),
+        "template_overlap_count": len(violations),
+        "violations": violations[:50],  # cap for readability
+    }
+
+
+def check_schema_family_leakage(
+    splits: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Check for schema-family leakage across splits.
+
+    Detects when augmented/renamed schemas in test share the same source
+    schema family as training data. Uses provenance fingerprints if available,
+    otherwise falls back to database_id.
+    """
+    train_families: set[str] = set()
+    for row in splits.get("train", []):
+        provenance = row.get("provenance", {})
+        if isinstance(provenance, dict) and provenance.get("schema_source"):
+            train_families.add(provenance["schema_source"])
+        db_id = row.get("database_id") or row.get("db_id")
+        if db_id:
+            train_families.add(str(db_id))
+
+    violations: list[dict[str, Any]] = []
+    for split_name in _comparison_split_names(splits):
+        for row in splits.get(split_name, []):
+            provenance = row.get("provenance", {})
+            schema_source = None
+            if isinstance(provenance, dict):
+                schema_source = provenance.get("schema_source")
+            db_id = row.get("database_id") or row.get("db_id")
+
+            if schema_source and schema_source in train_families:
+                violations.append({
+                    "schema_source": schema_source,
+                    "test_example_id": str(row.get("example_id", "")),
+                    "test_split": split_name,
+                    "leak_type": "provenance",
+                })
+            elif db_id and str(db_id) in train_families:
+                violations.append({
+                    "schema_source": str(db_id),
+                    "test_example_id": str(row.get("example_id", "")),
+                    "test_split": split_name,
+                    "leak_type": "database_id",
+                })
+
+    return {
+        "has_schema_family_leakage": bool(violations),
+        "schema_family_overlap_count": len(violations),
+        "violations": violations[:50],
+    }
+

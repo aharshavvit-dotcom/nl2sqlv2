@@ -71,6 +71,9 @@ class BundleManifest:
     dataset_contribution_status: dict[str, Any] = field(default_factory=dict)
     sklearn_artifact_version: dict[str, Any] = field(default_factory=dict)
     dependency_versions: dict[str, str] = field(default_factory=dict)
+    query_ir_versions_supported: list[str] = field(default_factory=lambda: ["1", "2.0"])
+    model_output_query_ir_version: str = "1"
+    runtime_preferred_query_ir_version: str = "1"
     routing_policy: dict[str, Any] = field(default_factory=lambda: {
         "direct_planner_enabled": True,
         "retrieval_enabled": True,
@@ -120,6 +123,9 @@ class BundleManifest:
             "dataset_contribution_status": self.dataset_contribution_status,
             "sklearn_artifact_version": self.sklearn_artifact_version,
             "dependency_versions": self.dependency_versions,
+            "query_ir_versions_supported": self.query_ir_versions_supported,
+            "model_output_query_ir_version": self.model_output_query_ir_version,
+            "runtime_preferred_query_ir_version": self.runtime_preferred_query_ir_version,
             "routing_policy": self.routing_policy,
         }
 
@@ -162,6 +168,9 @@ class BundleManifest:
             dataset_contribution_status=data.get("dataset_contribution_status", {}),
             sklearn_artifact_version=data.get("sklearn_artifact_version", {}),
             dependency_versions=data.get("dependency_versions", {}),
+            query_ir_versions_supported=data.get("query_ir_versions_supported", ["1", "2.0"]),
+            model_output_query_ir_version=data.get("model_output_query_ir_version", "1"),
+            runtime_preferred_query_ir_version=data.get("runtime_preferred_query_ir_version", "1"),
             routing_policy=data.get("routing_policy", {}),
         )
 

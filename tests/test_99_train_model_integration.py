@@ -604,6 +604,32 @@ class TestTrainModelIntegration:
         assert contract.required is False
         assert contract.can_skip is False
 
+    def test_feedback_regression_step_uses_blocking_pass_rate(self, tmp_path):
+        """Feedback warnings should remain visible without failing production gates."""
+        sys.path.insert(0, str(ROOT))
+        from orchestration.pipeline_config import PipelineConfig
+        from orchestration.step_runner import StepRunner
+
+        report_path = tmp_path / "feedback_regression_report.json"
+        config = PipelineConfig(
+            pipeline_name="feedback_test",
+            training={"_integrated_config": {
+                "feedback_regression": {
+                    "report_path": str(report_path),
+                    "cases_path": str(tmp_path / "missing_feedback_cases.jsonl"),
+                }
+            }},
+        )
+
+        result = StepRunner().run_step("run_feedback_regression", config)
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+
+        assert result["status"] == "completed"
+        assert report["summary"]["warnings"] > 0
+        assert report["summary"]["pass_rate"] < 1.0
+        assert report["summary"]["blocking_pass_rate"] == 1.0
+        assert report["feedback_regression_pass_rate"] == 1.0
+
     def test_bundle_prunes_reports_disabled_in_active_mode(self, tmp_path):
         from model_bundle.bundle_builder import ModelBundleBuilder
 

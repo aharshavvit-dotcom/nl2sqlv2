@@ -906,7 +906,10 @@ class StepRunner:
             feedback_safety_regressions=feedback_rows,
         )
         report["feedback_regression_pass_rate"] = float(
-            (report.get("summary") or {}).get("pass_rate", 0.0)
+            (report.get("summary") or {}).get(
+                "blocking_pass_rate",
+                (report.get("summary") or {}).get("pass_rate", 0.0),
+            )
         )
         report["feedback_cases_available"] = len(feedback_rows)
         report["feedback_cases_path"] = str(feedback_path)
@@ -985,7 +988,11 @@ class StepRunner:
             feedback_report = json.loads(feedback_path.read_text(encoding="utf-8"))
             feedback_rate = feedback_report.get("feedback_regression_pass_rate")
             if feedback_rate is None:
-                feedback_rate = (feedback_report.get("summary") or {}).get("pass_rate")
+                feedback_summary = feedback_report.get("summary") or {}
+                feedback_rate = feedback_summary.get(
+                    "blocking_pass_rate",
+                    feedback_summary.get("pass_rate"),
+                )
             if isinstance(feedback_rate, (int, float)):
                 eval_report["feedback_regression_pass_rate"] = float(feedback_rate)
         selection_path = Path(artifacts["evaluation_dir"]) / "model_selection_report.json"

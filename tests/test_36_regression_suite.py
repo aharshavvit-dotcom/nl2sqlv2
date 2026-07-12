@@ -30,3 +30,12 @@ def test_regression_suite_catches_list_all_users_join_bug() -> None:
 
     assert report["passed"] is False
     assert "unexpected join" in report["blocking_failures"][0]["issues"]
+
+
+def test_regression_suite_warning_cases_do_not_lower_blocking_pass_rate() -> None:
+    report = RegressionSuite().run()
+
+    assert report["passed"] is True
+    assert report["summary"]["warnings"] > 0
+    assert report["summary"]["pass_rate"] < 1.0
+    assert report["summary"]["blocking_pass_rate"] == 1.0
