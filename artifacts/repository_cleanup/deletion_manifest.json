@@ -1,0 +1,722 @@
+[
+  {
+    "path": ".pytest_cache",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "app/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "capabilities/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "clarification/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "connected_db_testing/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "dataset_training/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "datasets/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "db/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "deployment/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "evaluation/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "execution/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "execution_eval/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "feedback/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "generic_planner/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "inference/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "inference/grounding/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "ir/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "ir/query_ir_v2_rendering/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "model_bundle/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "model_registry/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "model_selection/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "neural_ir/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "neural_optimization/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "nl2sql_v1/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "orchestration/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "quality_gates/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "retrieval/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "retriever/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "reward/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "scripts/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "self_training/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "semantic_layer/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "tests/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "tests/fixtures/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "tests/integration/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "tests/legacy/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "tests/unit/capabilities/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "tests/unit/data/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "tests/unit/execution/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "tests/unit/ir/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "tests/unit/retrieval/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "tests/unit/runtime/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "training/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "training_ir/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  },
+  {
+    "path": "validation/__pycache__",
+    "reason": "Low-risk generated Python/test cache or local smoke log.",
+    "classification": "DELETE",
+    "replacement": null,
+    "references_checked": true,
+    "generated": true,
+    "recoverable_from_git": false,
+    "validation_performed": [
+      "path prefix check",
+      "gitignore coverage",
+      "generated-cache classification"
+    ],
+    "risk": "low",
+    "deleted_at": "2026-07-15T17:19:29+00:00"
+  }
+]

@@ -1,3 +1,8 @@
+"""
+Purpose: Protects model unit behaviour.
+Required because: A failing test in this module identifies a production contract or migration expectation that must be reviewed before merge.
+"""
+
 from __future__ import annotations
 
 import pytest
@@ -79,6 +84,45 @@ def test_run_multi_seed_metric_samples_are_independent(tmp_path, monkeypatch):
         "intent_macro_f1": 2,
         "sql_validation_rate": 1,
     }
+
+
+def test_run_multi_seed_full_retrain_mode_trains_child_artifacts(tmp_path, monkeypatch):
+    from orchestration.step_runner import StepRunner
+
+    calls = []
+
+    def fake_run_step(_self, step, config):
+        calls.append((step, dict(config.artifacts)))
+        if step == "train_neural_ir":
+            return {"status": "completed", "summary": {"loss": 1.0}}
+        return {"status": "completed", "summary": {"intent_macro_f1": 0.8}}
+
+    monkeypatch.setattr(StepRunner, "run_step", fake_run_step)
+    config = _seed_config(tmp_path)
+    config["_pipeline_run_id"] = "unit_run"
+    config["quality_gate"] = {"mode": "production"}
+    config["seeds"] = {
+        "enabled": True,
+        "mode": "full_retrain_multi_seed",
+        "require_full_retrain_for_production": True,
+    }
+
+    result = _run_multi_seed_variance(
+        config,
+        _primary_report(intent_macro_f1=0.9),
+        [42, 99],
+        ["intent_macro_f1"],
+        tmp_path / "variance.json",
+    )
+
+    assert [call[0] for call in calls] == ["train_neural_ir", "evaluate_generic_models"]
+    assert result["mode"] == "full_retrain_multi_seed"
+    assert result["true_training_variance_available"] is True
+    assert result["is_valid_for_training_variance_governance"] is True
+    assert result["blocking_failures"] == []
+    child = result["seed_runs"][1]
+    assert child["used_primary_model_artifacts"] is False
+    assert child["train_artifact_dir"].endswith("seed_99\\neural_ir") or child["train_artifact_dir"].endswith("seed_99/neural_ir")
 
 
 def test_primary_seed_status_completed():

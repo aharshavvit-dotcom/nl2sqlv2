@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_immutable_smoke_config_exists():
-    """Verify that neural_training_smoke.yaml exists and monitors the support-weighted score."""
+    """Verify that neural_training_smoke.yaml exists and monitors validation loss."""
     smoke_config_path = ROOT / "configs" / "neural_training_smoke.yaml"
     assert smoke_config_path.exists()
     
@@ -33,8 +33,8 @@ def test_immutable_smoke_config_exists():
         config = yaml.safe_load(f)
         
     training = config.get("training", {})
-    assert training.get("save_best_metric") == "support_weighted_semantic_score"
-    assert training.get("save_best_mode") == "max"
+    assert training.get("save_best_metric") == "loss"
+    assert training.get("save_best_mode") == "min"
 
 
 def test_parameter_update_step_norm_verification():

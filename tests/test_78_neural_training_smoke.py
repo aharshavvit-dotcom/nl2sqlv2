@@ -121,3 +121,17 @@ class TestOptimizedTrainingSmoke:
 
         assert len(ordered) == 1
         assert distribution["_curriculum_mode"] == "ordered_dataset"
+
+    def test_balanced_interleaved_curriculum_round_robins_buckets(self):
+        rows = [
+            {"example_id": "1", "query_ir": {"intent": "show_records"}},
+            {"example_id": "2", "query_ir": {"intent": "show_records"}},
+            {"example_id": "3", "query_ir": {"intent": "metric_by_dimension"}},
+            {"example_id": "4", "query_ir": {"intent": "metric_by_dimension"}},
+            {"example_id": "5", "query_ir": {"intent": "trend_by_date"}},
+            {"example_id": "6", "query_ir": {"intent": "joined_records"}},
+        ]
+        ordered, distribution = CurriculumBuilder().order_examples(rows, mode="balanced_interleaved")
+
+        assert [row["example_id"] for row in ordered[:4]] == ["1", "3", "5", "6"]
+        assert distribution["_curriculum_mode"] == "balanced_interleaved"

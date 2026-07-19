@@ -402,10 +402,11 @@ Two modes exist:
 |:---|:---|:---|:---|
 | Single-seed baseline | `single_seed_baseline` | `false` | Only primary run metrics; no variance computed |
 | Evaluation-only stability | `evaluation_only_stability` | `false` | Re-runs evaluation step with different seeds; measures prediction stability, **not** training variance |
+| Full retrain multi-seed | `full_retrain_multi_seed` | `true` | Retrains isolated neural artifacts per non-primary seed before evaluation |
 
-True training variance (`is_valid_for_training_variance_governance=true`) requires full re-training per seed, which is optional and disabled by default.
+True training variance (`is_valid_for_training_variance_governance=true`) requires full re-training per seed. Production training enables this through `seeds.mode: full_retrain_multi_seed`.
 
-Evaluation-only stability reports now include `seed_runs`, the model source used for each seed, `stochastic_inference_enabled`, `stochastic_components`, and `evaluation_stability_interpretation` so the report cannot be mistaken for multi-seed re-training evidence.
+Seed reports include `seed_runs`, the model source used for each seed, `stochastic_inference_enabled`, `stochastic_components`, and `evaluation_stability_interpretation` so evaluation-only reports cannot be mistaken for multi-seed re-training evidence.
 
 ### Controlled Fixture Evaluation
 

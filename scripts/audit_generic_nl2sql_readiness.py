@@ -16,7 +16,7 @@ from inference.runtime_join_planner import RuntimeJoinPlanner
 from inference.runtime_schema_context import RuntimeSchemaContext
 from ir.ir_to_sql_renderer import IRToSQLRenderer
 from retrieval import ExampleIndex, LocalRAGRetriever, PatternIndex, RetrievalReranker, SchemaIndex
-from tests.test_10_generic_table_intent import GENERIC_POSTGRES_SCHEMA
+from tests.fixtures.generic_schema import GENERIC_POSTGRES_SCHEMA
 from validation.sql_validator import SQLValidator
 
 
@@ -73,22 +73,16 @@ REQUIRED_RETRIEVAL = [
 
 REQUIRED_TESTS = [
     "tests/test_01_core_ir.py",
-    "tests/test_02_sql_validation.py",
-    "tests/test_03_database_connectors.py",
-    "tests/test_04_retrieval_runtime.py",
     "tests/test_05_neural_runtime.py",
     "tests/test_06_adaptive_router.py",
     "tests/test_07_training_data_pipeline.py",
     "tests/test_08_streamlit_app_helpers.py",
     "tests/test_09_end_to_end_smoke.py",
-    "tests/test_10_generic_table_intent.py",
-    "tests/test_11_generic_join_policy.py",
-    "tests/test_12_generic_postgres_schema_runtime.py",
-    "tests/test_20_dataset_split_manager.py",
-    "tests/test_21_dataset_leakage_checker.py",
-    "tests/test_22_generic_ir_corpus_builder.py",
-    "tests/test_23_retrieval_rag_index.py",
-    "tests/test_24_dataset_scale_evaluator.py",
+    "tests/unit/execution/test_sql_validation_and_safety.py",
+    "tests/integration/test_database_and_connected_regression.py",
+    "tests/unit/retrieval/test_retrieval_pipeline.py",
+    "tests/unit/runtime/test_generic_planner_and_grounding.py",
+    "tests/unit/data/test_dataset_pipeline.py",
     "tests/test_25_unseen_db_benchmark.py",
     "tests/test_26_training_command_wrappers.py",
     "tests/test_30_audit_readiness.py",
@@ -100,6 +94,8 @@ REQUIRED_TESTS = [
     "tests/test_36_regression_suite.py",
     "tests/test_37_model_artifact_registry.py",
     "tests/test_38_release_readiness.py",
+    "docs/TESTING.md",
+    "tests/test_catalog.yaml",
 ]
 
 REQUIRED_ARTIFACTS = [

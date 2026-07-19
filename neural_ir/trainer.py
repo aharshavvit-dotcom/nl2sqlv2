@@ -25,6 +25,7 @@ HEAD_TO_LABEL = {
     "filter_operator_logits": "filter_operator_label",
     "order_direction_logits": "order_direction_label",
     "limit_bucket_logits": "limit_bucket_label",
+    "complexity_logits": "complexity_label",
 }
 
 HEAD_TO_MASK = {
@@ -229,8 +230,11 @@ class OptionAIRTrainer:
             "filter_operator_logits": "filter_operator",
             "order_direction_logits": "order_direction",
             "limit_bucket_logits": "limit_bucket",
+            "complexity_logits": "complexity",
         }
         for head, label in HEAD_TO_LABEL.items():
+            if head not in outputs or label not in labels:
+                continue
             target = labels[label]
             if not target.ne(-1).any():
                 continue
@@ -281,6 +285,8 @@ class _MetricState:
 
     def update(self, outputs: dict[str, torch.Tensor], labels: dict[str, torch.Tensor], batch: dict[str, Any] | None = None) -> None:
         for head, label_key in HEAD_TO_LABEL.items():
+            if head not in outputs or label_key not in labels:
+                continue
             target = labels[label_key]
             candidate_mask = (batch or {}).get(HEAD_TO_MASK.get(head, "")) if batch else None
             correct, total = accuracy_from_logits(outputs[head], target, mask=candidate_mask, ignore_index=-1)
@@ -305,6 +311,7 @@ class _MetricState:
             "metric_pointer_accuracy": acc("metric_column_index"),
             "date_pointer_accuracy": acc("date_column_index"),
             "filter_pointer_accuracy": acc("filter_column_index"),
+            "complexity_accuracy": acc("complexity_label"),
             "overall_slot_accuracy": sum(acc(key) for key in keys) / max(len(keys), 1),
         }
 

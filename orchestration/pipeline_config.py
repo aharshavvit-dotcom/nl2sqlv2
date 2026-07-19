@@ -20,6 +20,7 @@ def build_pipeline_steps(config: dict[str, Any]) -> list[str]:
     feedback_regression = config.get("feedback_regression") or {}
     bundle = config.get("bundle") or {}
     execution_aware = config.get("execution_aware") or {}
+    seeds = config.get("seeds") or {}
 
     steps = ["verify_datasets"]
     if retrieval.get("enabled", True) or neural.get("enabled", True):
@@ -40,6 +41,10 @@ def build_pipeline_steps(config: dict[str, Any]) -> list[str]:
         if controlled_fixtures.get("enabled", False):
             steps.append("run_controlled_fixture_evaluation")
         steps.append("evaluate_generic_models")
+        if evaluation.get("run_route_diagnostics", False):
+            steps.append("run_route_diagnostics")
+        if seeds.get("enabled", False):
+            steps.append("multi_seed_variance")
     if feedback_regression.get("enabled", False):
         steps.append("run_feedback_regression")
     steps.append("run_quality_gate")
@@ -100,4 +105,3 @@ class PipelineConfig:
             skip_heavy_steps=bool(payload.get("skip_heavy_steps", False)),
             integrated_config=integrated_config,
         )
-

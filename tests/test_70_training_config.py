@@ -23,9 +23,11 @@ class TestNeuralTrainingConfig:
         assert cfg.training["batch_size"] == 8
         assert cfg.loss["base_table"] == 1.2
         assert cfg.scheduler["name"] == "reduce_on_plateau"
-        assert cfg.training["save_best_metric"] == "support_weighted_semantic_score"
-        assert cfg.training["save_best_mode"] == "max"
+        assert cfg.training["gradient_accumulation_steps"] == 4
+        assert cfg.training["save_best_metric"] == "loss"
+        assert cfg.training["save_best_mode"] == "min"
         assert cfg.training["semantic_score_weights"]["filter_value_accuracy"] == 0.20
+        assert cfg.loss["hard_negative"] == 0.1
         assert cfg.training["early_stopping_patience"] == 2
         assert cfg.model["pointer_dropout"] == 0.30
         assert cfg.optimizer["weight_decay"] == 0.0001
@@ -112,9 +114,11 @@ def test_baseline_and_production_resolve_canonical_neural_values():
         effective = resolve_effective_neural_config(payload, root=root)
         assert effective["epochs"] == 10
         assert effective["batch_size"] == 8
-        assert effective["save_best_metric"] == "support_weighted_semantic_score"
-        assert effective["save_best_mode"] == "max"
-        assert effective["semantic_score_weights"]["projection_exact_match"] == 0.15
+        assert effective["gradient_accumulation_steps"] == 4
+        assert effective["save_best_metric"] == "loss"
+        assert effective["save_best_mode"] == "min"
+        assert effective["semantic_score_weights"]["metric_column_pointer_accuracy"] == 0.15
+        assert effective["hard_negative_weight"] == 0.1
         assert effective["early_stopping_patience"] == 2
         assert effective["debug_override_used"] is False
 

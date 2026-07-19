@@ -1,3 +1,8 @@
+"""
+Purpose: Protects execution contract behaviour.
+Required because: A failing test in this module identifies a production contract or migration expectation that must be reviewed before merge.
+"""
+
 from __future__ import annotations
 
 from model_selection.promotion_policy import PromotionPolicy

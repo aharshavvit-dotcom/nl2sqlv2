@@ -536,8 +536,19 @@ class TestTrainModelIntegration:
 
         config_path = ROOT / "configs" / "training.yaml"
         config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        datasets = config.get("datasets", {})
+        assert datasets["model_selection_ratio"] > 0.0
+        split_total = (
+            datasets["train_ratio"]
+            + datasets["validation_ratio"]
+            + datasets["model_selection_ratio"]
+            + datasets["test_ratio"]
+        )
+        assert abs(split_total - 1.0) < 1e-9
         seeds = config.get("seeds", {})
         assert "enabled" in seeds
+        assert seeds["mode"] == "full_retrain_multi_seed"
+        assert seeds["require_full_retrain_for_production"] is True
         assert "values" in seeds
         assert "metrics" in seeds
         assert isinstance(seeds["metrics"], list)

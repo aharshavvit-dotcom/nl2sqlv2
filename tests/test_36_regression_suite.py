@@ -1,3 +1,8 @@
+"""
+Purpose: Protects ir regression behaviour.
+Required because: A failing test in this module identifies a production contract or migration expectation that must be reviewed before merge.
+"""
+
 from __future__ import annotations
 
 from quality_gates.regression_suite import RegressionSuite

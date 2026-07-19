@@ -342,14 +342,18 @@ python training_ir/calibrate_hybrid_router.py
 
 ## Multi-Seed Evaluation
 
-Enable evaluation-only stability analysis in `configs/training.yaml`:
+Enable seed analysis in `configs/training.yaml`:
 
 ```yaml
 seeds:
   enabled: true
+  mode: full_retrain_multi_seed
+  require_full_retrain_for_production: true
   values: [42, 123, 456]
   metrics: [intent_macro_f1, base_table_accuracy, sql_validation_rate]
 ```
+
+Use `mode: evaluation_only_stability` only for debug runs that intentionally reuse the primary model artifacts. Production variance evidence requires `full_retrain_multi_seed`.
 
 This re-runs the evaluation step per seed and computes metric variance. It measures **prediction stability**, not training variance. The report field `is_valid_for_training_variance_governance` will be `false`. Full per-seed re-training is a future enhancement.
 
@@ -405,6 +409,6 @@ model:
 
 Candidate-pairwise relation attention uses the unified table/column candidate mask, excluding padding before softmax. Runtime `relation_bias_mode` is one of `disabled`, `schema_token_role_bias`, `schema_pairwise_relation_bias`, `schema_candidate_pairwise_relation_bias`, or `combined`.
 
-`training_diagnostics.json` distinguishes relation IDs that are configured, observed in dataset items, observed in collated batches, and actually used in `model.forward`. Its candidate graph block aggregates real batch-mask counts and padding ratios. Multi-seed regression tests invoke `_run_multi_seed_variance()` directly; the report still represents evaluation-only stability, not full retraining variance.
+`training_diagnostics.json` distinguishes relation IDs that are configured, observed in dataset items, observed in collated batches, and actually used in `model.forward`. Its candidate graph block aggregates real batch-mask counts and padding ratios. Multi-seed regression tests invoke `_run_multi_seed_variance()` directly; `mode: full_retrain_multi_seed` is the only mode valid for training-variance governance.
 
 This adds a lightweight RAT-SQL-style learnable bias per relation type to schema attention. When enabled, the dataset emits explicit schema relation matrices for table, column, primary-key, and foreign-key relationships instead of relying only on question-schema role tags. **Not production behavior** unless explicitly enabled and validated via controlled experiments.

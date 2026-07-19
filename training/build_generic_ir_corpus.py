@@ -21,9 +21,13 @@ def build_generic_ir_corpus(args: argparse.Namespace) -> dict:
             seed=args.seed,
             train_ratio=args.train_ratio,
             validation_ratio=args.validation_ratio,
+            model_selection_ratio=getattr(args, "model_selection_ratio", 0.0),
             test_ratio=args.test_ratio,
             unseen_db_test_ratio=args.unseen_db_test_ratio,
-            force_create_new_version=True,
+            split_version=getattr(args, "split_version", "semantic_v1"),
+            force_create_new_version=bool(getattr(args, "force_create_new_version", False)),
+            parent_split_version=getattr(args, "parent_split_version", None),
+            regeneration_reason=getattr(args, "split_regeneration_reason", None),
         ),
         sql_to_ir_converter=None,
         quality_filter=None,
@@ -59,8 +63,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--train-ratio", type=float, default=0.8)
     parser.add_argument("--validation-ratio", type=float, default=0.1)
+    parser.add_argument("--model-selection-ratio", type=float, default=0.0)
     parser.add_argument("--test-ratio", type=float, default=0.1)
     parser.add_argument("--unseen-db-test-ratio", type=float, default=0.15)
+    parser.add_argument("--split-version", default="semantic_v1")
+    parser.add_argument("--force-create-new-version", action="store_true", default=False)
+    parser.add_argument("--parent-split-version", default=None)
+    parser.add_argument("--split-regeneration-reason", default=None)
     parser.add_argument("--include-unsupported", action="store_true", default=True)
     return parser.parse_args()
 

@@ -15,6 +15,14 @@ datasets:
   min_converted_examples_required:
     wikisql: 100
     spider: 100
+  train_ratio: 0.75
+  validation_ratio: 0.10
+  model_selection_ratio: 0.05
+  test_ratio: 0.10
+  split_version: semantic_v2
+  force_create_new_version: false
+  parent_split_version: semantic_v1
+  split_regeneration_reason: regenerated after semantic_v1 membership changed during integration audit
 
 paths:
   processed_dir: data/processed
@@ -54,6 +62,9 @@ evaluation:
   output_dir: artifacts/evaluation
   run_unseen_db: true
   run_execution_aware: true
+  run_route_diagnostics: true
+  route_diagnostics_required: true
+  route_diagnostics_limit: 0
 
 calibration:
   enabled: true
@@ -91,12 +102,13 @@ execution_aware:
     require_report_attached_to_bundle: true
     min_execution_match_rate: 0.70
 
-# Multi-seed training variance (disabled by default).
-# When enabled, repeats evaluation over multiple seeds and reports metric variance.
-# This does NOT affect the primary training run — it adds a post-training
-# variance analysis step for monitoring metric stability.
+# Multi-seed training variance.
+# Production mode retrains isolated neural artifacts per non-primary seed before
+# evaluation, then writes the report before quality gates and bundle assembly.
 seeds:
   enabled: true
+  mode: full_retrain_multi_seed
+  require_full_retrain_for_production: true
   values: [42, 123, 456]
   report_output: artifacts/evaluation/multi_seed_variance_report.json
   metrics:

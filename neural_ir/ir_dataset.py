@@ -7,7 +7,7 @@ from typing import Any
 import torch
 from torch.utils.data import Dataset
 
-from capabilities import ALL_CAPABILITIES
+from capabilities import ALL_CAPABILITIES, ALL_SAFETY_LABELS
 from .candidate_builder import SchemaCandidateBuilder, build_candidate_masks, schema_link_score_vector
 from .ir_label_encoder import IRLabelEncoder
 from .schema_linearizer import SchemaLinearizer, extract_schema_items, schema_from_example
@@ -23,6 +23,7 @@ RELATION_TYPE_MAP = {
 }
 RELATION_UNRELATED = RELATION_TYPE_MAP["unrelated"]
 CAPABILITY_INDEX = {capability.value: index for index, capability in enumerate(ALL_CAPABILITIES)}
+SAFETY_LABEL_INDEX = {label.value: index for index, label in enumerate(ALL_SAFETY_LABELS)}
 TASK_MASK_KEYS = [
     "capability",
     "safety",
@@ -38,6 +39,21 @@ TASK_MASK_KEYS = [
     "set_operation",
     "full_query_ir",
 ]
+COMPLEXITY_LABELS = [
+    "unknown",
+    "simple",
+    "easy",
+    "medium",
+    "moderate",
+    "hard",
+    "challenging",
+    "level_1_single_table",
+    "level_2_filter_count",
+    "level_3_aggregation",
+    "level_4_join",
+    "level_5_advanced_sql",
+]
+COMPLEXITY_INDEX = {label: index for index, label in enumerate(COMPLEXITY_LABELS)}
 
 
 class IRTrainingDataset(Dataset):
@@ -93,6 +109,7 @@ class IRTrainingDataset(Dataset):
         labels = self._add_hard_negative_labels(row, schema_items, labels)
         labels = self._cap_pointer_labels(labels)
         labels["span"] = self._get_span_labels(row, question)
+        labels["complexity_label"] = complexity_label(row)
         self._force_gold_masks(candidate_masks, labels)
         candidate_metadata = build_candidate_metadata(candidates, schema_items, self.max_tables)
         unified_candidate_token_ids = self._unified_candidate_token_ids(candidate_metadata, self.max_tables + self.max_columns)
@@ -129,6 +146,7 @@ class IRTrainingDataset(Dataset):
             ),
             "labels": labels,
             "capability_labels": capability_label_vector(row),
+            "safety_labels": safety_label_vector(row),
             "task_masks": task_mask_vector(row),
             "raw_example": row,
             "schema_items": schema_items,
@@ -298,6 +316,7 @@ def collate_ir_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
             for key in label_keys
         },
         "capability_labels": torch.tensor([item["capability_labels"] for item in batch], dtype=torch.float32),
+        "safety_labels": torch.tensor([item["safety_labels"] for item in batch], dtype=torch.float32),
         "task_masks": {
             key: torch.tensor([item["task_masks"].get(key, 0.0) for item in batch], dtype=torch.float32)
             for key in TASK_MASK_KEYS
@@ -454,6 +473,28 @@ def capability_label_vector(row: dict[str, Any]) -> list[float]:
         if name in CAPABILITY_INDEX:
             labels[CAPABILITY_INDEX[name]] = 1.0
     return labels
+
+
+def safety_label_vector(row: dict[str, Any]) -> list[float]:
+    values = row.get("safety_labels")
+    if values is None:
+        values = ((row.get("capability_annotation") or {}).get("safety_labels") or [])
+    labels = [0.0] * len(SAFETY_LABEL_INDEX)
+    for value in values or []:
+        name = str(value)
+        if name in SAFETY_LABEL_INDEX:
+            labels[SAFETY_LABEL_INDEX[name]] = 1.0
+    return labels
+
+
+def complexity_label(row: dict[str, Any]) -> int:
+    raw = row.get("complexity")
+    if raw is None:
+        raw = ((row.get("sql_features") or {}).get("complexity"))
+    if raw is None:
+        raw = ((row.get("capability_annotation") or {}).get("complexity"))
+    normalized = str(raw or "unknown").strip().lower()
+    return COMPLEXITY_INDEX.get(normalized, COMPLEXITY_INDEX["unknown"])
 
 
 def task_mask_vector(row: dict[str, Any]) -> dict[str, float]:

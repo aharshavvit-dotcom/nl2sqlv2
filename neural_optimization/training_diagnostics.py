@@ -82,8 +82,10 @@ class TrainingDiagnostics:
             "activation_name": config.get("model", {}).get("activation", "unknown"),
             "learning_rate": config.get("optimizer", {}).get("learning_rate"),
             "batch_size": config.get("training", {}).get("batch_size"),
+            "gradient_accumulation_steps": config.get("training", {}).get("gradient_accumulation_steps"),
             "epochs": config.get("training", {}).get("epochs"),
             "loss_weights": config.get("loss", {}),
+            "hard_negative_weight": config.get("loss", {}).get("hard_negative"),
             "save_best_metric": config.get("training", {}).get("save_best_metric"),
             "checkpoint_monitor": config.get("training", {}).get("save_best_metric"),
             "checkpoint_mode": config.get("training", {}).get("save_best_mode"),
@@ -342,6 +344,7 @@ def _render_markdown(data: dict[str, Any]) -> str:
     lines.append(f"- **Activation**: {cfg.get('activation_name', '-')}")
     lines.append(f"- **Learning rate**: {cfg.get('learning_rate', '-')}")
     lines.append(f"- **Batch size**: {cfg.get('batch_size', '-')}")
+    lines.append(f"- **Gradient accumulation steps**: {cfg.get('gradient_accumulation_steps', '-')}")
     lines.append(f"- **Gradient clipping**: {cfg.get('gradient_clipping_value', '-')}")
     lines.append(f"- **Train path**: {cfg.get('train_path', '-')}")
     lines.append(f"- **Validation path**: {cfg.get('validation_path', '-')}")
@@ -362,9 +365,10 @@ def _render_markdown(data: dict[str, Any]) -> str:
     # Baseline vs Current Comparison
     baseline = data.get("baseline_score")
     best_epoch_data = data.get("epochs", [])[data.get("best_epoch", 0) - 1] if data.get("epochs") and data.get("best_epoch") else {}
-    current_score = best_epoch_data.get("support_weighted_semantic_score") or data.get("best_overall_slot_accuracy") or 0.0
+    current_score = best_epoch_data.get("semantic_checkpoint_score") or data.get("best_overall_slot_accuracy") or 0.0
     
-    lines.append(f"- **Current Best Support-Weighted Semantic Score**: {current_score:.4f}")
+    lines.append(f"- **Current Best Diagnostic Component Score**: {current_score:.4f}")
+    lines.append("- **Diagnostic score note**: not valid for production checkpoint selection")
     if baseline is not None:
         lines.append(f"- **Baseline Score**: {float(baseline):.4f}")
         diff = current_score - float(baseline)
@@ -395,8 +399,8 @@ def _render_markdown(data: dict[str, Any]) -> str:
     if epochs:
         lines.append("## Per-Epoch Metrics")
         lines.append("")
-        lines.append("| Epoch | Train Loss | Val Loss | Intent Acc | Slot Acc | Weighted Semantic Score | LR | Time (s) |")
-        lines.append("|------:|-----------:|---------:|-----------:|---------:|------------------------:|---:|---------:|")
+        lines.append("| Epoch | Train Loss | Val Loss | Intent Acc | Slot Acc | Diagnostic Component Score | LR | Time (s) |")
+        lines.append("|------:|-----------:|---------:|-----------:|---------:|---------------------------:|---:|---------:|")
         for epoch in epochs:
             lines.append(
                 f"| {epoch.get('epoch', '-')} "
@@ -404,7 +408,7 @@ def _render_markdown(data: dict[str, Any]) -> str:
                 f"| {epoch.get('validation_total_loss', 0):.4f} "
                 f"| {epoch.get('intent_accuracy', 0):.4f} "
                 f"| {epoch.get('overall_slot_accuracy', 0):.4f} "
-                f"| {epoch.get('support_weighted_semantic_score', 0):.4f} "
+                f"| {epoch.get('semantic_checkpoint_score', epoch.get('support_weighted_semantic_score', 0)):.4f} "
                 f"| {epoch.get('learning_rate', '-')} "
                 f"| {epoch.get('epoch_time_seconds', '-')} |"
             )
@@ -426,9 +430,11 @@ def _effective_config_hash(summary: dict[str, Any]) -> str:
     payload = {
         "epochs": summary.get("epochs"),
         "batch_size": summary.get("batch_size"),
+        "gradient_accumulation_steps": summary.get("gradient_accumulation_steps"),
         "save_best_metric": summary.get("save_best_metric"),
         "save_best_mode": summary.get("checkpoint_mode"),
         "early_stopping_patience": summary.get("early_stopping_patience"),
+        "hard_negative_weight": summary.get("hard_negative_weight"),
         "weight_decay": summary.get("weight_decay"),
         "pointer_head_weight_decay": summary.get("pointer_head_weight_decay"),
         "pointer_dropout": summary.get("pointer_dropout"),

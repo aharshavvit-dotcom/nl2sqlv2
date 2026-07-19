@@ -77,21 +77,22 @@ _DEFAULT_TRAINING = {
     "batch_size": 8,
     "epochs": 10,
     "gradient_clipping": 1.0,
+    "gradient_accumulation_steps": 4,
     "early_stopping_patience": 2,
     "seed": 42,
     "device": "auto",
     "precision": "float32",
     "determinism_mode": "seeded",
-    "save_best_metric": "support_weighted_semantic_score",
-    "save_best_mode": "max",
-    "semantic_score_min_support": 1,
+    "save_best_metric": "loss",
+    "save_best_mode": "min",
+    "semantic_score_min_support": 10,
     "semantic_score_weights": {
-        "intent_macro_f1": 0.20,
-        "projection_exact_match": 0.15,
+        "intent_accuracy": 0.20,
+        "metric_column_pointer_accuracy": 0.15,
         "filter_column_accuracy": 0.20,
         "filter_value_accuracy": 0.20,
         "dimension_column_accuracy": 0.10,
-        "semantic_pass_rate": 0.15,
+        "component_accuracy_floor": 0.15,
     },
 }
 
@@ -110,7 +111,10 @@ _DEFAULT_LOSS = {
     "aggregation": 0.8,
     "order_direction": 0.6,
     "limit_bucket": 0.4,
-    "hard_negative": 0.3,
+    "complexity": 0.3,
+    "hard_negative": 0.1,
+    "capability": 0.4,
+    "safety": 0.6,
 }
 
 _DEFAULT_DATA = {

@@ -1,0 +1,642 @@
+[
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_query_ir_v2_models.py",
+    "reason": "QueryIR v2 model, literal, serialization and fingerprint contracts belong to the same model responsibility.",
+    "replacement": "tests/unit/ir/test_query_ir_v2_models.py",
+    "requirements_preserved": [
+      "QIR-V2-MODEL-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_query_ir_v2_boolean_models.py",
+    "reason": "QueryIR v2 model, literal, serialization and fingerprint contracts belong to the same model responsibility.",
+    "replacement": "tests/unit/ir/test_query_ir_v2_models.py",
+    "requirements_preserved": [
+      "QIR-V2-MODEL-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_query_ir_v2_serialization.py",
+    "reason": "QueryIR v2 model, literal, serialization and fingerprint contracts belong to the same model responsibility.",
+    "replacement": "tests/unit/ir/test_query_ir_v2_models.py",
+    "requirements_preserved": [
+      "QIR-V2-MODEL-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_query_ir_v2_fingerprint.py",
+    "reason": "QueryIR v2 model, literal, serialization and fingerprint contracts belong to the same model responsibility.",
+    "replacement": "tests/unit/ir/test_query_ir_v2_models.py",
+    "requirements_preserved": [
+      "QIR-V2-MODEL-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_query_ir_v2_validation.py",
+    "reason": "Validation, canonicalization and recursive predicate limits protect one QueryIR validation contract.",
+    "replacement": "tests/unit/ir/test_query_ir_v2_validation.py",
+    "requirements_preserved": [
+      "QIR-V2-VALIDATION-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_query_ir_v2_depth_limits.py",
+    "reason": "Validation, canonicalization and recursive predicate limits protect one QueryIR validation contract.",
+    "replacement": "tests/unit/ir/test_query_ir_v2_validation.py",
+    "requirements_preserved": [
+      "QIR-V2-VALIDATION-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_query_ir_v2_boolean_validation.py",
+    "reason": "Validation, canonicalization and recursive predicate limits protect one QueryIR validation contract.",
+    "replacement": "tests/unit/ir/test_query_ir_v2_validation.py",
+    "requirements_preserved": [
+      "QIR-V2-VALIDATION-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_query_ir_v2_boolean_depth_limits.py",
+    "reason": "Validation, canonicalization and recursive predicate limits protect one QueryIR validation contract.",
+    "replacement": "tests/unit/ir/test_query_ir_v2_validation.py",
+    "requirements_preserved": [
+      "QIR-V2-VALIDATION-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_query_ir_v2_boolean_canonicalization.py",
+    "reason": "Validation, canonicalization and recursive predicate limits protect one QueryIR validation contract.",
+    "replacement": "tests/unit/ir/test_query_ir_v2_validation.py",
+    "requirements_preserved": [
+      "QIR-V2-VALIDATION-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_sql_to_query_ir_v2_boolean_conversion.py",
+    "reason": "SQL-to-QueryIR conversion belongs in the canonical conversion module.",
+    "replacement": "tests/unit/ir/test_query_ir_v2_conversion.py",
+    "requirements_preserved": [
+      "QIR-V2-CONVERSION-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_query_ir_v2_boolean_renderer.py",
+    "reason": "Boolean, NULL, IN and BETWEEN rendering are one QueryIR rendering responsibility.",
+    "replacement": "tests/unit/ir/test_query_ir_v2_rendering.py",
+    "requirements_preserved": [
+      "QIR-V2-RENDER-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_query_ir_v1_to_v2_migration.py",
+    "reason": "V1/V2 migration, compatibility and version loading form one compatibility contract.",
+    "replacement": "tests/unit/ir/test_query_ir_migration.py",
+    "requirements_preserved": [
+      "QIR-MIGRATION-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_query_ir_v1_boolean_migration.py",
+    "reason": "V1/V2 migration, compatibility and version loading form one compatibility contract.",
+    "replacement": "tests/unit/ir/test_query_ir_migration.py",
+    "requirements_preserved": [
+      "QIR-MIGRATION-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_query_ir_v2_to_v1_compatibility.py",
+    "reason": "V1/V2 migration, compatibility and version loading form one compatibility contract.",
+    "replacement": "tests/unit/ir/test_query_ir_migration.py",
+    "requirements_preserved": [
+      "QIR-MIGRATION-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_query_ir_v2_boolean_v1_compatibility.py",
+    "reason": "V1/V2 migration, compatibility and version loading form one compatibility contract.",
+    "replacement": "tests/unit/ir/test_query_ir_migration.py",
+    "requirements_preserved": [
+      "QIR-MIGRATION-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_query_ir_version_loader.py",
+    "reason": "V1/V2 migration, compatibility and version loading form one compatibility contract.",
+    "replacement": "tests/unit/ir/test_query_ir_migration.py",
+    "requirements_preserved": [
+      "QIR-MIGRATION-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_query_ir_v2_renderer_parity.py",
+    "reason": "V1/V2 migration, compatibility and version loading form one compatibility contract.",
+    "replacement": "tests/unit/ir/test_query_ir_migration.py",
+    "requirements_preserved": [
+      "QIR-MIGRATION-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_query_ir_v2_boolean_precedence.py",
+    "reason": "Renderer output and SQLite execution equivalence should be exercised as integration behaviour.",
+    "replacement": "tests/integration/test_query_ir_v2_execution.py",
+    "requirements_preserved": [
+      "QIR-V2-EXECUTION-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_query_ir_v2_boolean_execution_equivalence.py",
+    "reason": "Renderer output and SQLite execution equivalence should be exercised as integration behaviour.",
+    "replacement": "tests/integration/test_query_ir_v2_execution.py",
+    "requirements_preserved": [
+      "QIR-V2-EXECUTION-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_capability_artifact_schema.py",
+    "reason": "Capability extraction, taxonomy, artifacts and training parity are one capability-data contract.",
+    "replacement": "tests/unit/capabilities/test_capability_pipeline.py",
+    "requirements_preserved": [
+      "CAPABILITY-PIPELINE-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_capability_dataset_reporting.py",
+    "reason": "Capability extraction, taxonomy, artifacts and training parity are one capability-data contract.",
+    "replacement": "tests/unit/capabilities/test_capability_pipeline.py",
+    "requirements_preserved": [
+      "CAPABILITY-PIPELINE-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_capability_or_filter_consistency.py",
+    "reason": "Capability extraction, taxonomy, artifacts and training parity are one capability-data contract.",
+    "replacement": "tests/unit/capabilities/test_capability_pipeline.py",
+    "requirements_preserved": [
+      "CAPABILITY-PIPELINE-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_capability_taxonomy.py",
+    "reason": "Capability extraction, taxonomy, artifacts and training parity are one capability-data contract.",
+    "replacement": "tests/unit/capabilities/test_capability_pipeline.py",
+    "requirements_preserved": [
+      "CAPABILITY-PIPELINE-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_capability_training_batch.py",
+    "reason": "Capability extraction, taxonomy, artifacts and training parity are one capability-data contract.",
+    "replacement": "tests/unit/capabilities/test_capability_pipeline.py",
+    "requirements_preserved": [
+      "CAPABILITY-PIPELINE-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_sql_capability_extractor.py",
+    "reason": "Capability extraction, taxonomy, artifacts and training parity are one capability-data contract.",
+    "replacement": "tests/unit/capabilities/test_capability_pipeline.py",
+    "requirements_preserved": [
+      "CAPABILITY-PIPELINE-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_training_inference_capability_parity.py",
+    "reason": "Capability extraction, taxonomy, artifacts and training parity are one capability-data contract.",
+    "replacement": "tests/unit/capabilities/test_capability_pipeline.py",
+    "requirements_preserved": [
+      "CAPABILITY-PIPELINE-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_unsupported_example_task_masks.py",
+    "reason": "Capability extraction, taxonomy, artifacts and training parity are one capability-data contract.",
+    "replacement": "tests/unit/capabilities/test_capability_pipeline.py",
+    "requirements_preserved": [
+      "CAPABILITY-PIPELINE-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_20_dataset_split_manager.py",
+    "reason": "Dataset split, leakage, corpus, scale and verification tests protect the dataset pipeline.",
+    "replacement": "tests/unit/data/test_dataset_pipeline.py",
+    "requirements_preserved": [
+      "DATA-PIPELINE-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_21_dataset_leakage_checker.py",
+    "reason": "Dataset split, leakage, corpus, scale and verification tests protect the dataset pipeline.",
+    "replacement": "tests/unit/data/test_dataset_pipeline.py",
+    "requirements_preserved": [
+      "DATA-PIPELINE-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_22_generic_ir_corpus_builder.py",
+    "reason": "Dataset split, leakage, corpus, scale and verification tests protect the dataset pipeline.",
+    "replacement": "tests/unit/data/test_dataset_pipeline.py",
+    "requirements_preserved": [
+      "DATA-PIPELINE-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_24_dataset_scale_evaluator.py",
+    "reason": "Dataset split, leakage, corpus, scale and verification tests protect the dataset pipeline.",
+    "replacement": "tests/unit/data/test_dataset_pipeline.py",
+    "requirements_preserved": [
+      "DATA-PIPELINE-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_dataset_leakage_domain.py",
+    "reason": "Dataset split, leakage, corpus, scale and verification tests protect the dataset pipeline.",
+    "replacement": "tests/unit/data/test_dataset_pipeline.py",
+    "requirements_preserved": [
+      "DATA-PIPELINE-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_dataset_split_integrity.py",
+    "reason": "Dataset split, leakage, corpus, scale and verification tests protect the dataset pipeline.",
+    "replacement": "tests/unit/data/test_dataset_pipeline.py",
+    "requirements_preserved": [
+      "DATA-PIPELINE-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_verify_datasets.py",
+    "reason": "Dataset split, leakage, corpus, scale and verification tests protect the dataset pipeline.",
+    "replacement": "tests/unit/data/test_dataset_pipeline.py",
+    "requirements_preserved": [
+      "DATA-PIPELINE-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_sql_partial_supervision.py",
+    "reason": "Dataset split, leakage, corpus, scale and verification tests protect the dataset pipeline.",
+    "replacement": "tests/unit/data/test_dataset_pipeline.py",
+    "requirements_preserved": [
+      "DATA-PIPELINE-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_04_retrieval_runtime.py",
+    "reason": "Retriever runtime, index building and dataset trainer wrappers belong to the retrieval pipeline.",
+    "replacement": "tests/unit/retrieval/test_retrieval_pipeline.py",
+    "requirements_preserved": [
+      "RETRIEVAL-PIPELINE-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_23_retrieval_rag_index.py",
+    "reason": "Retriever runtime, index building and dataset trainer wrappers belong to the retrieval pipeline.",
+    "replacement": "tests/unit/retrieval/test_retrieval_pipeline.py",
+    "requirements_preserved": [
+      "RETRIEVAL-PIPELINE-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_train_retriever_from_datasets.py",
+    "reason": "Retriever runtime, index building and dataset trainer wrappers belong to the retrieval pipeline.",
+    "replacement": "tests/unit/retrieval/test_retrieval_pipeline.py",
+    "requirements_preserved": [
+      "RETRIEVAL-PIPELINE-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_50_sql_canonicalizer.py",
+    "reason": "SQL canonicalization, structure comparison and execution-aware evaluation share one responsibility.",
+    "replacement": "tests/unit/execution/test_execution_evaluation.py",
+    "requirements_preserved": [
+      "EXEC-EVAL-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_51_sql_structure_comparator.py",
+    "reason": "SQL canonicalization, structure comparison and execution-aware evaluation share one responsibility.",
+    "replacement": "tests/unit/execution/test_execution_evaluation.py",
+    "requirements_preserved": [
+      "EXEC-EVAL-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_52_result_comparator.py",
+    "reason": "SQL canonicalization, structure comparison and execution-aware evaluation share one responsibility.",
+    "replacement": "tests/unit/execution/test_execution_evaluation.py",
+    "requirements_preserved": [
+      "EXEC-EVAL-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_53_execution_aware_evaluation.py",
+    "reason": "SQL canonicalization, structure comparison and execution-aware evaluation share one responsibility.",
+    "replacement": "tests/unit/execution/test_execution_evaluation.py",
+    "requirements_preserved": [
+      "EXEC-EVAL-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_10_generic_table_intent.py",
+    "reason": "Schema profiling, generic planning, clarification and grounding form one runtime grounding responsibility.",
+    "replacement": "tests/unit/runtime/test_generic_planner_and_grounding.py",
+    "requirements_preserved": [
+      "RUNTIME-GROUNDING-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_11_generic_join_policy.py",
+    "reason": "Schema profiling, generic planning, clarification and grounding form one runtime grounding responsibility.",
+    "replacement": "tests/unit/runtime/test_generic_planner_and_grounding.py",
+    "requirements_preserved": [
+      "RUNTIME-GROUNDING-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_60_schema_profiler.py",
+    "reason": "Schema profiling, generic planning, clarification and grounding form one runtime grounding responsibility.",
+    "replacement": "tests/unit/runtime/test_generic_planner_and_grounding.py",
+    "requirements_preserved": [
+      "RUNTIME-GROUNDING-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_61_glossary_generator.py",
+    "reason": "Schema profiling, generic planning, clarification and grounding form one runtime grounding responsibility.",
+    "replacement": "tests/unit/runtime/test_generic_planner_and_grounding.py",
+    "requirements_preserved": [
+      "RUNTIME-GROUNDING-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_62_semantic_mapper.py",
+    "reason": "Schema profiling, generic planning, clarification and grounding form one runtime grounding responsibility.",
+    "replacement": "tests/unit/runtime/test_generic_planner_and_grounding.py",
+    "requirements_preserved": [
+      "RUNTIME-GROUNDING-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_63_ambiguity_detector.py",
+    "reason": "Schema profiling, generic planning, clarification and grounding form one runtime grounding responsibility.",
+    "replacement": "tests/unit/runtime/test_generic_planner_and_grounding.py",
+    "requirements_preserved": [
+      "RUNTIME-GROUNDING-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_64_clarification_runtime.py",
+    "reason": "Schema profiling, generic planning, clarification and grounding form one runtime grounding responsibility.",
+    "replacement": "tests/unit/runtime/test_generic_planner_and_grounding.py",
+    "requirements_preserved": [
+      "RUNTIME-GROUNDING-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_120_schema_value_index.py",
+    "reason": "Schema profiling, generic planning, clarification and grounding form one runtime grounding responsibility.",
+    "replacement": "tests/unit/runtime/test_generic_planner_and_grounding.py",
+    "requirements_preserved": [
+      "RUNTIME-GROUNDING-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_121_filter_value_extractor.py",
+    "reason": "Schema profiling, generic planning, clarification and grounding form one runtime grounding responsibility.",
+    "replacement": "tests/unit/runtime/test_generic_planner_and_grounding.py",
+    "requirements_preserved": [
+      "RUNTIME-GROUNDING-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_122_filter_grounding.py",
+    "reason": "Schema profiling, generic planning, clarification and grounding form one runtime grounding responsibility.",
+    "replacement": "tests/unit/runtime/test_generic_planner_and_grounding.py",
+    "requirements_preserved": [
+      "RUNTIME-GROUNDING-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_123_projection_resolution.py",
+    "reason": "Schema profiling, generic planning, clarification and grounding form one runtime grounding responsibility.",
+    "replacement": "tests/unit/runtime/test_generic_planner_and_grounding.py",
+    "requirements_preserved": [
+      "RUNTIME-GROUNDING-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_124_dimension_resolution.py",
+    "reason": "Schema profiling, generic planning, clarification and grounding form one runtime grounding responsibility.",
+    "replacement": "tests/unit/runtime/test_generic_planner_and_grounding.py",
+    "requirements_preserved": [
+      "RUNTIME-GROUNDING-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_03_database_connectors.py",
+    "reason": "Database connector and connected-database regression tests are one integration lane.",
+    "replacement": "tests/integration/test_database_and_connected_regression.py",
+    "requirements_preserved": [
+      "DB-INTEGRATION-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_12_generic_postgres_schema_runtime.py",
+    "reason": "Database connector and connected-database regression tests are one integration lane.",
+    "replacement": "tests/integration/test_database_and_connected_regression.py",
+    "requirements_preserved": [
+      "DB-INTEGRATION-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_65_connected_db_regression_generator.py",
+    "reason": "Database connector and connected-database regression tests are one integration lane.",
+    "replacement": "tests/integration/test_database_and_connected_regression.py",
+    "requirements_preserved": [
+      "DB-INTEGRATION-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_66_connected_db_regression_runner.py",
+    "reason": "Database connector and connected-database regression tests are one integration lane.",
+    "replacement": "tests/integration/test_database_and_connected_regression.py",
+    "requirements_preserved": [
+      "DB-INTEGRATION-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_134_database_integration.py",
+    "reason": "Database connector and connected-database regression tests are one integration lane.",
+    "replacement": "tests/integration/test_database_and_connected_regression.py",
+    "requirements_preserved": [
+      "DB-INTEGRATION-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_02_sql_validation.py",
+    "reason": "SQL validation, read-only policy, attribution, cache identity and telemetry privacy are safety contracts.",
+    "replacement": "tests/unit/execution/test_sql_validation_and_safety.py",
+    "requirements_preserved": [
+      "SQL-SAFETY-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_105_sql_validation_policy.py",
+    "reason": "SQL validation, read-only policy, attribution, cache identity and telemetry privacy are safety contracts.",
+    "replacement": "tests/unit/execution/test_sql_validation_and_safety.py",
+    "requirements_preserved": [
+      "SQL-SAFETY-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_119_renderer_attribution.py",
+    "reason": "SQL validation, read-only policy, attribution, cache identity and telemetry privacy are safety contracts.",
+    "replacement": "tests/unit/execution/test_sql_validation_and_safety.py",
+    "requirements_preserved": [
+      "SQL-SAFETY-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_132_sqlite_prediction_cache.py",
+    "reason": "SQL validation, read-only policy, attribution, cache identity and telemetry privacy are safety contracts.",
+    "replacement": "tests/unit/execution/test_sql_validation_and_safety.py",
+    "requirements_preserved": [
+      "SQL-SAFETY-001"
+    ]
+  },
+  {
+    "action": "MERGED_AND_REMOVED_SOURCE_FILE",
+    "coverage_preserved": true,
+    "path": "tests/test_133_telemetry_privacy.py",
+    "reason": "SQL validation, read-only policy, attribution, cache identity and telemetry privacy are safety contracts.",
+    "replacement": "tests/unit/execution/test_sql_validation_and_safety.py",
+    "requirements_preserved": [
+      "SQL-SAFETY-001"
+    ]
+  }
+]

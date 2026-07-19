@@ -1,3 +1,8 @@
+"""
+Purpose: Protects execution unit behaviour.
+Required because: A failing test in this module identifies a production contract or migration expectation that must be reviewed before merge.
+"""
+
 from __future__ import annotations
 
 from scripts.audit_execution_pipeline_readiness import run_audit

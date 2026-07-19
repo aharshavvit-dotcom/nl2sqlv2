@@ -6,8 +6,10 @@ from typing import Any
 import torch
 from torch import nn
 
+from capabilities import ALL_CAPABILITIES, ALL_SAFETY_LABELS
 from neural_optimization.activation_factory import get_activation
 
+from .ir_dataset import COMPLEXITY_LABELS
 from .model import masked_logits
 from .pointer_network import SchemaPointerNetwork
 
@@ -167,6 +169,21 @@ class SchemaAwareOptionAIRModel(nn.Module):
         self.filter_operator_head = _maybe_ffn_head(head_dim, label_sizes["filter_operator"], merged)
         self.order_direction_head = _maybe_ffn_head(head_dim, label_sizes["order_direction"], merged)
         self.limit_bucket_head = _maybe_ffn_head(head_dim, label_sizes["limit_bucket"], merged)
+        self.complexity_head = _maybe_ffn_head(
+            head_dim,
+            int(merged.get("complexity_label_count", len(COMPLEXITY_LABELS))),
+            merged,
+        )
+        self.capability_head = _maybe_ffn_head(
+            head_dim,
+            int(merged.get("capability_label_count", len(ALL_CAPABILITIES))),
+            merged,
+        )
+        self.safety_head = _maybe_ffn_head(
+            head_dim,
+            int(merged.get("safety_label_count", len(ALL_SAFETY_LABELS))),
+            merged,
+        )
 
         self.table_pointer = SchemaPointerNetwork(head_dim, candidate_dim, candidate_hidden_dim)
         self.metric_pointer = SchemaPointerNetwork(head_dim, candidate_dim, candidate_hidden_dim)
@@ -323,6 +340,9 @@ class SchemaAwareOptionAIRModel(nn.Module):
             "filter_operator_logits": self.filter_operator_head(fused),
             "order_direction_logits": self.order_direction_head(fused),
             "limit_bucket_logits": self.limit_bucket_head(fused),
+            "complexity_logits": self.complexity_head(fused),
+            "capability_logits": self.capability_head(fused),
+            "safety_logits": self.safety_head(fused),
             "attention_weights": attention_weights.detach(),
             "top_schema_candidates": self._top_schema_candidates(attention_weights, schema_mask),
             "candidate_scores": {

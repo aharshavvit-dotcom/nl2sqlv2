@@ -10,6 +10,7 @@ import pytest
 from unittest.mock import patch
 from model_bundle.bundle_manifest import BundleManifest, save_manifest
 from model_bundle.bundle_loader import ModelBundleLoader
+from model_bundle.bundle_validator import ModelBundleValidator
 from inference.prediction_orchestrator import PredictionOrchestrator
 
 
@@ -104,3 +105,14 @@ def test_prediction_orchestrator_loads_routing_thresholds_from_bundle(mock_curre
     finally:
         os.environ["NL2SQL_ENV"] = "development"
 
+
+def test_bundle_validator_requires_full_retrain_seed_evidence(mock_current_bundle):
+    result = ModelBundleValidator().validate(
+        mock_current_bundle,
+        config={
+            "quality_gate": {"mode": "production"},
+            "seeds": {"require_full_retrain_for_production": True},
+        },
+    )
+
+    assert "multi_seed_full_retrain_required_but_missing_or_invalid" in result["blocking_issues"]

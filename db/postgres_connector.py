@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 import os
+import time
 
 import pandas as pd
 from sqlalchemy import create_engine, text
@@ -165,16 +166,18 @@ class PostgresConnector(DatabaseConnector):
 
         engine = create_engine(self.config.sqlalchemy_url(), future=True)
         try:
+            start = time.monotonic()
             with engine.connect() as conn:
                 conn.execute(text("SET TRANSACTION READ ONLY"))
                 conn.execute(text(f"SET LOCAL statement_timeout = {self.statement_timeout_ms}"))
-                df = pd.read_sql_query(text(sql), conn)
+                df = pd.read_sql_query(text(_outer_limited_select(sql, max_limit)), conn)
                 conn.rollback()  # ensure read-only transaction is closed cleanly
-            if limit and len(df) > limit:
-                df = df.head(limit)
             return {
                 "columns": list(df.columns),
                 "rows": df.values.tolist(),
+                "duration_ms": round((time.monotonic() - start) * 1000, 3),
+                "row_count": int(len(df)),
+                "max_rows": max_limit,
             }
         except Exception as exc:
             msg = str(exc)
@@ -186,3 +189,8 @@ class PostgresConnector(DatabaseConnector):
 
     def get_dialect(self) -> str:
         return "postgres"
+
+
+def _outer_limited_select(sql: str, max_rows: int) -> str:
+    stripped = sql.strip().rstrip(";")
+    return f"SELECT * FROM ({stripped}) AS nl2sql_limited_result LIMIT {max(1, int(max_rows or 1))}"

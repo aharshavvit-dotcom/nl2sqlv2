@@ -1,0 +1,1851 @@
+[
+  {
+    "path": ".github/workflows/ci.yml",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Runs automated validation outside the local development machine.",
+    "cleanup_action": "review_before_commit",
+    "evidence": [
+      "git_status=untracked",
+      "folder_owner=DevOps/Test",
+      "item_type=configuration",
+      "referenced_by_count=7",
+      "text_reference_count=7"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "docs/reports/enterprise_nl2sql_system_audit.md",
+    "classification": "ARCHIVE",
+    "reason": "Some reports preserve decision history, but run-specific reports should not be primary docs.",
+    "cleanup_action": "archive_or_move_after_review",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Documentation/MLOps",
+      "item_type=documentation",
+      "referenced_by_count=8",
+      "text_reference_count=8"
+    ],
+    "risk": "low"
+  },
+  {
+    "path": "docs/reports/phase1_capability_partial_supervision_report.md",
+    "classification": "ARCHIVE",
+    "reason": "Some reports preserve decision history, but run-specific reports should not be primary docs.",
+    "cleanup_action": "archive_or_move_after_review",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Documentation/MLOps",
+      "item_type=documentation",
+      "referenced_by_count=6",
+      "text_reference_count=6"
+    ],
+    "risk": "low"
+  },
+  {
+    "path": "docs/reports/query_ir_v2_boolean_evaluation_report.md",
+    "classification": "ARCHIVE",
+    "reason": "Some reports preserve decision history, but run-specific reports should not be primary docs.",
+    "cleanup_action": "archive_or_move_after_review",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Documentation/MLOps",
+      "item_type=documentation",
+      "referenced_by_count=5",
+      "text_reference_count=5"
+    ],
+    "risk": "low"
+  },
+  {
+    "path": "docs/reports/query_ir_v2_golden_parity_report.md",
+    "classification": "ARCHIVE",
+    "reason": "Some reports preserve decision history, but run-specific reports should not be primary docs.",
+    "cleanup_action": "archive_or_move_after_review",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Documentation/MLOps",
+      "item_type=documentation",
+      "referenced_by_count=5",
+      "text_reference_count=5"
+    ],
+    "risk": "low"
+  },
+  {
+    "path": "docs/reports/remaining_program_baseline.json",
+    "classification": "ARCHIVE",
+    "reason": "Some reports preserve decision history, but run-specific reports should not be primary docs.",
+    "cleanup_action": "archive_or_move_after_review",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Documentation/MLOps",
+      "item_type=json_data_or_report",
+      "referenced_by_count=3",
+      "text_reference_count=3"
+    ],
+    "risk": "low"
+  },
+  {
+    "path": "docs/reports/remaining_program_owner_matrix.md",
+    "classification": "ARCHIVE",
+    "reason": "Some reports preserve decision history, but run-specific reports should not be primary docs.",
+    "cleanup_action": "archive_or_move_after_review",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Documentation/MLOps",
+      "item_type=documentation",
+      "referenced_by_count=7",
+      "text_reference_count=7"
+    ],
+    "risk": "low"
+  },
+  {
+    "path": "docs/reports/run_20260712T044706_01b12c98_quality_gate_diagnosis.md",
+    "classification": "ARCHIVE",
+    "reason": "Some reports preserve decision history, but run-specific reports should not be primary docs.",
+    "cleanup_action": "archive_or_move_after_review",
+    "evidence": [
+      "git_status=untracked",
+      "folder_owner=Documentation/MLOps",
+      "item_type=documentation",
+      "referenced_by_count=7",
+      "text_reference_count=7"
+    ],
+    "risk": "low"
+  },
+  {
+    "path": "docs/reports/test_suite_cleanup_report.md",
+    "classification": "ARCHIVE",
+    "reason": "Some reports preserve decision history, but run-specific reports should not be primary docs.",
+    "cleanup_action": "archive_or_move_after_review",
+    "evidence": [
+      "git_status=untracked",
+      "folder_owner=Documentation/MLOps",
+      "item_type=documentation",
+      "referenced_by_count=1",
+      "text_reference_count=1"
+    ],
+    "risk": "low"
+  },
+  {
+    "path": "nl2sql_v1/README_LEGACY.md",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Migration and legacy tests still compare or validate older behavior.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Architecture/Test",
+      "item_type=documentation",
+      "referenced_by_count=4",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "nl2sql_v1/__init__.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Migration and legacy tests still compare or validate older behavior.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Architecture/Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=0",
+      "referenced_by_count=3",
+      "text_reference_count=3"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "nl2sql_v1/engine.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Migration and legacy tests still compare or validate older behavior.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Architecture/Test",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=2",
+      "public_functions=1",
+      "referenced_by_count=4",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "nl2sql_v1/executor.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Migration and legacy tests still compare or validate older behavior.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Architecture/Test",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=2",
+      "referenced_by_count=4",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "nl2sql_v1/feedback.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Migration and legacy tests still compare or validate older behavior.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Architecture/Test",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=5",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "nl2sql_v1/join_resolver.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Migration and legacy tests still compare or validate older behavior.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Architecture/Test",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=2",
+      "public_functions=1",
+      "referenced_by_count=5",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "nl2sql_v1/renderer.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Migration and legacy tests still compare or validate older behavior.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Architecture/Test",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=2",
+      "referenced_by_count=5",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "nl2sql_v1/retriever.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Migration and legacy tests still compare or validate older behavior.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Architecture/Test",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=2",
+      "public_functions=6",
+      "referenced_by_count=17",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "nl2sql_v1/schema.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Migration and legacy tests still compare or validate older behavior.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Architecture/Test",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=4",
+      "public_functions=6",
+      "referenced_by_count=49",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "nl2sql_v1/schema_matcher.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Migration and legacy tests still compare or validate older behavior.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Architecture/Test",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=6",
+      "public_functions=8",
+      "referenced_by_count=7",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "nl2sql_v1/slot_extractor.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Migration and legacy tests still compare or validate older behavior.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Architecture/Test",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=2",
+      "public_functions=2",
+      "referenced_by_count=10",
+      "text_reference_count=6"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "nl2sql_v1/template_adapter.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Migration and legacy tests still compare or validate older behavior.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Architecture/Test",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=2",
+      "public_functions=2",
+      "referenced_by_count=5",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "nl2sql_v1/validator.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Migration and legacy tests still compare or validate older behavior.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Architecture/Test",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=1",
+      "public_functions=1",
+      "referenced_by_count=5",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/README.md",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=untracked",
+      "folder_owner=Test",
+      "item_type=documentation",
+      "referenced_by_count=2",
+      "text_reference_count=2"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_active_pipeline.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=9",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_attention_model.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=3",
+      "referenced_by_count=7",
+      "text_reference_count=7"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_bird_adapter.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=3",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_build_ir_training_data.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=1",
+      "public_functions=2",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_candidate_builder.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_canonical_runtime_only.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=2",
+      "referenced_by_count=7",
+      "text_reference_count=7"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_central_sql_validator.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=3",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_confidence_breakdown.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=4",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_confidence_caps.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=4",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_corpus_builder.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=1",
+      "public_functions=2",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_dataset_models.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=2",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_date_filter_runtime.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_download_paths.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=2",
+      "referenced_by_count=7",
+      "text_reference_count=7"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_evaluate_retriever.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=7",
+      "text_reference_count=7"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_evaluate_runtime.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_hard_negative_builder.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_hybrid_benchmark.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=2",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_hybrid_router.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=1",
+      "public_functions=4",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_hybrid_router_calibration.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=3",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_inference_runtime.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=1",
+      "public_functions=11",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_ir_conversion_golden.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=7",
+      "text_reference_count=7"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_ir_label_encoder.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_ir_repair.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=3",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_ir_roundtrip_validator.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_ir_to_sql_renderer.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_ir_training_dataset.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=7",
+      "text_reference_count=7"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_ir_validator.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=2",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_main_flow.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=11",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_neural_ir_dataset.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=2",
+      "referenced_by_count=10",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_neural_ir_tokenizer.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_neural_ir_vocab.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_no_active_legacy_runtime_usage.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=7",
+      "text_reference_count=7"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_option_a_candidate_masks.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_option_a_confidence_calibrator.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=2",
+      "referenced_by_count=7",
+      "text_reference_count=7"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_option_a_curriculum_training.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_option_a_error_analysis.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_option_a_model_forward.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=7",
+      "text_reference_count=7"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_option_a_predictor.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_option_a_to_ir.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_option_a_training_smoke.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_option_a_v2_evaluator.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_option_a_v2_training_smoke.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_option_c_to_ir.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_pointer_network.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=2",
+      "referenced_by_count=7",
+      "text_reference_count=7"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_prediction_orchestrator.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_product_revenue_semantics.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_query_ir_models.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_retrieval_nl2sql_model.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_runtime_end_to_end.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_runtime_golden_cases.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=5",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_safe_preview_sql.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=2",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_schema_linearizer.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_schema_linker.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_simple_filter_runtime.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=2",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_spider_adapter.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_sql_feature_extractor.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=2",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_sql_pattern_classifier.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=6",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_sql_to_ir_converter.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=9",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_sql_to_ir_rules.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=3",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_sql_validator.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_template_selector_filters.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_train_retriever_from_datasets.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=1",
+      "public_functions=3",
+      "referenced_by_count=10",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_validate_ir_corpus.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=1",
+      "public_functions=2",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_wikisql_adapter.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=1",
+      "referenced_by_count=9",
+      "text_reference_count=9"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/legacy/test_yaml_synonym_usage.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "They guard migrations and older APIs that may still be referenced.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=Test",
+      "item_type=python_source",
+      "module_docstring=present",
+      "public_classes=0",
+      "public_functions=3",
+      "referenced_by_count=7",
+      "text_reference_count=7"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "tests/test_catalog.yaml",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Cleanup is safe only when behavior remains covered.",
+    "cleanup_action": "review_before_commit",
+    "evidence": [
+      "git_status=untracked",
+      "folder_owner=Test",
+      "item_type=configuration",
+      "referenced_by_count=4",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "training_ir/__init__.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Some ablation and legacy tests still exercise these paths.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=ML",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=0",
+      "referenced_by_count=4",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "training_ir/analyze_ir_dataset_quality.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Some ablation and legacy tests still exercise these paths.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=ML",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=2",
+      "referenced_by_count=4",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "training_ir/analyze_option_a_errors.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Some ablation and legacy tests still exercise these paths.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=ML",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=3",
+      "referenced_by_count=4",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "training_ir/benchmark_hybrid_system.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Some ablation and legacy tests still exercise these paths.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=ML",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=3",
+      "referenced_by_count=6",
+      "text_reference_count=5"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "training_ir/build_hard_negative_data.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Some ablation and legacy tests still exercise these paths.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=ML",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=2",
+      "referenced_by_count=5",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "training_ir/build_ir_training_data.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Some ablation and legacy tests still exercise these paths.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=ML",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=1",
+      "public_functions=6",
+      "referenced_by_count=8",
+      "text_reference_count=5"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "training_ir/calibrate_hybrid_router.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Some ablation and legacy tests still exercise these paths.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=ML",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=3",
+      "referenced_by_count=8",
+      "text_reference_count=8"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "training_ir/calibrate_option_a_confidence.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Some ablation and legacy tests still exercise these paths.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=ML",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=3",
+      "referenced_by_count=8",
+      "text_reference_count=8"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "training_ir/evaluate_ir_conversion.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Some ablation and legacy tests still exercise these paths.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=ML",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=5",
+      "referenced_by_count=4",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "training_ir/evaluate_option_a_model.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Some ablation and legacy tests still exercise these paths.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=ML",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=4",
+      "referenced_by_count=5",
+      "text_reference_count=5"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "training_ir/evaluate_option_a_v2_model.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Some ablation and legacy tests still exercise these paths.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=ML",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=4",
+      "referenced_by_count=6",
+      "text_reference_count=5"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "training_ir/predict_with_option_a.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Some ablation and legacy tests still exercise these paths.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=ML",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=3",
+      "referenced_by_count=4",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "training_ir/repair_option_a_predictions.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Some ablation and legacy tests still exercise these paths.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=ML",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=3",
+      "referenced_by_count=4",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "training_ir/run_option_a_ablation.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Some ablation and legacy tests still exercise these paths.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=ML",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=2",
+      "referenced_by_count=4",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "training_ir/train_option_a_curriculum.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Some ablation and legacy tests still exercise these paths.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=ML",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=3",
+      "referenced_by_count=5",
+      "text_reference_count=4"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "training_ir/train_option_a_model.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Some ablation and legacy tests still exercise these paths.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=ML",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=3",
+      "referenced_by_count=7",
+      "text_reference_count=5"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "training_ir/train_option_a_v2_model.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Some ablation and legacy tests still exercise these paths.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=ML",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=3",
+      "referenced_by_count=8",
+      "text_reference_count=5"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "training_ir/validate_ir_corpus.py",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Some ablation and legacy tests still exercise these paths.",
+    "cleanup_action": "retain_pending_consolidation",
+    "evidence": [
+      "git_status=tracked",
+      "folder_owner=ML",
+      "item_type=python_source",
+      "module_docstring=missing",
+      "public_classes=0",
+      "public_functions=6",
+      "referenced_by_count=7",
+      "text_reference_count=5"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "artifacts/audit/",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Captures reproducibility evidence and local runtime bundles.",
+    "cleanup_action": "retain_pending_artifact_review",
+    "evidence": [
+      "git_status=ignored",
+      "cleanup_action=retain_pending_artifact_review"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "artifacts/model_bundle/",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Captures reproducibility evidence and local runtime bundles.",
+    "cleanup_action": "retain_pending_artifact_review",
+    "evidence": [
+      "git_status=ignored",
+      "cleanup_action=retain_pending_artifact_review"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "data/processed/",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Runtime synonym defaults and immutable split membership are required for reproducible training.",
+    "cleanup_action": "retain_pending_dataset_review",
+    "evidence": [
+      "git_status=ignored",
+      "cleanup_action=retain_pending_dataset_review"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "data/processed_smoke_bird_full/",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Runtime synonym defaults and immutable split membership are required for reproducible training.",
+    "cleanup_action": "retain_pending_dataset_review",
+    "evidence": [
+      "git_status=ignored",
+      "cleanup_action=retain_pending_dataset_review"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "data/processed_smoke_bird_mini/",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Runtime synonym defaults and immutable split membership are required for reproducible training.",
+    "cleanup_action": "retain_pending_dataset_review",
+    "evidence": [
+      "git_status=ignored",
+      "cleanup_action=retain_pending_dataset_review"
+    ],
+    "risk": "medium"
+  },
+  {
+    "path": "data/raw/",
+    "classification": "REVIEW_REQUIRED",
+    "reason": "Runtime synonym defaults and immutable split membership are required for reproducible training.",
+    "cleanup_action": "retain_pending_dataset_review",
+    "evidence": [
+      "git_status=ignored",
+      "cleanup_action=retain_pending_dataset_review"
+    ],
+    "risk": "medium"
+  }
+]

@@ -100,7 +100,10 @@ def verify_datasets(config: dict[str, Any]) -> bool:
         return True
     except Exception as exc:
         print(f"Warning: Could not verify datasets: {exc}")
-        return True
+        if allow_missing_datasets(config):
+            print("Warning: Continuing because this run explicitly allows missing/smoke datasets.")
+            return True
+        return False
 
 
 def allow_missing_datasets(config: dict[str, Any]) -> bool:
@@ -349,9 +352,21 @@ def main() -> int:
     failed = sum(1 for s in report.get("steps", []) if s.get("status") == "failed")
     skipped = sum(1 for s in report.get("steps", []) if s.get("status") == "skipped")
 
-    # 7b. Multi-seed variance analysis (runs only when enabled and primary run succeeded)
+    # 7b. Backward-compatible seed variance fallback. The canonical full
+    # pipeline runs this as the ``multi_seed_variance`` step before quality
+    # gates and bundle construction so the report can govern promotion.
     seeds_config = config.get("seeds", {})
-    if seeds_config.get("enabled", False) and not args.dry_run and status == "completed":
+    completed_step_names = {
+        str(s.get("step"))
+        for s in report.get("steps", [])
+        if isinstance(s, dict) and s.get("status") == "completed"
+    }
+    if (
+        seeds_config.get("enabled", False)
+        and "multi_seed_variance" not in completed_step_names
+        and not args.dry_run
+        and status == "completed"
+    ):
         seed_values = seeds_config.get("values", [42])
         tracked_metrics = seeds_config.get("metrics", [
             "intent_macro_f1", "base_table_accuracy", "sql_validation_rate",
@@ -401,16 +416,7 @@ def _run_multi_seed_variance(
     tracked_metrics: list[str],
     report_output: Path,
 ) -> dict[str, Any] | None:
-    """Run multi-seed evaluation-only stability analysis.
-
-    For each configured seed:
-      1. Sets deterministic random seed (Python, NumPy, torch)
-      2. Re-runs evaluation step only (not full training) via StepRunner
-      3. Collects per-seed evaluation metrics
-
-    This is evaluation-only stability, NOT true training variance.
-    Full per-seed re-training is a future enhancement.
-    """
+    """Run seed-based evaluation stability or full retraining variance analysis."""
     import copy
     import random
     import statistics
@@ -420,8 +426,23 @@ def _run_multi_seed_variance(
     # Extract primary run's metrics from evaluation step result
     primary_metrics = _extract_eval_metrics(primary_report, tracked_metrics)
     if not primary_metrics:
-        print("  [Note] Could not extract evaluation metrics from primary run — skipping variance analysis.")
+        print("  [Note] Could not extract evaluation metrics from primary run; skipping variance analysis.")
         return None
+
+    seeds_config = config.get("seeds") or {}
+    requested_mode = str(seeds_config.get("mode", "evaluation_only_stability")).lower()
+    full_retrain_mode = requested_mode in {
+        "full_retrain",
+        "full_retrain_multi_seed",
+        "training_variance",
+    }
+    run_mode = "full_retrain_multi_seed" if full_retrain_mode else "evaluation_only_stability"
+    quality_gate_mode = str((config.get("quality_gate") or {}).get("mode") or "baseline").lower()
+    require_full_retrain = bool(seeds_config.get("require_full_retrain_for_production", False))
+    if quality_gate_mode in {"production", "release"}:
+        require_full_retrain = bool(
+            seeds_config.get("require_full_retrain_for_production", require_full_retrain)
+        )
 
     # Collect per-seed metrics. Primary run counts as seed 0 (the pipeline seed).
     per_seed_metrics: dict[str, list[float]] = {metric: [] for metric in tracked_metrics}
@@ -433,7 +454,7 @@ def _run_multi_seed_variance(
     resolved_artifacts = dict(resolved.get("artifacts") or {})
     model_source, model_bundle_dir = _seed_model_source(resolved_artifacts)
     seed_runs: list[dict[str, Any]] = [{
-        "mode": "evaluation_only_stability",
+        "mode": run_mode,
         "seed": primary_seed,
         "status": "completed",
         "input_model_source": model_source,
@@ -443,14 +464,15 @@ def _run_multi_seed_variance(
         "is_primary_pipeline_run": True,
     }]
 
-    # Run evaluation-only re-runs for additional seeds
+    # Run additional seeds either by evaluation-only reruns or full neural retraining.
     additional_seeds = [s for s in seed_values if s != primary_seed]
     if additional_seeds:
         try:
             from orchestration.pipeline_config import PipelineConfig
             from orchestration.step_runner import StepRunner
             for seed_val in additional_seeds:
-                print(f"  Re-evaluating with seed {seed_val}...")
+                action = "Retraining and evaluating" if full_retrain_mode else "Re-evaluating"
+                print(f"  {action} with seed {seed_val}...")
                 # Set deterministic seeds
                 random.seed(seed_val)
                 np.random.seed(seed_val)
@@ -464,34 +486,54 @@ def _run_multi_seed_variance(
                 child_config.setdefault("pipeline", {})["seed"] = seed_val
                 if "seeds" in child_config:
                     child_config["seeds"]["enabled"] = False  # Anti-recursion
-                child_resolved = config_to_pipeline_config(child_config, ["evaluate_generic_models"])
+                child_steps = ["train_neural_ir", "evaluate_generic_models"] if full_retrain_mode else ["evaluate_generic_models"]
+                child_resolved = config_to_pipeline_config(child_config, child_steps)
                 child_artifacts = dict(child_resolved.get("artifacts") or {})
-                seed_eval_dir = Path(resolved_artifacts.get("evaluation_dir", ROOT / "artifacts/evaluation")) / "seeds" / f"seed_{seed_val}"
+                seed_root = Path(resolved_artifacts.get("evaluation_dir", ROOT / "artifacts/evaluation")) / "seeds" / f"seed_{seed_val}"
+                seed_eval_dir = seed_root / "evaluation" if full_retrain_mode else seed_root
                 child_artifacts["evaluation_dir"] = str(seed_eval_dir)
+                if full_retrain_mode:
+                    child_artifacts["neural_model_dir"] = str(seed_root / "neural_ir")
                 child_source, child_bundle_dir = _seed_model_source(child_artifacts)
                 # Build proper PipelineConfig for StepRunner
-                child_training = {**(child_resolved.get("training") or {}), "_integrated_config": child_config}
+                child_run_id = f"{config.get('_pipeline_run_id', 'seed_run')}_seed_{seed_val}"
+                child_training = {
+                    **(child_resolved.get("training") or {}),
+                    "_integrated_config": child_config,
+                    "pipeline_run_id": child_run_id,
+                }
                 child_pipeline_config = PipelineConfig(
-                    pipeline_name=f"seed_{seed_val}_eval",
+                    pipeline_name=f"seed_{seed_val}_{'train_eval' if full_retrain_mode else 'eval'}",
+                    pipeline_run_id=child_run_id,
                     seed=seed_val,
                     datasets=child_resolved.get("datasets", {}),
                     training=child_training,
                     artifacts=child_artifacts,
-                    steps=["evaluate_generic_models"],
+                    steps=child_steps,
                     smoke=bool(child_resolved.get("smoke", False)),
                     integrated_config=child_config,
                 )
                 runner = StepRunner()
                 seed_summary: dict[str, Any] = {
-                    "mode": "evaluation_only_stability",
+                    "mode": run_mode,
                     "seed": seed_val,
-                    "input_model_source": child_source,
+                    "input_model_source": "seed_retrained_artifacts" if full_retrain_mode else child_source,
                     "model_bundle_dir": child_bundle_dir,
                     "evaluation_output_dir": str(seed_eval_dir),
-                    "used_primary_model_artifacts": True,
+                    "used_primary_model_artifacts": not full_retrain_mode,
                     "is_primary_pipeline_run": False,
                 }
                 try:
+                    if full_retrain_mode:
+                        train_result = runner.run_step("train_neural_ir", child_pipeline_config)
+                        seed_summary["training_status"] = train_result.get("status")
+                        seed_summary["train_artifact_dir"] = child_artifacts["neural_model_dir"]
+                        if train_result.get("status") != "completed":
+                            print(f"    Seed {seed_val} training did not complete: {train_result.get('status')}")
+                            seed_summary["status"] = train_result.get("status", "unknown")
+                            seed_summary["error"] = train_result.get("error")
+                            seed_runs.append(seed_summary)
+                            continue
                     result = runner.run_step("evaluate_generic_models", child_pipeline_config)
                     if result.get("status") == "completed":
                         child_summary = result.get("summary") or {}
@@ -515,7 +557,7 @@ def _run_multi_seed_variance(
                     seed_summary["error"] = str(exc)
                 seed_runs.append(seed_summary)
         except ImportError:
-            print("  [Note] StepRunner not available — falling back to single-seed baseline")
+            print("  [Note] StepRunner not available; falling back to single-seed baseline")
 
     metrics_report: dict[str, dict[str, Any]] = {}
     high_variance: list[str] = []
@@ -545,9 +587,29 @@ def _run_multi_seed_variance(
     seed_runs_failed = sum(1 for run in seed_runs if run.get("status") == "failed")
     seed_runs_requested = len(seed_values)
     has_multi_seed = seed_runs_completed >= 2
+    valid_training_variance = full_retrain_mode and has_multi_seed and seed_runs_failed == 0
+    valid_evaluation_stability = (not full_retrain_mode) and has_multi_seed
+    blocking_failures: list[str] = []
+    if require_full_retrain and not valid_training_variance:
+        blocking_failures.append("multi_seed_full_retrain_required_but_unavailable")
+    if bool(seeds_config.get("fail_on_high_variance", False)) and high_variance:
+        blocking_failures.append("multi_seed_high_variance_detected")
+    report_mode = run_mode if has_multi_seed else "single_seed_baseline"
+    note = (
+        "Full retrain multi-seed analysis. Each non-primary seed trains isolated neural artifacts "
+        "before evaluation; this report is valid for training-variance governance."
+        if valid_training_variance
+        else (
+            "Evaluation-only stability analysis across seeds. This measures prediction stability, "
+            "not training variance."
+            if valid_evaluation_stability
+            else "Single-seed baseline. Configure at least two successful seeds for variance analysis."
+        )
+    )
     variance_report = {
         "enabled": True,
-        "mode": "evaluation_only_stability" if has_multi_seed else "single_seed_baseline",
+        "mode": report_mode,
+        "requested_mode": requested_mode,
         "primary_seed_included": True,
         "seeds_requested": seed_values,
         "seeds_evaluated": seed_runs_completed,  # Backward compat
@@ -556,30 +618,30 @@ def _run_multi_seed_variance(
         "seed_runs_failed": seed_runs_failed,
         # Clear separation: evaluation stability vs true training variance
         "evaluation_stability_available": has_multi_seed,
-        "true_training_variance_available": False,
-        "is_valid_for_evaluation_stability": has_multi_seed,
-        "is_valid_for_variance_governance": False,  # Evaluation-only, never true for governance
-        "is_valid_for_training_variance_governance": False,  # Requires full re-training per seed
+        "true_training_variance_available": valid_training_variance,
+        "is_valid_for_evaluation_stability": valid_evaluation_stability or valid_training_variance,
+        "is_valid_for_variance_governance": valid_training_variance,
+        "is_valid_for_training_variance_governance": valid_training_variance,
+        "full_retrain_required_for_production": require_full_retrain,
         "stochastic_inference_enabled": bool((config.get("seeds") or {}).get("stochastic_inference_enabled", False)),
         "stochastic_components": list((config.get("seeds") or {}).get("stochastic_components", [])),
         "evaluation_stability_interpretation": (
-            "measures_inference_stability_under_stochastic_components"
-            if bool((config.get("seeds") or {}).get("stochastic_inference_enabled", False))
-            else "deterministic_path_expected_zero_variance"
+            "full_retrain_training_variance"
+            if valid_training_variance
+            else (
+                "measures_inference_stability_under_stochastic_components"
+                if bool((config.get("seeds") or {}).get("stochastic_inference_enabled", False))
+                else "deterministic_path_expected_zero_variance"
+            )
         ),
-        "note": (
-            "Evaluation-only stability analysis across seeds. "
-            "This measures prediction stability, not training variance. "
-            "Full per-seed re-training is a future enhancement."
-        ) if has_multi_seed else (
-            "Single-seed baseline. Enable multi-seed and run full pipeline for stability analysis."
-        ),
+        "note": note,
         "seed_runs": seed_runs,
         "metrics": metrics_report,
         "metric_std": metric_std_flat,  # Flat dict for backward compat with ModelSelector
         "metric_sample_counts": metric_sample_counts,
         "high_variance_metrics": high_variance,
-        "passed": len(high_variance) == 0,
+        "blocking_failures": blocking_failures,
+        "passed": not blocking_failures,
     }
     report_output.parent.mkdir(parents=True, exist_ok=True)
     report_output.write_text(

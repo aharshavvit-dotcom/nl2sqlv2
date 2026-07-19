@@ -179,6 +179,31 @@ class StepRunner:
             outputs=[str(Path(_artifacts(config)["evaluation_dir"]) / "generic_model_evaluation_report.json")],
         )
 
+    def _contract_run_route_diagnostics(self, config: PipelineConfig) -> StepContract:
+        integrated = config.training.get("_integrated_config") or {}
+        evaluation = integrated.get("evaluation") or {}
+        output_dir = Path(_artifacts(config)["evaluation_dir"]) / "runs" / (config.pipeline_run_id or "unknown_run")
+        return StepContract(
+            name="run_route_diagnostics",
+            required=bool(evaluation.get("route_diagnostics_required", False)),
+            inputs=[
+                str(ROOT / "data/processed/generic_ir_test.jsonl"),
+                str(Path(_artifacts(config)["retrieval_model_dir"])),
+            ],
+            outputs=[str(output_dir / "route_diagnostics_summary.json")],
+        )
+
+    def _contract_multi_seed_variance(self, config: PipelineConfig) -> StepContract:
+        integrated = config.training.get("_integrated_config") or {}
+        seeds = integrated.get("seeds") or {}
+        report_output = ROOT / str(seeds.get("report_output", "artifacts/evaluation/multi_seed_variance_report.json"))
+        return StepContract(
+            name="multi_seed_variance",
+            required=True,
+            inputs=[str(Path(_artifacts(config)["evaluation_dir"]) / "generic_model_evaluation_report.json")],
+            outputs=[str(report_output)],
+        )
+
     def _contract_run_quality_gate(self, config: PipelineConfig) -> StepContract:
         required = (config.training.get("_integrated_config") or {}).get("quality_gate", {}).get("required", False)
         return StepContract(
@@ -267,8 +292,13 @@ class StepRunner:
             seed=config.seed,
             train_ratio=float(dataset_cfg.get("train_ratio", 0.8)),
             validation_ratio=float(dataset_cfg.get("validation_ratio", 0.1)),
+            model_selection_ratio=float(dataset_cfg.get("model_selection_ratio", 0.0)),
             test_ratio=float(dataset_cfg.get("test_ratio", 0.1)),
             unseen_db_test_ratio=float(dataset_cfg.get("unseen_db_test_ratio", 0.15)),
+            split_version=str(dataset_cfg.get("split_version", "semantic_v1")),
+            force_create_new_version=bool(dataset_cfg.get("force_create_new_version", False)),
+            parent_split_version=dataset_cfg.get("parent_split_version"),
+            split_regeneration_reason=dataset_cfg.get("split_regeneration_reason"),
             include_unsupported=True,
             schema_renaming=(integrated.get("augmentation") or {}).get("schema_renaming") or {},
             pipeline_run_id=pipeline_run_id,
@@ -680,6 +710,78 @@ class StepRunner:
         )
         report = evaluate_generic_models(args)
         return {"status": "completed", "summary": report.get("summary", {})}
+
+    def _run_run_route_diagnostics(self, config: PipelineConfig) -> dict[str, Any]:
+        from evaluation.route_diagnostics import run_diagnostics
+
+        artifacts = _artifacts(config)
+        integrated = config.training.get("_integrated_config") or {}
+        evaluation = integrated.get("evaluation") or {}
+        output_dir = Path(artifacts["evaluation_dir"]) / "runs" / (config.pipeline_run_id or "unknown_run")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        limit = int(evaluation.get("route_diagnostics_limit", 0) or 0) or None
+        run_diagnostics(
+            dataset_path=ROOT / "data/processed/generic_ir_test.jsonl",
+            artifact_dir=Path(artifacts["retrieval_model_dir"]),
+            neural_model_dir=Path(artifacts["neural_model_dir"]),
+            output_dir=output_dir,
+            pipeline_run_id=config.pipeline_run_id or "",
+            limit=limit,
+        )
+        summary_path = output_dir / "route_diagnostics_summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else {}
+        return {
+            "status": "completed",
+            "summary": {
+                "route_diagnostics_summary": str(summary_path),
+                "total_cases": summary.get("total_cases", summary.get("summary", {}).get("total_cases")),
+                "router_regret_rate": (summary.get("summary") or {}).get("router_regret_rate"),
+                "route_distribution": (summary.get("summary") or {}).get("route_distribution"),
+            },
+        }
+
+    def _run_multi_seed_variance(self, config: PipelineConfig) -> dict[str, Any]:
+        from training.train_model import _run_multi_seed_variance
+
+        artifacts = _artifacts(config)
+        integrated = config.training.get("_integrated_config") or {}
+        seeds = integrated.get("seeds") or {}
+        tracked_metrics = list(seeds.get("metrics") or [
+            "intent_macro_f1",
+            "base_table_accuracy",
+            "sql_validation_rate",
+            "query_ir_validity_rate",
+            "execution_match_rate",
+        ])
+        seed_values = [int(value) for value in (seeds.get("values") or [config.seed])]
+        evaluation_report_path = Path(artifacts["evaluation_dir"]) / "generic_model_evaluation_report.json"
+        evaluation_report = json.loads(evaluation_report_path.read_text(encoding="utf-8"))
+        primary_summary = (
+            evaluation_report.get("summary")
+            or (evaluation_report.get("test_performance") or {}).get("summary")
+            or {}
+        )
+        primary_report = {
+            "steps": [{
+                "step": "evaluate_generic_models",
+                "status": "completed",
+                "summary": primary_summary,
+            }]
+        }
+        report_output = ROOT / str(seeds.get("report_output", "artifacts/evaluation/multi_seed_variance_report.json"))
+        report = _run_multi_seed_variance(
+            integrated,
+            primary_report,
+            seed_values,
+            tracked_metrics,
+            report_output,
+        )
+        if report is None:
+            return {"status": "failed", "error": "multi_seed_primary_metrics_unavailable"}
+        blocking = list(report.get("blocking_failures") or [])
+        if blocking:
+            return {"status": "failed", "error": "; ".join(blocking), "summary": report}
+        return {"status": "completed", "summary": report}
 
     def _run_select_best_model(self, config: PipelineConfig) -> dict[str, Any]:
         from datetime import datetime, timezone

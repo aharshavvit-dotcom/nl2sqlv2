@@ -69,20 +69,21 @@ def check_readme_naming() -> None:
 
 def check_consolidated_tests() -> None:
     """Consolidated test files exist."""
-    test_dir = ROOT / "tests"
     expected = [
-        "test_01_core_ir.py",
-        "test_02_sql_validation.py",
-        "test_03_database_connectors.py",
-        "test_04_retrieval_runtime.py",
-        "test_05_neural_runtime.py",
-        "test_06_adaptive_router.py",
-        "test_07_training_data_pipeline.py",
-        "test_08_streamlit_app_helpers.py",
-        "test_09_end_to_end_smoke.py",
+        "tests/test_01_core_ir.py",
+        "tests/unit/execution/test_sql_validation_and_safety.py",
+        "tests/integration/test_database_and_connected_regression.py",
+        "tests/unit/retrieval/test_retrieval_pipeline.py",
+        "tests/test_05_neural_runtime.py",
+        "tests/test_06_adaptive_router.py",
+        "tests/test_07_training_data_pipeline.py",
+        "tests/test_08_streamlit_app_helpers.py",
+        "tests/test_09_end_to_end_smoke.py",
+        "docs/TESTING.md",
+        "tests/test_catalog.yaml",
     ]
-    for name in expected:
-        check(f"Test: {name} exists", (test_dir / name).exists())
+    for path in expected:
+        check(f"Test/doc: {path} exists", (ROOT / path).exists())
 
 
 def check_db_connector_layer() -> None:
@@ -257,7 +258,7 @@ def check_neural_config_uniformity() -> None:
             effective = resolve_effective_neural_config(payload, root=ROOT)
             if (effective["epochs"], effective["batch_size"]) != (10, 8):
                 errors.append(f"{name}: {effective['epochs']}/{effective['batch_size']}")
-            if (effective["save_best_metric"], effective["save_best_mode"]) != ("support_weighted_semantic_score", "max"):
+            if (effective["save_best_metric"], effective["save_best_mode"]) != ("loss", "min"):
                 errors.append(f"{name}: invalid checkpoint policy")
         except Exception as exc:
             errors.append(f"{name}: {exc}")

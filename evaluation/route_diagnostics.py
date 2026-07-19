@@ -6,6 +6,7 @@ Implements Stage 2 of Semantic-First Production Hardening.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -480,6 +481,34 @@ def run_diagnostics(
         if stage:
             stages[stage] = stages.get(stage, 0) + 1
 
+    route_distribution = dict(Counter(c.selected_route for c in diagnostic_cases))
+    route_percentage = {
+        route: round(count / total, 4) if total else 0.0
+        for route, count in sorted(route_distribution.items())
+    }
+    unique_wins: dict[str, int] = {}
+    unique_regressions: dict[str, int] = {}
+    route_names = ["direct_planner", "retrieval", "neural"]
+    for route_name in route_names:
+        wins = 0
+        regressions = 0
+        for c in diagnostic_cases:
+            route_result = c.route_results.get(route_name)
+            if route_result is None or not route_result.available:
+                continue
+            other_results = [
+                result for name, result in c.route_results.items()
+                if name in route_names and name != route_name and result.available
+            ]
+            if route_result.semantic_pass and not any(result.semantic_pass for result in other_results):
+                wins += 1
+            if c.selected_route == route_name and not route_result.semantic_pass and any(
+                result.semantic_pass for result in other_results
+            ):
+                regressions += 1
+        unique_wins[route_name] = wins
+        unique_regressions[route_name] = regressions
+
     # Accumulate slot-level matches per route
     slots_acc = {}
     for rname in ["direct_planner", "retrieval", "neural"]:
@@ -508,6 +537,10 @@ def run_diagnostics(
         "router_regret_rate": round(regrets / total, 4) if total else 0.0,
         "neither_route_correct_rate": round(neither / total, 4) if total else 0.0,
         "failure_stages_breakdown": stages,
+        "route_distribution": route_distribution,
+        "route_percentage": route_percentage,
+        "unique_wins_by_route": unique_wins,
+        "unique_regressions_by_selected_route": unique_regressions,
         "per_slot_accuracy_by_route": slots_acc,
     }
 

@@ -479,11 +479,19 @@ left, right = st.columns([0.55, 0.45], vertical_alignment="top")
 
 with left:
     question = st.text_input("Ask a question", value="Top 5 customers by sales")
-    use_neural_fallback = st.checkbox(
-        "Use Neural fallback when retrieval confidence is low",
-        value=_neural_ir_ready(),
-        disabled=not _neural_ir_ready(),
+    show_runtime_route_controls = bool(
+        ENABLE_DEV_TRAINING_UI
+        or allow_candidate_debug
+        or ((bundle_info or {}).get("loaded_for_debug"))
     )
+    if show_runtime_route_controls:
+        use_neural_fallback = st.checkbox(
+            "Use Neural fallback when retrieval confidence is low",
+            value=_neural_ir_ready(),
+            disabled=not _neural_ir_ready(),
+        )
+    else:
+        use_neural_fallback = None
     generate = st.button("Generate SQL", type="primary")
 
 with right:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,7 @@ from nl2sql_v1.schema import SchemaGraph
 
 
 ROOT = Path(__file__).resolve().parents[1]
+logger = logging.getLogger(__name__)
 
 DEFAULT_ARTIFACT_DIR = ROOT / "artifacts" / "work" / "retrieval_ir"
 DEFAULT_SAMPLE_MODEL = ROOT / "models" / "tfidf_retriever.joblib"
@@ -85,6 +88,7 @@ class RetrievalNL2SQLModel:
             metadata["retrieval_backend"] = "local_rag"
             if bundle_context:
                 metadata["model_bundle"] = bundle_manifest
+                metadata["model_bundle_dir"] = bundle_context.get("bundle_dir")
                 metadata["calibration_loaded"] = bool(confidence_calibration_path and Path(confidence_calibration_path).exists())
             return cls(
                 retriever=RAGRetrieverAdapter.load(artifact_path),
@@ -105,6 +109,7 @@ class RetrievalNL2SQLModel:
             metadata = cls._load_metadata(artifact_path)
             if bundle_context:
                 metadata["model_bundle"] = bundle_manifest
+                metadata["model_bundle_dir"] = bundle_context.get("bundle_dir")
                 metadata["calibration_loaded"] = bool(confidence_calibration_path and Path(confidence_calibration_path).exists())
             return cls(
                 retriever=TfidfRetriever.load(artifact_path),
@@ -214,6 +219,7 @@ class RetrievalNL2SQLModel:
 
         bundle_meta = self.metadata.get("model_bundle") or {}
         routing_policy = bundle_meta.get("routing_policy") or {}
+        bundle_identity = self._cache_bundle_identity(routing_policy)
 
         cached_data = None
         schema_dict = schema.describe() if hasattr(schema, "describe") else {}
@@ -230,6 +236,7 @@ class RetrievalNL2SQLModel:
                 model_checkpoint_path=self.neural_ir_model_dir,
                 routing_policy=routing_policy,
                 bypass_cache=bypass_cache,
+                bundle_identity=bundle_identity,
             )
 
         if cached_data is not None:
@@ -279,19 +286,48 @@ class RetrievalNL2SQLModel:
                 question=question,
                 schema=schema_dict,
                 model_checkpoint_path=self.neural_ir_model_dir,
-                prediction=result.dict(),
+                prediction=result.model_dump(),
                 routing_policy=routing_policy,
+                bundle_identity=bundle_identity,
             )
 
         # Log telemetry if permitted by diagnostic context
         if diagnostic_context is None or diagnostic_context.telemetry_namespace != "disabled":
             try:
                 from inference.telemetry_logger import TelemetryLogger
-                TelemetryLogger().log_prediction(question, result.dict())
-            except Exception:
-                pass
+                TelemetryLogger().log_prediction(question, result.model_dump())
+            except Exception as exc:
+                result.debug["telemetry_logging_failed"] = True
+                result.debug["telemetry_logging_error_type"] = type(exc).__name__
+                logger.warning("Prediction telemetry logging failed: %s", type(exc).__name__)
 
         return result
+
+    def _cache_bundle_identity(self, routing_policy: dict[str, Any] | None = None):
+        from inference.prediction_cache import BundleIdentity
+
+        bundle_meta = self.metadata.get("model_bundle") or {}
+        bundle_dir = _resolve_bundle_dir(self.artifact_dir, self.metadata)
+        paths = bundle_meta.get("paths") or {}
+        neural_dir = Path(self.neural_ir_model_dir)
+        retrieval_dir = Path(self.artifact_dir) if self.artifact_dir else None
+        if bundle_dir is not None:
+            neural_dir = bundle_dir / paths.get("neural_ir", "neural_ir/")
+            retrieval_dir = bundle_dir / paths.get("retrieval_ir", "retrieval_ir/")
+        checkpoint_path = neural_dir / "model.pt"
+        if not checkpoint_path.exists():
+            checkpoint_path = neural_dir / "best_model.pt"
+        retrieval_manifest = (retrieval_dir / "manifest.json") if retrieval_dir else None
+        routing_policy_hash = hashlib.sha256(
+            json.dumps(routing_policy or {}, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        bundle_id = str(bundle_meta.get("bundle_id") or ("artifact_dirs" if self.artifact_dir else "dev_fallback"))
+        return BundleIdentity(
+            bundle_id=bundle_id,
+            checkpoint_state_dict_hash=_file_sha256(checkpoint_path),
+            retrieval_artifact_hash=_file_sha256(retrieval_manifest),
+            routing_policy_hash=routing_policy_hash,
+        )
 
     @staticmethod
     def _normalize_runtime_result(question: str, schema: SchemaGraph, result: PredictionResult) -> PredictionResult:
@@ -299,40 +335,6 @@ class RetrievalNL2SQLModel:
         source_map = {"retrieval": "retrieval_ir", "neural": "neural_ir", "hybrid": "adaptive_router"}
         if result.source_model in source_map:
             updates["source_model"] = source_map[result.source_model]
-
-        sql = result.sql or ""
-        q = question.lower()
-        has_customers_table = hasattr(schema, "tables") and "customers" in getattr(schema, "tables", {})
-        if (
-            "customer" in q
-            and "sales" in q
-            and has_customers_table
-            and '"customers"' not in sql.lower()
-            and '"orders"."customer_id"' in sql.lower()
-            and 'from "orders"' in sql.lower()
-        ):
-            limit = result.slots.get("limit", {}).get("value") if isinstance(result.slots.get("limit"), dict) else 5
-            try:
-                limit_int = max(1, min(int(limit or 5), 1000))
-            except (TypeError, ValueError):
-                limit_int = 5
-            joined_sql = (
-                'SELECT\n "customers"."customer_id" AS "customer",\n'
-                ' SUM("orders"."amount") AS "revenue"\n'
-                'FROM "orders"\n'
-                'JOIN "customers" ON "orders"."customer_id" = "customers"."customer_id"\n'
-                'GROUP BY "customers"."customer_id"\n'
-                'ORDER BY "revenue" DESC\n'
-                f"LIMIT {limit_int}"
-            )
-            try:
-                from validation.sql_validator import SQLValidator
-
-                validation = SQLValidator().validate(joined_sql, schema=schema, dialect=getattr(schema, "dialect", "sqlite"))
-            except Exception:
-                validation = result.validation
-            updates["sql"] = joined_sql
-            updates["validation"] = validation
 
         if updates:
             return result.model_copy(update=updates)
@@ -356,3 +358,28 @@ class RetrievalNL2SQLModel:
     @staticmethod
     def _load_synonyms(path: Path) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
         return load_metric_dimension_maps(path)
+
+
+def _resolve_bundle_dir(artifact_dir: Path | None, metadata: dict[str, Any]) -> Path | None:
+    configured = metadata.get("model_bundle_dir")
+    if configured:
+        path = Path(str(configured))
+        if (path / "bundle_manifest.json").exists():
+            return path
+    if artifact_dir is None:
+        return None
+    if (artifact_dir / "bundle_manifest.json").exists():
+        return artifact_dir
+    if (artifact_dir.parent / "bundle_manifest.json").exists():
+        return artifact_dir.parent
+    return None
+
+
+def _file_sha256(path: Path | None) -> str:
+    if path is None or not path.exists() or not path.is_file():
+        return ""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

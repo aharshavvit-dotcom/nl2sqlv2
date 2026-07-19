@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import random
 import sys
 import time
@@ -258,7 +259,8 @@ def run_optimized_training(
     # Build optimizer & scheduler
     optimizer = build_optimizer(model, config.optimizer)
     epochs = int(config.training.get("epochs", 10))
-    total_steps = epochs * len(train_loader)
+    grad_accum_steps = max(1, int(config.training.get("gradient_accumulation_steps", 1) or 1))
+    total_steps = epochs * max(1, math.ceil(len(train_loader) / grad_accum_steps))
     scheduler = build_scheduler(optimizer, config.scheduler, total_steps=total_steps)
 
     # Build loss weighter
@@ -279,6 +281,7 @@ def run_optimized_training(
         "filter_operator_logits": "filter_operator",
         "order_direction_logits": "order_direction",
         "limit_bucket_logits": "limit_bucket",
+        "complexity_logits": "complexity",
     }
 
     # Checkpoint manager & early stopping
@@ -327,11 +330,15 @@ def run_optimized_training(
     diagnostics.start_training()
 
     grad_clip = float(config.training.get("gradient_clipping", 1.0))
+    effective_batch_size = batch_size * grad_accum_steps
 
     print(f"Starting optimized Neural QueryIR training for {epochs} epochs")
     print(f"  Optimizer: {config.optimizer.get('name')} | Activation: {config.model.get('activation')}")
     print(f"  Training: {len(train_dataset)} examples | Validation: {len(val_dataset) if val_dataset else 0}")
-    print(f"  Batch size: {batch_size} | Gradient clipping: {grad_clip}")
+    print(
+        f"  Batch size: {batch_size} | Gradient accumulation: {grad_accum_steps} "
+        f"| Effective batch size: {effective_batch_size} | Gradient clipping: {grad_clip}"
+    )
     print(f"  Checkpoint monitor: {best_metric}")
     print(f"  Checkpoint mode: {best_mode}")
     print(f"  Early stopping patience: {early_stopper.patience}")
@@ -346,6 +353,7 @@ def run_optimized_training(
 
     history: list[dict[str, Any]] = []
     last_loss_by_head: dict[str, float] = {}
+    last_gradient_norm_by_module: dict[str, float] = {}
     hard_negative_batches_used = 0
 
     for epoch in range(1, epochs + 1):
@@ -359,6 +367,7 @@ def run_optimized_training(
             train_dataset.examples = CurriculumBuilder().shuffle_within_buckets(
                 train_dataset.examples,
                 seed=epoch_seed,
+                mode=str(curriculum_cfg.get("mode", "ordered_dataset")),
             )
 
         # ── Train ────────────────────────────────────────────────
@@ -366,24 +375,27 @@ def run_optimized_training(
         total_loss = 0.0
         total_items = 0
         epoch_head_losses: dict[str, float] = {}
+        epoch_head_loss_counts: dict[str, int] = {}
+        epoch_grad_norms: dict[str, float] = {}
+        epoch_grad_norm_counts: dict[str, int] = {}
         epoch_correct: dict[str, int] = {}
         epoch_total: dict[str, int] = {}
+        epoch_example_metrics = _new_example_metric_state()
 
+        optimizer.zero_grad(set_to_none=True)
         for batch_idx, batch in enumerate(train_loader, 1):
             batch = _to_device(batch, device)
-            optimizer.zero_grad()
             outputs = _model_outputs(model, batch, MODEL_INPUT_KEYS)
             diagnostics.observe_step(batch, outputs)
 
-            # Per-head losses
-            head_losses: dict[str, torch.Tensor] = {}
-            for head, label_key in HEAD_TO_LABEL.items():
-                target = batch["labels"][label_key]
-                if not target.ne(-1).any():
-                    continue
-                mask = batch.get(HEAD_TO_MASK.get(head, ""))
-                loss_name = _HEAD_LOSS_NAME.get(head, head.replace("_logits", ""))
-                head_losses[loss_name] = masked_cross_entropy_fn(outputs[head], target, mask=mask, ignore_index=-1)
+            head_losses = _supervised_head_losses(
+                outputs,
+                batch,
+                HEAD_TO_LABEL,
+                HEAD_TO_MASK,
+                _HEAD_LOSS_NAME,
+                masked_cross_entropy_fn,
+            )
 
             # Hard-negative loss
             if hard_negative_loss_active:
@@ -392,25 +404,21 @@ def run_optimized_training(
                     head_losses["hard_negative"] = hn_loss
                     hard_negative_batches_used += 1
 
-            # Span loss
-            if "span" in batch["labels"] and "span_logits" in outputs:
-                span_logits = outputs["span_logits"]
-                span_target = batch["labels"]["span"]
-                span_loss = torch.nn.functional.cross_entropy(
-                    span_logits.view(-1, 2),
-                    span_target.view(-1),
-                    ignore_index=-1
-                )
-                head_losses["span"] = span_loss
-
             combined = loss_weighter.combine(head_losses)
             loss = combined["total_loss"]
-            loss.backward()
+            (loss / grad_accum_steps).backward()
 
-            if grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            should_step = batch_idx % grad_accum_steps == 0 or batch_idx == len(train_loader)
+            if should_step:
+                grad_norms = _gradient_norms_by_module(model)
+                for name, value in grad_norms.items():
+                    epoch_grad_norms[name] = epoch_grad_norms.get(name, 0.0) + value
+                    epoch_grad_norm_counts[name] = epoch_grad_norm_counts.get(name, 0) + 1
+                if grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
 
-            optimizer.step()
 
             bs = int(batch["question_ids"].size(0))
             total_loss += float(loss.item()) * bs
@@ -419,105 +427,55 @@ def run_optimized_training(
             # Track per-head losses
             for k, v in combined["raw_losses"].items():
                 epoch_head_losses[k] = epoch_head_losses.get(k, 0.0) + v
+                epoch_head_loss_counts[k] = epoch_head_loss_counts.get(k, 0) + 1
 
             # Track accuracies
-            for head, label_key in HEAD_TO_LABEL.items():
-                target = batch["labels"][label_key]
-                valid = target.ne(-1)
-                if not valid.any():
-                    continue
-                pred = outputs[head].argmax(dim=-1)
-                c = int(pred.eq(target).logical_and(valid).sum().item())
-                t = int(valid.sum().item())
-                epoch_correct[label_key] = epoch_correct.get(label_key, 0) + c
-                epoch_total[label_key] = epoch_total.get(label_key, 0) + t
+            _update_accuracy_counts(
+                outputs,
+                batch,
+                epoch_correct,
+                epoch_total,
+                HEAD_TO_LABEL,
+                HEAD_TO_MASK,
+                example_metrics=epoch_example_metrics,
+            )
 
             if batch_idx % max(1, len(train_loader) // 5) == 0 or batch_idx == len(train_loader):
                 print(f"  [Train] Batch {batch_idx}/{len(train_loader)} - Loss: {loss.item():.4f}")
 
         train_loss = total_loss / max(total_items, 1)
-        train_metrics = {"loss": train_loss}
-        for lk in epoch_total:
-            train_metrics[lk.replace("_label", "_accuracy").replace("_index", "_accuracy")] = (
-                epoch_correct.get(lk, 0) / max(epoch_total.get(lk, 0), 1)
-            )
-        keys = list(epoch_total)
-        train_metrics["overall_slot_accuracy"] = (
-            sum(epoch_correct.get(k, 0) / max(epoch_total.get(k, 0), 1) for k in keys) / max(len(keys), 1)
+        epoch_head_losses = {
+            name: value / max(epoch_head_loss_counts.get(name, 1), 1)
+            for name, value in epoch_head_losses.items()
+        }
+        epoch_grad_norms = {
+            name: value / max(epoch_grad_norm_counts.get(name, 1), 1)
+            for name, value in epoch_grad_norms.items()
+        }
+        train_metrics = _metrics_from_counts(
+            train_loss,
+            epoch_correct,
+            epoch_total,
+            config,
+            example_metrics=epoch_example_metrics,
         )
-        train_metrics.update(_semantic_checkpoint_metrics(epoch_correct, epoch_total, config))
 
         # ── Validate ─────────────────────────────────────────────
         val_metrics: dict[str, float] = {}
         if val_loader:
-            model.eval()
-            val_loss_total = 0.0
-            val_items = 0
-            val_correct: dict[str, int] = {}
-            val_total: dict[str, int] = {}
-            with torch.no_grad():
-                for batch in val_loader:
-                    batch = _to_device(batch, device)
-                    outputs = _model_outputs(model, batch, MODEL_INPUT_KEYS)
-                    diagnostics.observe_step(batch, outputs)
-                    head_losses_v: dict[str, torch.Tensor] = {}
-                    for head, label_key in HEAD_TO_LABEL.items():
-                        target = batch["labels"][label_key]
-                        if not target.ne(-1).any():
-                            continue
-                        mask = batch.get(HEAD_TO_MASK.get(head, ""))
-                        loss_name = _HEAD_LOSS_NAME.get(head, head.replace("_logits", ""))
-                        head_losses_v[loss_name] = masked_cross_entropy_fn(outputs[head], target, mask=mask, ignore_index=-1)
-                    
-                    if "span" in batch["labels"] and "span_logits" in outputs:
-                        span_logits_v = outputs["span_logits"]
-                        span_target_v = batch["labels"]["span"]
-                        span_loss_v = torch.nn.functional.cross_entropy(
-                            span_logits_v.view(-1, 2),
-                            span_target_v.view(-1),
-                            ignore_index=-1
-                        )
-                        head_losses_v["span"] = span_loss_v
-
-                    combined_v = loss_weighter.combine(head_losses_v)
-                    bs = int(batch["question_ids"].size(0))
-                    val_loss_total += float(combined_v["total_loss"].item()) * bs
-                    val_items += bs
-                    for head, label_key in HEAD_TO_LABEL.items():
-                        target = batch["labels"][label_key]
-                        valid = target.ne(-1)
-                        if not valid.any():
-                            continue
-                        pred = outputs[head].argmax(dim=-1)
-                        val_correct[label_key] = val_correct.get(label_key, 0) + int(pred.eq(target).logical_and(valid).sum().item())
-                        val_total[label_key] = val_total.get(label_key, 0) + int(valid.sum().item())
-
-                    if "span" in batch["labels"] and "span_logits" in outputs:
-                        span_pred_v = outputs["span_logits"].argmax(dim=-1)
-                        span_target_v = batch["labels"]["span"]
-                        valid_span_v = span_target_v.ne(-1)
-                        if valid_span_v.any():
-                            c_span = int(span_pred_v.eq(span_target_v).logical_and(valid_span_v).sum().item())
-                            t_span = int(valid_span_v.sum().item())
-                            val_correct["span"] = val_correct.get("span", 0) + c_span
-                            val_total["span"] = val_total.get("span", 0) + t_span
-
-            val_metrics["loss"] = val_loss_total / max(val_items, 1)
-            for lk in val_total:
-                val_metrics[lk.replace("_label", "_accuracy").replace("_index", "_accuracy")] = (
-                    val_correct.get(lk, 0) / max(val_total.get(lk, 0), 1)
-                )
-            vkeys = list(val_total)
-            val_metrics["overall_slot_accuracy"] = (
-                sum(val_correct.get(k, 0) / max(val_total.get(k, 0), 1) for k in vkeys) / max(len(vkeys), 1)
+            val_metrics = _evaluate_model(
+                model,
+                val_loader,
+                device,
+                MODEL_INPUT_KEYS,
+                HEAD_TO_LABEL,
+                HEAD_TO_MASK,
+                _HEAD_LOSS_NAME,
+                masked_cross_entropy_fn,
+                loss_weighter,
+                config,
+                diagnostics=diagnostics,
             )
-            composite_parts = [
-                val_metrics.get("intent_accuracy", 0.0),
-                val_metrics.get("base_table_accuracy", 0.0),
-                val_metrics.get("overall_slot_accuracy", 0.0),
-            ]
-            val_metrics["validation_composite_score"] = sum(composite_parts) / len(composite_parts)
-            val_metrics.update(_semantic_checkpoint_metrics(val_correct, val_total, config))
 
         epoch_time = time.time() - epoch_start
         current_lr = optimizer.param_groups[0]["lr"]
@@ -533,9 +491,10 @@ def run_optimized_training(
             val_metrics=val_metrics,
             lr=current_lr,
             epoch_time=epoch_time,
-            loss_by_head=epoch_head_losses,
+            loss_by_head={**epoch_head_losses, **{f"grad_norm/{k}": v for k, v in epoch_grad_norms.items()}},
         )
         last_loss_by_head = dict(epoch_head_losses)
+        last_gradient_norm_by_module = dict(epoch_grad_norms)
 
         # Checkpoint
         check_metrics = val_metrics if val_metrics else train_metrics
@@ -570,10 +529,31 @@ def run_optimized_training(
 
     # Save final model.pt (best model)
     best_ckpt = ckpt_manager.load_best()
+    selected_checkpoint_epoch = None
+    selected_checkpoint_saved_metrics: dict[str, Any] = {}
+    selected_checkpoint_metrics: dict[str, Any] = {}
     if best_ckpt:
         model.load_state_dict(best_ckpt["model_state_dict"])
+        selected_checkpoint_epoch = best_ckpt.get("epoch")
+        selected_checkpoint_saved_metrics = dict(best_ckpt.get("metrics") or {})
         torch.save(model.state_dict(), output_dir / "model.pt")
         _record_runtime_export_identity(output_dir, model.state_dict())
+        if val_loader:
+            selected_checkpoint_metrics = _evaluate_model(
+                model,
+                val_loader,
+                device,
+                MODEL_INPUT_KEYS,
+                HEAD_TO_LABEL,
+                HEAD_TO_MASK,
+                _HEAD_LOSS_NAME,
+                masked_cross_entropy_fn,
+                loss_weighter,
+                config,
+                diagnostics=None,
+            )
+        else:
+            selected_checkpoint_metrics = dict(selected_checkpoint_saved_metrics)
 
     # Save label encoder artifacts
     train_dataset.label_encoder.save(str(output_dir / "label_maps.json"))
@@ -584,7 +564,8 @@ def run_optimized_training(
         diagnostics.save(output_dir)
 
     # Save training metrics
-    final_metrics = val_metrics if val_metrics else train_metrics
+    last_epoch_metrics = val_metrics if val_metrics else train_metrics
+    final_metrics = selected_checkpoint_metrics if selected_checkpoint_metrics else last_epoch_metrics
     best_epoch = diagnostics.best_epoch()
     checkpoint_path = output_dir / "best_model.pt"
     if not checkpoint_path.exists():
@@ -594,19 +575,25 @@ def run_optimized_training(
     report = {
         "pipeline_run_id": pipeline_run_id,
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-        "best_epoch": best_epoch.get("epoch"),
-        "best_metric": best_epoch.get("validation_total_loss") if best_metric == "loss" else best_epoch.get(best_metric),
-        "best_overall_slot_accuracy": best_epoch.get("overall_slot_accuracy"),
+        "best_epoch": selected_checkpoint_epoch if selected_checkpoint_epoch is not None else best_epoch.get("epoch"),
+        "best_metric": final_metrics.get(best_metric),
+        "best_overall_slot_accuracy": final_metrics.get("overall_slot_accuracy"),
         "final_train_loss": train_loss,
-        "final_val_loss": val_metrics.get("loss"),
+        "final_val_loss": final_metrics.get("loss"),
         "optimizer": config.optimizer.get("name"),
         "optimizer_name": config.optimizer.get("name"),
         "activation": config.model.get("activation"),
         "activation_name": config.model.get("activation"),
         "gradient_clipping_value": grad_clip,
+        "gradient_accumulation_steps": grad_accum_steps,
+        "gradient_norm_by_module": last_gradient_norm_by_module,
         "loss_by_head": last_loss_by_head,
         "train_path": str(train_path),
         "validation_path": str(val_path),
+        "train_file_sha256": _file_sha256(train_path),
+        "validation_file_sha256": _file_sha256(val_path),
+        "hard_negative_file_sha256": _file_sha256(hard_neg_path) if hard_neg_path else "",
+        "training_code_sha256": _file_sha256(Path(__file__)),
         "train_examples_count": len(train_dataset),
         "validation_examples_count": len(val_dataset) if val_dataset else 0,
         "train_by_dataset": _dataset_distribution(train_dataset.examples),
@@ -623,6 +610,7 @@ def run_optimized_training(
         "hard_negative_batches_used": hard_negative_batches_used,
         "hard_negative_loss_active": hard_negative_loss_active,
         "hard_negative_weight": hard_negative_weight,
+        "hard_negative_ablation_plan": [0.0, 0.1, 0.3],
         "model_architecture": config.model.get("architecture", "schema_aware_queryir"),
         "ffn_heads_enabled": bool(config.model.get("feed_forward_heads", False)),
         "scheduler": config.scheduler.get("name"),
@@ -631,7 +619,7 @@ def run_optimized_training(
         "checkpoint_mode": best_mode,
         "early_stopping_patience": early_stopper.patience,
         "effective_epochs": epochs,
-        "effective_batch_size": batch_size,
+        "effective_batch_size": effective_batch_size,
         "weight_decay": float(config.optimizer.get("weight_decay", 0.0001)),
         "pointer_head_weight_decay": float(config.optimizer.get("pointer_head_weight_decay", 0.001)),
         "pointer_dropout": float(config.model.get("pointer_dropout", 0.30)),
@@ -641,25 +629,37 @@ def run_optimized_training(
         "torch_num_threads": torch.get_num_threads(),
         "torch_version": torch.__version__,
         "effective_config_hash": _effective_config_hash(config),
-        "best_val_loss": best_epoch.get("validation_total_loss"),
-        "current_val_loss": val_metrics.get("loss"),
+        "best_val_loss": final_metrics.get("loss"),
+        "current_val_loss": last_epoch_metrics.get("loss"),
         "val_train_loss_ratio": (
-            val_metrics.get("loss") / train_loss
-            if val_metrics.get("loss") is not None and train_loss > 0
+            final_metrics.get("loss") / train_loss
+            if final_metrics.get("loss") is not None and train_loss > 0
             else None
         ),
         "overfitting_warning": bool(
-            val_metrics.get("loss") is not None
+            final_metrics.get("loss") is not None
             and train_loss > 0
-            and val_metrics.get("loss") / train_loss > 1.5
+            and final_metrics.get("loss") / train_loss > 1.5
         ),
         "loss_weights": dict(config.loss),
+        "task_normalized_losses": True,
         "validation_gold_score_available": "validation_gold_score" in final_metrics,
         "validation_gold_score_unavailable_reason": (
             None if "validation_gold_score" in final_metrics else "gold comparator not available inside neural training loop"
         ),
         "validation_composite_score": final_metrics.get("validation_composite_score"),
         "checkpoint_path": str(checkpoint_path),
+        "selected_checkpoint_epoch": selected_checkpoint_epoch,
+        "selected_checkpoint_saved_metrics": selected_checkpoint_saved_metrics,
+        "selected_checkpoint_metrics": selected_checkpoint_metrics,
+        "last_epoch_metrics": last_epoch_metrics,
+        "final_metrics_source": (
+            "selected_checkpoint_reevaluation"
+            if selected_checkpoint_metrics and val_loader
+            else "selected_checkpoint_saved_metrics"
+            if selected_checkpoint_metrics
+            else "last_epoch_metrics"
+        ),
         "epochs_ran": len(history),
         "early_stopped": early_stopper.counter >= early_stopper.patience,
         **{k: v for k, v in final_metrics.items()},
@@ -679,6 +679,7 @@ def _effective_config_hash(config: NeuralTrainingConfig) -> str:
     payload = json.dumps({
         "epochs": config.training.get("epochs"),
         "batch_size": config.training.get("batch_size"),
+        "gradient_accumulation_steps": config.training.get("gradient_accumulation_steps"),
         "save_best_metric": config.training.get("save_best_metric"),
         "save_best_mode": config.training.get("save_best_mode"),
         "early_stopping_patience": config.training.get("early_stopping_patience"),
@@ -689,6 +690,16 @@ def _effective_config_hash(config: NeuralTrainingConfig) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _file_sha256(path: Path | None) -> str:
+    if path is None or not path.exists() or not path.is_file():
+        return ""
+    hasher = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
 def _save_training_manifest(output_dir: Path, report: dict[str, Any], config: NeuralTrainingConfig) -> None:
     manifest = {
         "artifact_type": "neural_queryir_model",
@@ -696,6 +707,10 @@ def _save_training_manifest(output_dir: Path, report: dict[str, Any], config: Ne
         "generated_at": report.get("generated_at", ""),
         "source_train_file": report.get("train_path"),
         "source_validation_file": report.get("validation_path"),
+        "train_file_sha256": report.get("train_file_sha256", ""),
+        "validation_file_sha256": report.get("validation_file_sha256", ""),
+        "hard_negative_file_sha256": report.get("hard_negative_file_sha256", ""),
+        "training_code_sha256": report.get("training_code_sha256", ""),
         "train_examples_count": report.get("train_examples_count", 0),
         "validation_examples_count": report.get("validation_examples_count", 0),
         "train_by_dataset": report.get("train_by_dataset", {}),
@@ -708,7 +723,10 @@ def _save_training_manifest(output_dir: Path, report: dict[str, Any], config: Ne
         "optimizer_name": report.get("optimizer_name"),
         "activation_name": report.get("activation_name"),
         "gradient_clipping_value": report.get("gradient_clipping_value"),
+        "gradient_accumulation_steps": report.get("gradient_accumulation_steps"),
         "checkpoint_path": report.get("checkpoint_path"),
+        "selected_checkpoint_epoch": report.get("selected_checkpoint_epoch"),
+        "selected_checkpoint_metrics": report.get("selected_checkpoint_metrics", {}),
         "config": config.to_dict(),
     }
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
@@ -785,14 +803,14 @@ def _save_model_config(output_dir: Path, model_config: dict, label_encoder: Any)
 
 
 def _to_device(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
-    return {
-        key: (
-            {ik: iv.to(device) for ik, iv in value.items()}
-            if key == "labels"
-            else value.to(device) if torch.is_tensor(value) else value
-        )
-        for key, value in batch.items()
-    }
+    def move(value: Any) -> Any:
+        if torch.is_tensor(value):
+            return value.to(device)
+        if isinstance(value, dict):
+            return {inner_key: move(inner_value) for inner_key, inner_value in value.items()}
+        return value
+
+    return {key: move(value) for key, value in batch.items()}
 
 
 def _model_outputs(model, batch: dict[str, Any], keys: list[str]) -> dict[str, torch.Tensor]:
@@ -815,6 +833,461 @@ def _resolve_torch_device(requested: str) -> torch.device:
     if mode not in {"cpu", "cuda", "mps"}:
         raise ValueError("training.device must be one of: auto, cpu, cuda, mps")
     return torch.device(mode)
+
+
+HEAD_TO_TASK_MASK = {
+    "intent_logits": "full_query_ir",
+    "base_table_logits": "table",
+    "metric_aggregation_logits": "aggregation",
+    "metric_column_logits": "column",
+    "metric_expression_type_logits": "aggregation",
+    "dimension_column_logits": "column",
+    "date_column_logits": "column",
+    "date_grain_logits": "filter",
+    "date_filter_type_logits": "filter",
+    "filter_column_logits": "filter",
+    "filter_operator_logits": "filter",
+    "order_direction_logits": "full_query_ir",
+    "limit_bucket_logits": "full_query_ir",
+    "complexity_logits": "complexity",
+}
+
+
+PROJECTION_EXACT_MATCH_HEADS = [
+    "metric_aggregation_logits",
+    "metric_column_logits",
+    "metric_expression_type_logits",
+    "dimension_column_logits",
+    "date_column_logits",
+]
+
+
+SEMANTIC_PASS_HEADS = [
+    "intent_logits",
+    "base_table_logits",
+    "metric_aggregation_logits",
+    "metric_column_logits",
+    "metric_expression_type_logits",
+    "dimension_column_logits",
+    "date_column_logits",
+    "date_grain_logits",
+    "date_filter_type_logits",
+    "filter_column_logits",
+    "filter_operator_logits",
+    "order_direction_logits",
+    "limit_bucket_logits",
+]
+
+
+def _new_example_metric_state() -> dict[str, Any]:
+    return {
+        "intent_targets": [],
+        "intent_predictions": [],
+        "projection_exact_match_correct": 0,
+        "projection_exact_match_total": 0,
+        "semantic_pass_correct": 0,
+        "semantic_pass_total": 0,
+    }
+
+
+def _supervised_head_losses(
+    outputs: dict[str, torch.Tensor],
+    batch: dict[str, Any],
+    head_to_label: dict[str, str],
+    head_to_mask: dict[str, str],
+    head_loss_name: dict[str, str],
+    masked_cross_entropy,
+) -> dict[str, torch.Tensor]:
+    head_losses: dict[str, torch.Tensor] = {}
+    for head, label_key in head_to_label.items():
+        if head not in outputs:
+            continue
+        target = _effective_target_for_head(batch, head, label_key)
+        if not target.ne(-1).any():
+            continue
+        candidate_mask = batch.get(head_to_mask.get(head, ""))
+        loss_name = head_loss_name.get(head, head.replace("_logits", ""))
+        head_losses[loss_name] = masked_cross_entropy(outputs[head], target, mask=candidate_mask, ignore_index=-1)
+
+    span_loss = _span_loss(outputs, batch)
+    if span_loss is not None:
+        head_losses["span"] = span_loss
+
+    capability_loss = _multilabel_loss(
+        outputs.get("capability_logits"),
+        batch.get("capability_labels"),
+        _task_sample_mask(batch, "capability"),
+    )
+    if capability_loss is not None:
+        head_losses["capability"] = capability_loss
+
+    safety_loss = _multilabel_loss(
+        outputs.get("safety_logits"),
+        batch.get("safety_labels"),
+        _task_sample_mask(batch, "safety"),
+    )
+    if safety_loss is not None:
+        head_losses["safety"] = safety_loss
+
+    if not head_losses:
+        for value in outputs.values():
+            if torch.is_tensor(value):
+                head_losses["masked_noop"] = value.sum() * 0.0
+                break
+
+    return head_losses
+
+
+def _evaluate_model(
+    model,
+    loader,
+    device: torch.device,
+    model_input_keys: list[str],
+    head_to_label: dict[str, str],
+    head_to_mask: dict[str, str],
+    head_loss_name: dict[str, str],
+    masked_cross_entropy,
+    loss_weighter: MultiTaskLossWeighter,
+    config: NeuralTrainingConfig,
+    diagnostics: TrainingDiagnostics | None = None,
+) -> dict[str, Any]:
+    model.eval()
+    loss_total = 0.0
+    items = 0
+    correct: dict[str, int] = {}
+    total: dict[str, int] = {}
+    example_metrics = _new_example_metric_state()
+    with torch.no_grad():
+        for batch in loader:
+            batch = _to_device(batch, device)
+            outputs = _model_outputs(model, batch, model_input_keys)
+            if diagnostics is not None:
+                diagnostics.observe_step(batch, outputs)
+            head_losses = _supervised_head_losses(
+                outputs,
+                batch,
+                head_to_label,
+                head_to_mask,
+                head_loss_name,
+                masked_cross_entropy,
+            )
+            combined = loss_weighter.combine(head_losses)
+            bs = int(batch["question_ids"].size(0))
+            loss_total += float(combined["total_loss"].item()) * bs
+            items += bs
+            _update_accuracy_counts(
+                outputs,
+                batch,
+                correct,
+                total,
+                head_to_label,
+                head_to_mask,
+                example_metrics=example_metrics,
+            )
+    return _metrics_from_counts(
+        loss_total / max(items, 1),
+        correct,
+        total,
+        config,
+        example_metrics=example_metrics,
+    )
+
+
+def _effective_target_for_head(batch: dict[str, Any], head: str, label_key: str) -> torch.Tensor:
+    target = batch["labels"][label_key]
+    sample_mask = _task_sample_mask(batch, HEAD_TO_TASK_MASK.get(head, "full_query_ir"))
+    if sample_mask is None:
+        return target
+    active = sample_mask.to(target.device).gt(0)
+    return torch.where(active, target, torch.full_like(target, -1))
+
+
+def _task_sample_mask(batch: dict[str, Any], mask_name: str) -> torch.Tensor | None:
+    task_masks = batch.get("task_masks")
+    if not isinstance(task_masks, dict) or mask_name not in task_masks:
+        return None
+    if not any(torch.is_tensor(mask) and mask.gt(0).any() for mask in task_masks.values()):
+        return None
+    return task_masks[mask_name]
+
+
+def _span_loss(outputs: dict[str, torch.Tensor], batch: dict[str, Any]) -> torch.Tensor | None:
+    if "span" not in batch.get("labels", {}) or "span_logits" not in outputs:
+        return None
+    span_logits = outputs["span_logits"]
+    span_target = _effective_span_target(batch)
+    if not span_target.ne(-1).any():
+        return span_logits.sum() * 0.0
+    return torch.nn.functional.cross_entropy(
+        span_logits.view(-1, 2),
+        span_target.view(-1),
+        ignore_index=-1,
+    )
+
+
+def _effective_span_target(batch: dict[str, Any]) -> torch.Tensor:
+    target = batch["labels"]["span"]
+    sample_mask = _task_sample_mask(batch, "filter")
+    if sample_mask is None:
+        sample_mask = _task_sample_mask(batch, "full_query_ir")
+    if sample_mask is None:
+        return target
+    active = sample_mask.to(target.device).gt(0).unsqueeze(1)
+    return torch.where(active, target, torch.full_like(target, -1))
+
+
+def _multilabel_loss(
+    logits: torch.Tensor | None,
+    labels: torch.Tensor | None,
+    sample_mask: torch.Tensor | None,
+) -> torch.Tensor | None:
+    if logits is None or labels is None or sample_mask is None:
+        return None
+    labels = labels.to(logits.device)
+    if logits.shape != labels.shape:
+        raise ValueError(f"Auxiliary label shape {tuple(labels.shape)} does not match logits {tuple(logits.shape)}")
+    active = sample_mask.to(logits.device).gt(0)
+    if not active.any():
+        return logits.sum() * 0.0
+    per_label = torch.nn.functional.binary_cross_entropy_with_logits(logits, labels, reduction="none")
+    per_example = per_label.mean(dim=1)
+    return per_example[active].mean()
+
+
+def _update_accuracy_counts(
+    outputs: dict[str, torch.Tensor],
+    batch: dict[str, Any],
+    correct: dict[str, int],
+    total: dict[str, int],
+    head_to_label: dict[str, str],
+    head_to_mask: dict[str, str],
+    example_metrics: dict[str, Any] | None = None,
+) -> None:
+    head_records: dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
+    for head, label_key in head_to_label.items():
+        if head not in outputs:
+            continue
+        pred, target, valid = _head_prediction_and_valid(outputs, batch, head, label_key, head_to_mask)
+        head_records[head] = (pred, target, valid)
+        if not valid.any():
+            continue
+        correct[label_key] = correct.get(label_key, 0) + int(pred.eq(target).logical_and(valid).sum().item())
+        total[label_key] = total.get(label_key, 0) + int(valid.sum().item())
+
+    span_record: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None
+    if "span" in batch.get("labels", {}) and "span_logits" in outputs:
+        span_target = _effective_span_target(batch)
+        valid_span = span_target.ne(-1)
+        if valid_span.any():
+            span_pred = outputs["span_logits"].argmax(dim=-1)
+            span_record = (span_pred, span_target, valid_span)
+            correct["span"] = correct.get("span", 0) + int(
+                span_pred.eq(span_target).logical_and(valid_span).sum().item()
+            )
+            total["span"] = total.get("span", 0) + int(valid_span.sum().item())
+
+    _update_multilabel_counts(
+        outputs.get("capability_logits"),
+        batch.get("capability_labels"),
+        _task_sample_mask(batch, "capability"),
+        "capability_labels",
+        correct,
+        total,
+    )
+    _update_multilabel_counts(
+        outputs.get("safety_logits"),
+        batch.get("safety_labels"),
+        _task_sample_mask(batch, "safety"),
+        "safety_labels",
+        correct,
+        total,
+    )
+
+    if example_metrics is not None:
+        _update_per_example_metrics(example_metrics, batch, head_records, span_record)
+
+
+def _head_prediction_and_valid(
+    outputs: dict[str, torch.Tensor],
+    batch: dict[str, Any],
+    head: str,
+    label_key: str,
+    head_to_mask: dict[str, str],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    target = _effective_target_for_head(batch, head, label_key)
+    valid = target.ne(-1)
+    logits = outputs[head]
+    candidate_mask = batch.get(head_to_mask.get(head, ""))
+    if candidate_mask is not None:
+        candidate_mask = candidate_mask.to(logits.device).bool()
+        logits = logits.masked_fill(~candidate_mask, -1e9)
+        in_range = target.ge(0) & target.lt(candidate_mask.size(-1))
+        safe_targets = target.clamp(0, max(candidate_mask.size(-1) - 1, 0))
+        target_ok = torch.zeros_like(valid, dtype=torch.bool)
+        gathered = candidate_mask.gather(1, safe_targets.unsqueeze(1)).squeeze(1)
+        target_ok[in_range] = gathered[in_range]
+        valid = valid & target_ok
+    return logits.argmax(dim=-1), target, valid
+
+
+def _update_per_example_metrics(
+    state: dict[str, Any],
+    batch: dict[str, Any],
+    head_records: dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+    span_record: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None,
+) -> None:
+    batch_size = int(batch["question_ids"].size(0))
+    intent_record = head_records.get("intent_logits")
+    if intent_record is not None:
+        pred, target, valid = intent_record
+        for index in torch.nonzero(valid, as_tuple=False).flatten().tolist():
+            state["intent_predictions"].append(int(pred[index].item()))
+            state["intent_targets"].append(int(target[index].item()))
+
+    for index in range(batch_size):
+        projection_checks: list[bool] = []
+        for head in PROJECTION_EXACT_MATCH_HEADS:
+            record = head_records.get(head)
+            if record is None:
+                continue
+            pred, target, valid = record
+            if bool(valid[index].item()):
+                projection_checks.append(bool(pred[index].eq(target[index]).item()))
+        if projection_checks:
+            state["projection_exact_match_total"] += 1
+            state["projection_exact_match_correct"] += int(all(projection_checks))
+
+        semantic_checks: list[bool] = []
+        for head in SEMANTIC_PASS_HEADS:
+            record = head_records.get(head)
+            if record is None:
+                continue
+            pred, target, valid = record
+            if bool(valid[index].item()):
+                semantic_checks.append(bool(pred[index].eq(target[index]).item()))
+        if span_record is not None:
+            span_pred, span_target, span_valid = span_record
+            token_valid = span_valid[index]
+            if bool(token_valid.any().item()):
+                semantic_checks.append(
+                    bool(span_pred[index].eq(span_target[index]).logical_or(~token_valid).all().item())
+                )
+        if semantic_checks:
+            state["semantic_pass_total"] += 1
+            state["semantic_pass_correct"] += int(all(semantic_checks))
+
+
+def _update_multilabel_counts(
+    logits: torch.Tensor | None,
+    labels: torch.Tensor | None,
+    sample_mask: torch.Tensor | None,
+    label_key: str,
+    correct: dict[str, int],
+    total: dict[str, int],
+) -> None:
+    if logits is None or labels is None or sample_mask is None:
+        return
+    labels = labels.to(logits.device)
+    active = sample_mask.to(logits.device).gt(0)
+    if not active.any():
+        return
+    pred = torch.sigmoid(logits).ge(0.5)
+    expected = labels.ge(0.5)
+    active_matrix = active.unsqueeze(1).expand_as(expected)
+    correct[label_key] = correct.get(label_key, 0) + int(pred.eq(expected).logical_and(active_matrix).sum().item())
+    total[label_key] = total.get(label_key, 0) + int(active_matrix.sum().item())
+
+
+def _metrics_from_counts(
+    loss: float,
+    correct: dict[str, int],
+    total: dict[str, int],
+    config: NeuralTrainingConfig,
+    example_metrics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    metrics: dict[str, Any] = {"loss": loss}
+    metric_supports: dict[str, int] = {}
+    for label_key in total:
+        metric_name = _metric_name_for_label(label_key)
+        metrics[metric_name] = correct.get(label_key, 0) / max(total.get(label_key, 0), 1)
+        metric_supports[metric_name] = total.get(label_key, 0)
+    metrics["metric_supports"] = metric_supports
+
+    slot_keys = [key for key in total if key not in {"capability_labels", "safety_labels"}]
+    metrics["overall_slot_accuracy"] = (
+        sum(correct.get(key, 0) / max(total.get(key, 0), 1) for key in slot_keys) / max(len(slot_keys), 1)
+    )
+    composite_parts = [
+        float(metrics.get("intent_accuracy", 0.0)),
+        float(metrics.get("base_table_accuracy", 0.0)),
+        float(metrics.get("overall_slot_accuracy", 0.0)),
+    ]
+    metrics["validation_composite_score"] = sum(composite_parts) / len(composite_parts)
+    if example_metrics is not None:
+        intent_targets = list(example_metrics.get("intent_targets") or [])
+        intent_predictions = list(example_metrics.get("intent_predictions") or [])
+        metrics["intent_macro_f1"] = _macro_f1(intent_targets, intent_predictions)
+        projection_total = int(example_metrics.get("projection_exact_match_total", 0) or 0)
+        semantic_total = int(example_metrics.get("semantic_pass_total", 0) or 0)
+        metrics["projection_exact_match_rate"] = (
+            float(example_metrics.get("projection_exact_match_correct", 0) or 0) / projection_total
+            if projection_total
+            else 0.0
+        )
+        metrics["semantic_pass_rate"] = (
+            float(example_metrics.get("semantic_pass_correct", 0) or 0) / semantic_total
+            if semantic_total
+            else 0.0
+        )
+        metrics["per_example_metric_supports"] = {
+            "intent_macro_f1": len(intent_targets),
+            "projection_exact_match_rate": projection_total,
+            "semantic_pass_rate": semantic_total,
+        }
+    metrics.update(_semantic_checkpoint_metrics(correct, total, config))
+    return metrics
+
+
+def _macro_f1(targets: list[int], predictions: list[int]) -> float:
+    if not targets or not predictions:
+        return 0.0
+    classes = sorted(set(targets) | set(predictions))
+    if not classes:
+        return 0.0
+    scores: list[float] = []
+    for label in classes:
+        tp = sum(1 for target, pred in zip(targets, predictions) if target == label and pred == label)
+        fp = sum(1 for target, pred in zip(targets, predictions) if target != label and pred == label)
+        fn = sum(1 for target, pred in zip(targets, predictions) if target == label and pred != label)
+        precision = tp / (tp + fp) if (tp + fp) else 0.0
+        recall = tp / (tp + fn) if (tp + fn) else 0.0
+        scores.append(2 * precision * recall / (precision + recall) if (precision + recall) else 0.0)
+    return sum(scores) / len(scores)
+
+
+def _metric_name_for_label(label_key: str) -> str:
+    if label_key == "span":
+        return "span_token_accuracy"
+    if label_key == "capability_labels":
+        return "capability_label_accuracy"
+    if label_key == "safety_labels":
+        return "safety_label_accuracy"
+    if label_key.endswith("_label"):
+        return label_key[: -len("_label")] + "_accuracy"
+    if label_key.endswith("_index"):
+        return label_key[: -len("_index")] + "_accuracy"
+    return label_key + "_accuracy"
+
+
+def _gradient_norms_by_module(model: torch.nn.Module) -> dict[str, float]:
+    squared: dict[str, float] = {}
+    for name, parameter in model.named_parameters():
+        if parameter.grad is None:
+            continue
+        module = name.split(".", 1)[0]
+        norm = float(parameter.grad.detach().data.norm(2).item())
+        squared[module] = squared.get(module, 0.0) + norm * norm
+    return {name: math.sqrt(value) for name, value in squared.items()}
 
 
 def _hard_negative_loss(
@@ -855,19 +1328,26 @@ def _semantic_checkpoint_metrics(
     config: NeuralTrainingConfig,
 ) -> dict[str, Any]:
     weights = {
-        "intent_macro_f1": 0.20,
-        "projection_exact_match": 0.15,
+        "intent_accuracy": 0.20,
+        "metric_column_pointer_accuracy": 0.15,
         "filter_column_accuracy": 0.20,
         "filter_value_accuracy": 0.20,
         "dimension_column_accuracy": 0.10,
-        "semantic_pass_rate": 0.15,
+        "component_accuracy_floor": 0.15,
     }
-    weights.update(config.training.get("semantic_score_weights") or {})
+    configured_weights = dict(config.training.get("semantic_score_weights") or {})
+    legacy_weight_aliases = {
+        "intent_macro_f1": "intent_accuracy",
+        "projection_exact_match": "metric_column_pointer_accuracy",
+        "semantic_pass_rate": "component_accuracy_floor",
+    }
+    for name, value in configured_weights.items():
+        weights[legacy_weight_aliases.get(name, name)] = value
     minimum_support = int(config.training.get("semantic_score_min_support", 1) or 1)
 
     label_map = {
-        "intent_macro_f1": "intent_label",
-        "projection_exact_match": "metric_column_index",
+        "intent_accuracy": "intent_label",
+        "metric_column_pointer_accuracy": "metric_column_index",
         "filter_column_accuracy": "filter_column_index",
         "filter_value_accuracy": "span",
         "dimension_column_accuracy": "dimension_column_index",
@@ -887,15 +1367,15 @@ def _semantic_checkpoint_metrics(
 
     available = [value for value in metric_values.values() if value is not None]
     if available:
-        metric_values["semantic_pass_rate"] = min(float(value) for value in available)
-        metric_supports["semantic_pass_rate"] = min(
+        metric_values["component_accuracy_floor"] = min(float(value) for value in available)
+        metric_supports["component_accuracy_floor"] = min(
             support for name, support in metric_supports.items()
             if metric_values.get(name) is not None
         )
     else:
-        metric_values["semantic_pass_rate"] = None
-        metric_supports["semantic_pass_rate"] = 0
-        missing_metrics.append("semantic_pass_rate")
+        metric_values["component_accuracy_floor"] = None
+        metric_supports["component_accuracy_floor"] = 0
+        missing_metrics.append("component_accuracy_floor")
 
     weighted_value = 0.0
     available_weight = 0.0
@@ -908,14 +1388,20 @@ def _semantic_checkpoint_metrics(
     semantic_score = weighted_value / available_weight if available_weight else 0.0
     return {
         "support_weighted_semantic_score": semantic_score,
+        "support_weighted_semantic_score_deprecated": True,
         "semantic_checkpoint_score": semantic_score,
-        "semantic_checkpoint_score_definition_version": "2.0",
+        "semantic_checkpoint_score_definition_version": "3.0",
         "semantic_checkpoint_score_weights": weights,
         "semantic_checkpoint_metric_values": metric_values,
         "semantic_checkpoint_metric_supports": metric_supports,
         "semantic_checkpoint_missing_metrics": sorted(set(missing_metrics)),
         "semantic_checkpoint_minimum_support": minimum_support,
-        "semantic_checkpoint_score_valid_for_production": not missing_metrics,
+        "semantic_checkpoint_score_valid_for_production": False,
+        "semantic_checkpoint_score_valid_for_checkpoint_selection": False,
+        "semantic_checkpoint_score_warning": (
+            "Diagnostic component accuracies only; production checkpoint selection must use validation loss "
+            "or an execution-aware held-out evaluator."
+        ),
     }
 
 

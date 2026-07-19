@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from typing import Any
 
 
@@ -40,7 +41,7 @@ class CurriculumBuilder:
                 raise NotImplementedError(
                     "phased_epochs curriculum requested but not implemented. "
                     "Set allow_ordered_dataset_fallback=true or use mode=ordered_dataset."
-                )
+            )
             mode = "ordered_dataset"  # Downgrade with honest reporting
 
         phases = self.build_phases(examples)
@@ -58,7 +59,10 @@ class CurriculumBuilder:
             if phase not in canonical:
                 canonical.append(phase)
         canonical.extend(name for name in phases if name not in canonical)
-        ordered = [row for name in canonical for row in phases.get(name, [])]
+        if mode in {"balanced_interleaved", "interleaved_buckets"}:
+            ordered = self._interleave_phases(phases, canonical)
+        else:
+            ordered = [row for name in canonical for row in phases.get(name, [])]
         distribution = {name: len(phases.get(name, [])) for name in phases}
         # Honest curriculum mode reporting
         distribution["_curriculum_mode"] = mode  # type: ignore[assignment]
@@ -66,17 +70,32 @@ class CurriculumBuilder:
         distribution["_active"] = True  # type: ignore[assignment]
         return ordered, distribution
 
+    def _interleave_phases(
+        self,
+        phases: dict[str, list[dict[str, Any]]],
+        canonical_order: list[str],
+    ) -> list[dict[str, Any]]:
+        buckets = {name: list(phases.get(name, [])) for name in canonical_order}
+        ordered: list[dict[str, Any]] = []
+        while any(buckets.values()):
+            for name in canonical_order:
+                if buckets.get(name):
+                    ordered.append(buckets[name].pop(0))
+        return ordered
+
     def shuffle_within_buckets(
         self,
         examples: list[dict[str, Any]],
         seed: int,
+        mode: str = "ordered_dataset",
     ) -> list[dict[str, Any]]:
-        """Shuffle examples within their difficulty buckets, maintaining easy-to-hard phase order."""
-        import random
+        """Shuffle examples within difficulty buckets while preserving the selected curriculum mode."""
         phases = self.build_phases(examples)
         rng = random.Random(seed)
         for name in list(phases.keys()):
             rng.shuffle(phases[name])
+        if mode in {"balanced_interleaved", "interleaved_buckets"}:
+            return self._interleave_phases(phases, ["phase_1", "phase_2", "phase_3", "phase_4"])
         ordered = []
         for name in ["phase_1", "phase_2", "phase_3", "phase_4"]:
             if name in phases:

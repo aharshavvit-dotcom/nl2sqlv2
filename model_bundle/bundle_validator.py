@@ -355,6 +355,15 @@ class ModelBundleValidator:
                 )
                 lifecycle_proof.update(seed_identity)
 
+        seed_config = (config or _read_bundled_training_config(path)).get("seeds") or {}
+        require_seed_training_variance = bool(
+            seed_config.get("require_full_retrain_for_production", False)
+            and manifest.quality_gate_mode in {"production", "release"}
+            and not allow_failed_quality_gate_debug
+        )
+        if require_seed_training_variance and not lifecycle_proof.get("multi_seed_valid_for_training_variance_governance", False):
+            issues.append("multi_seed_full_retrain_required_but_missing_or_invalid")
+
         # Read predicted-SQL execution report from bundle first, root artifacts second.
         predicted_sql_report, predicted_location, predicted_path = _read_predicted_sql_report(eval_dir, checked)
         lifecycle_proof["controlled_predicted_sql_report_location"] = predicted_location

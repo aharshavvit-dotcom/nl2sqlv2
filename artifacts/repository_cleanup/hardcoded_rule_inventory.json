@@ -1,0 +1,1379 @@
+[
+  {
+    "path": "README.md",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "app/streamlit_app.py",
+    "patterns": [
+      "customers"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "artifacts/repository_cleanup/archive_manifest.json",
+    "patterns": [
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "artifacts/repository_cleanup/before_after_stats.json",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "artifacts/repository_cleanup/cleanup_report.md",
+    "patterns": [
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "artifacts/repository_cleanup/configuration_usage_report.json",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "artifacts/repository_cleanup/hardcoded_rule_inventory.json",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue",
+      "quantity * unit_price",
+      "quantity * price",
+      "APPROVED_REVENUE_EXPR",
+      "sample schema",
+      "normalize_runtime_result"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "artifacts/repository_cleanup/hardcoded_rule_inventory.md",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue",
+      "quantity * unit_price",
+      "quantity * price",
+      "APPROVED_REVENUE_EXPR",
+      "sample schema",
+      "normalize_runtime_result"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "artifacts/repository_cleanup/repository_inventory.json",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "artifacts/repository_cleanup/test_cleanup_report.json",
+    "patterns": [
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "artifacts/repository_cleanup/test_inventory.json",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "artifacts/repository_cleanup/test_suite_cleanup_report.json",
+    "patterns": [
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "data/splits/semantic_v2/development_validation_ids.json",
+    "patterns": [
+      "customers"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "data/splits/semantic_v2/split_manifest.json",
+    "patterns": [
+      "customers"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "data/splits/semantic_v2/train_ids.json",
+    "patterns": [
+      "customers"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "data/synonyms.yaml",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "configuration_driven_semantic_defaults"
+  },
+  {
+    "path": "dataset_training/ir_corpus_builder.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "docs/architecture/training_data_lineage.md",
+    "patterns": [
+      "customers"
+    ],
+    "classification": "documentation_example_or_report"
+  },
+  {
+    "path": "docs/reports/enterprise_nl2sql_system_audit.md",
+    "patterns": [
+      "orders",
+      "revenue",
+      "sample schema",
+      "normalize_runtime_result"
+    ],
+    "classification": "documentation_example_or_report"
+  },
+  {
+    "path": "docs/reports/remaining_program_owner_matrix.md",
+    "patterns": [
+      "order_items",
+      "APPROVED_REVENUE_EXPR"
+    ],
+    "classification": "documentation_example_or_report"
+  },
+  {
+    "path": "docs/specs/query_ir_v1_frozen_spec.md",
+    "patterns": [
+      "revenue"
+    ],
+    "classification": "documentation_example_or_report"
+  },
+  {
+    "path": "evaluation/adaptive_router_benchmark_cases.jsonl",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "evaluation/fixtures/controlled_evaluation.sql",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "evaluation/fixtures/controlled_evaluation_cases.jsonl",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "evaluation/generic_benchmark_cases.jsonl",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "evaluation/golden_runtime_tests.jsonl",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "evaluation/golden_tests.jsonl",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "evaluation/hard_negative_cases.jsonl",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "evaluation/hybrid_benchmark_cases.jsonl",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "evaluation/hybrid_router_eval_cases.jsonl",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "evaluation/ir_conversion_golden.jsonl",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "evaluation/neural_ir_eval_cases.jsonl",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue",
+      "quantity * price"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "evaluation/neural_ir_v2_eval_cases.jsonl",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "evaluation/option_a_eval_cases.jsonl",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue",
+      "quantity * price"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "evaluation/option_a_v2_eval_cases.jsonl",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "evaluation/query_ir_v2_boolean_eval_cases.jsonl",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "generic_planner/generic_slot_resolver.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items"
+    ],
+    "classification": "runtime_or_gate_review_required"
+  },
+  {
+    "path": "generic_planner/table_intent_resolver.py",
+    "patterns": [
+      "revenue"
+    ],
+    "classification": "runtime_or_gate_review_required"
+  },
+  {
+    "path": "inference/candidate_reranker.py",
+    "patterns": [
+      "orders",
+      "revenue"
+    ],
+    "classification": "runtime_or_gate_review_required"
+  },
+  {
+    "path": "inference/prediction_confidence.py",
+    "patterns": [
+      "revenue"
+    ],
+    "classification": "runtime_or_gate_review_required"
+  },
+  {
+    "path": "inference/prediction_orchestrator.py",
+    "patterns": [
+      "revenue"
+    ],
+    "classification": "runtime_or_gate_review_required"
+  },
+  {
+    "path": "inference/schema_aware_mapper.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "runtime_or_gate_review_required"
+  },
+  {
+    "path": "inference/slot_resolver.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "runtime_or_gate_review_required"
+  },
+  {
+    "path": "inference/template_selector.py",
+    "patterns": [
+      "revenue"
+    ],
+    "classification": "runtime_or_gate_review_required"
+  },
+  {
+    "path": "ir/ir_validator.py",
+    "patterns": [
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "ir/option_c_to_ir.py",
+    "patterns": [
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "ir/query_ir_v2_rendering/expressions.py",
+    "patterns": [
+      "order_items"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "ir/query_ir_v2_roundtrip.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "ir/semantic_metric_resolver.py",
+    "patterns": [
+      "order_items",
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "ir/sql_to_ir_converter.py",
+    "patterns": [
+      "order_items",
+      "APPROVED_REVENUE_EXPR"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "model_bundle/bundle_validator.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "neural_ir/candidate_builder.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "neural_ir/confidence_calibrator.py",
+    "patterns": [
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "neural_ir/dataset_quality.py",
+    "patterns": [
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "neural_ir/error_analysis.py",
+    "patterns": [
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "neural_ir/hard_negative_builder.py",
+    "patterns": [
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "neural_ir/ir_label_encoder.py",
+    "patterns": [
+      "order_items",
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "neural_ir/ir_repair.py",
+    "patterns": [
+      "order_items",
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "neural_ir/option_a_to_ir.py",
+    "patterns": [
+      "order_items",
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "neural_ir/schema_linearizer.py",
+    "patterns": [
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "neural_ir/schema_linker.py",
+    "patterns": [
+      "customers",
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "neural_ir/training_curriculum.py",
+    "patterns": [
+      "order_items"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "nl2sql_v1/slot_extractor.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "orchestration/step_runner.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "quality_gates/regression_suite.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "runtime_or_gate_review_required"
+  },
+  {
+    "path": "retriever/retrieval_nl2sql_model.py",
+    "patterns": [
+      "normalize_runtime_result"
+    ],
+    "classification": "runtime_or_gate_review_required"
+  },
+  {
+    "path": "reward/reward_features.py",
+    "patterns": [
+      "revenue"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "scripts/audit_generic_nl2sql_readiness.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "scripts/create_sample_db.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "scripts/generate_repository_cleanup_inventory.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue",
+      "quantity * unit_price",
+      "quantity * price",
+      "APPROVED_REVENUE_EXPR",
+      "sample schema",
+      "normalize_runtime_result"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "scripts/run_golden_tests.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "semantic_layer/schema_profiler.py",
+    "patterns": [
+      "customers"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "tests/integration/test_database_and_connected_regression.py",
+    "patterns": [
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/integration/test_query_ir_v2_execution.py",
+    "patterns": [
+      "customers"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_active_pipeline.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_bird_adapter.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_build_ir_training_data.py",
+    "patterns": [
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_candidate_builder.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_central_sql_validator.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_confidence_breakdown.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_confidence_caps.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_corpus_builder.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_dataset_models.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_date_filter_runtime.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_evaluate_runtime.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_hard_negative_builder.py",
+    "patterns": [
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_hybrid_benchmark.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_hybrid_router.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_hybrid_router_calibration.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_inference_runtime.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_ir_label_encoder.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_ir_repair.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_ir_roundtrip_validator.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_ir_to_sql_renderer.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_ir_validator.py",
+    "patterns": [
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_main_flow.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_neural_ir_dataset.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_neural_ir_tokenizer.py",
+    "patterns": [
+      "customers"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_neural_ir_vocab.py",
+    "patterns": [
+      "customers"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_option_a_candidate_masks.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_option_a_curriculum_training.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_option_a_error_analysis.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_option_a_predictor.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_option_a_to_ir.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_option_a_training_smoke.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_option_a_v2_evaluator.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_option_a_v2_training_smoke.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_option_c_to_ir.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_prediction_orchestrator.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_product_revenue_semantics.py",
+    "patterns": [
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_query_ir_models.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_retrieval_nl2sql_model.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_runtime_end_to_end.py",
+    "patterns": [
+      "customers"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_runtime_golden_cases.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_safe_preview_sql.py",
+    "patterns": [
+      "customers"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_schema_linearizer.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_schema_linker.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_simple_filter_runtime.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_spider_adapter.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_sql_feature_extractor.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_sql_pattern_classifier.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_sql_to_ir_converter.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_sql_to_ir_rules.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_sql_validator.py",
+    "patterns": [
+      "customers"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_template_selector_filters.py",
+    "patterns": [
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_train_retriever_from_datasets.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_validate_ir_corpus.py",
+    "patterns": [
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/legacy/test_wikisql_adapter.py",
+    "patterns": [
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/query_ir_v2_boolean_helpers.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/query_ir_v2_test_helpers.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_01_core_ir.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_05_neural_runtime.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_06_adaptive_router.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_07_training_data_pipeline.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_08_streamlit_app_helpers.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_09_end_to_end_smoke.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_102_candidate_relation_graph.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_106_semantic_pass.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_108_query_ir_diff_enhanced.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_118_route_diagnostics.py",
+    "patterns": [
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_125_grounding_e2e_regression.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_33_feedback_index.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_40_gold_comparator.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_41_error_classifier.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_42_hard_negative_generator.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_43_correction_generator.py",
+    "patterns": [
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_45_self_training_loop.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_46_prediction_runner.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_81_diagnostics_and_telemetry.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_cache_identity_domain.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_gate1_queryir_v2_advanced.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_gate1_validation_migration.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_gate2_data_readiness.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_gate3_architecture.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_gate5_evaluation.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_gate6_production.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/test_training_audit_fixes.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "normalize_runtime_result"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/unit/capabilities/test_capability_pipeline.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/unit/data/test_dataset_pipeline.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/unit/execution/test_sql_validation_and_safety.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/unit/ir/test_query_ir_migration.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/unit/ir/test_query_ir_v2_conversion.py",
+    "patterns": [
+      "customers"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/unit/ir/test_query_ir_v2_models.py",
+    "patterns": [
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/unit/ir/test_query_ir_v2_rendering.py",
+    "patterns": [
+      "customers"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/unit/ir/test_query_ir_v2_validation.py",
+    "patterns": [
+      "customers",
+      "orders"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/unit/retrieval/test_retrieval_pipeline.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "tests/unit/runtime/test_generic_planner_and_grounding.py",
+    "patterns": [
+      "customers",
+      "orders",
+      "revenue"
+    ],
+    "classification": "test_or_benchmark_fixture"
+  },
+  {
+    "path": "training/schema_graph.py",
+    "patterns": [
+      "orders"
+    ],
+    "classification": "review_required"
+  },
+  {
+    "path": "training_data/examples.jsonl",
+    "patterns": [
+      "customers",
+      "orders",
+      "order_items",
+      "revenue"
+    ],
+    "classification": "review_required"
+  }
+]

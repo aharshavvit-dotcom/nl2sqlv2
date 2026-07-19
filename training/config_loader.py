@@ -20,12 +20,14 @@ CANONICAL_NEURAL_CONFIG = Path("configs/neural_training_default.yaml")
 _REQUIRED_CANONICAL = {
     "epochs": 10,
     "batch_size": 8,
-    "save_best_metric": "support_weighted_semantic_score",
-    "save_best_mode": "max",
+    "gradient_accumulation_steps": 4,
+    "save_best_metric": "loss",
+    "save_best_mode": "min",
     "early_stopping_patience": 2,
     "weight_decay": 0.0001,
     "pointer_head_weight_decay": 0.001,
     "pointer_dropout": 0.30,
+    "hard_negative_weight": 0.1,
 }
 
 
@@ -47,10 +49,12 @@ def resolve_effective_neural_config(
     training = dict(raw.get("training") or {})
     optimizer = dict(raw.get("optimizer") or {})
     model = dict(raw.get("model") or {})
+    loss = dict(raw.get("loss") or {})
     effective: dict[str, Any] = {
         "config_path": _relative_path(config_path, root),
         "epochs": training.get("epochs"),
         "batch_size": training.get("batch_size"),
+        "gradient_accumulation_steps": training.get("gradient_accumulation_steps"),
         "save_best_metric": training.get("save_best_metric"),
         "save_best_mode": training.get("save_best_mode"),
         "early_stopping_patience": training.get("early_stopping_patience"),
@@ -58,6 +62,7 @@ def resolve_effective_neural_config(
         "semantic_score_min_support": training.get("semantic_score_min_support"),
         "weight_decay": optimizer.get("weight_decay"),
         "pointer_head_weight_decay": optimizer.get("pointer_head_weight_decay"),
+        "hard_negative_weight": loss.get("hard_negative"),
         "dropout": model.get("dropout"),
         "pointer_dropout": model.get("pointer_dropout"),
         "override_sources": [],

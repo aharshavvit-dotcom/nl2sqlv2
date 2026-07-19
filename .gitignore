@@ -58,6 +58,8 @@ training_data/*.jsonl
 
 # Trained models and experiment artifacts
 artifacts/*
+!artifacts/repository_cleanup/
+!artifacts/repository_cleanup/**
 !artifacts/option_c_model/
 artifacts/option_c_model/*
 !artifacts/option_c_model/.gitkeep

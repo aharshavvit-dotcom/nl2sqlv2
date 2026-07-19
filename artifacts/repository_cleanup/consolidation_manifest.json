@@ -1,0 +1,37 @@
+[
+  {
+    "area": "retrieval vs retriever",
+    "classification": "CONSOLIDATE",
+    "canonical_owner": "retrieval/ for index/reranker infrastructure; retriever/ currently retains runtime RetrievalNL2SQLModel wrapper",
+    "evidence": "app/streamlit_app.py and tests still import retriever.retrieval_nl2sql_model",
+    "cleanup_action": "Plan import migration before deleting retriever/."
+  },
+  {
+    "area": "training vs training_ir",
+    "classification": "REVIEW_REQUIRED",
+    "canonical_owner": "training/train_model.py for integrated pipeline",
+    "evidence": "training_ir contains legacy/experimental Option A commands with legacy tests",
+    "cleanup_action": "Keep until commands are replaced or archived with tests/docs updated."
+  },
+  {
+    "area": "dataset_training vs datasets",
+    "classification": "KEEP_BOTH",
+    "canonical_owner": "datasets/ adapters; dataset_training/ corpus/split/leakage builders",
+    "evidence": "Different responsibilities; both are referenced by training paths.",
+    "cleanup_action": "No merge without API design."
+  },
+  {
+    "area": "models vs model_bundle",
+    "classification": "KEEP_BOTH",
+    "canonical_owner": "model_bundle/ for production bundles; models/ only ignored local artifact placeholder",
+    "evidence": "Runtime uses bundle manifests rather than models/ guesses.",
+    "cleanup_action": "Keep models/.gitkeep only."
+  },
+  {
+    "area": "evaluation reports in docs/reports vs artifacts/",
+    "classification": "ARCHIVE",
+    "canonical_owner": "artifacts/pipeline/runs/<run_id>/reports for run-scoped generated reports",
+    "evidence": "docs/reports contains run-specific quality gate diagnosis.",
+    "cleanup_action": "Move after review; no automatic deletion in this pass."
+  }
+]

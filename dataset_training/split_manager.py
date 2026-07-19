@@ -67,6 +67,8 @@ class DatasetSplitManager:
         divergence_threshold: float = 0.25,
         strict_mode: bool = False,
         force_create_new_version: bool = False,
+        parent_split_version: str | None = None,
+        regeneration_reason: str | None = None,
     ):
         self.seed = seed
         self.split_version = split_version
@@ -74,6 +76,8 @@ class DatasetSplitManager:
         self.divergence_threshold = divergence_threshold
         self.strict_mode = strict_mode
         self.force_create_new_version = force_create_new_version
+        self.parent_split_version = parent_split_version
+        self.regeneration_reason = regeneration_reason
         
         self.raw_train_ratio = train_ratio
         self.raw_validation_ratio = validation_ratio
@@ -209,6 +213,7 @@ class DatasetSplitManager:
             split_name = db_to_output_split[db_id]
             splits[split_name].append(self._with_split(row, split_name))
 
+        self._validate_training_eligibility(splits)
         self._reroute_non_train_eligible_rows(splits)
         self._validate_training_eligibility(splits)
         return splits
@@ -240,6 +245,9 @@ class DatasetSplitManager:
         manifest = {
             "split_schema_version": "1.0",
             "split_version": self.split_version,
+            "parent_split_version": self.parent_split_version,
+            "regeneration_reason": self.regeneration_reason,
+            "force_create_new_version": self.force_create_new_version,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "random_seed": self.seed,
             "dataset_hashes": self._dataset_hashes(splits),

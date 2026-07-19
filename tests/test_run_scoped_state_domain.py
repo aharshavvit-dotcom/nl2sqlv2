@@ -1,10 +1,17 @@
+"""
+Purpose: Protects data unit behaviour.
+Required because: A failing test in this module identifies a production contract or migration expectation that must be reviewed before merge.
+"""
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
+import types
 
 from orchestration.pipeline_state import PipelineState
-from training.train_model import main, parse_args
+from training.train_model import main, parse_args, verify_datasets
 
 
 def test_pipeline_state_reuse_requires_same_run_and_config_hash(tmp_path: Path) -> None:
@@ -50,3 +57,16 @@ def test_train_model_resume_run_id_preserves_run_identity(monkeypatch, tmp_path:
 
     assert main() == 0
     assert captured == {"run_id": "existing-run-123", "resume": True}
+
+
+def test_verify_datasets_fails_closed_on_verifier_exception(monkeypatch) -> None:
+    verifier = types.ModuleType("scripts.verify_datasets")
+
+    def raise_verifier_error():
+        raise RuntimeError("verifier broke")
+
+    verifier.verify_all = raise_verifier_error
+    monkeypatch.setitem(sys.modules, "scripts.verify_datasets", verifier)
+
+    assert verify_datasets({"datasets": {"names": ["spider"], "max_examples": 15000}}) is False
+    assert verify_datasets({"pipeline": {"name": "smoke"}, "datasets": {"names": ["spider"]}}) is True

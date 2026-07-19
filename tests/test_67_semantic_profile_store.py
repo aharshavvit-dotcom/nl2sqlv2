@@ -1,10 +1,15 @@
+"""
+Purpose: Protects general unit behaviour.
+Required because: A failing test in this module identifies a production contract or migration expectation that must be reviewed before merge.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
 
 from semantic_layer import build_semantic_profile
 from semantic_layer.semantic_profile_store import SemanticProfileStore
-from tests.test_60_schema_profiler import generic_schema
+from tests.fixtures.generic_schema import generic_schema
 
 
 def test_semantic_profile_store_round_trips_by_fingerprint(tmp_path: Path) -> None:
