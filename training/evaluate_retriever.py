@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from nl2sql_v1.retriever import TfidfRetriever
+from retrieval.tfidf_retriever import TfidfRetriever
 from scripts.dataset_paths import ARTIFACT_DIR
 from training.train_retriever_from_datasets import _atomic_json
 

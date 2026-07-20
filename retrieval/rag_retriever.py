@@ -5,7 +5,7 @@ from typing import Any
 
 import joblib
 
-from nl2sql_v1.retriever import RetrievalResult
+from retrieval.tfidf_retriever import RetrievalResult
 
 from .example_index import ExampleIndex
 from .feedback_index import FeedbackIndex

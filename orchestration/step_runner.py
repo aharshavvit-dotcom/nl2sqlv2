@@ -784,7 +784,7 @@ class StepRunner:
         if config.skip_heavy_steps:
             return {"status": "completed", "summary": {"skipped": True, "reason": "skip_heavy_steps enabled"}}
         from model_bundle.bundle_loader import ModelBundleLoader
-        from nl2sql_v1.schema import ColumnInfo, SchemaGraph, TableInfo
+        from db.schema_graph import ColumnInfo, SchemaGraph, TableInfo
         from retriever.retrieval_nl2sql_model import RetrievalNL2SQLModel
 
         integrated = config.training.get("_integrated_config") or {}

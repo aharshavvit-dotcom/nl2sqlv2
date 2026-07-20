@@ -10,8 +10,8 @@ from inference.prediction_models import PredictionResult
 from inference.prediction_orchestrator import PredictionOrchestrator
 from inference.prediction_route import DiagnosticContext
 from inference.synonym_loader import load_metric_dimension_maps
-from nl2sql_v1.retriever import TfidfRetriever
-from nl2sql_v1.schema import SchemaGraph
+from retrieval.tfidf_retriever import TfidfRetriever
+from db.schema_graph import SchemaGraph
 
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -4,7 +4,7 @@ from dataclasses import asdict, is_dataclass
 import re
 from typing import Any
 
-from nl2sql_v1.schema import SchemaGraph
+from db.schema_graph import SchemaGraph
 
 from .query_ir_models import IRValidationIssue, IRValidationResult, QueryIR
 

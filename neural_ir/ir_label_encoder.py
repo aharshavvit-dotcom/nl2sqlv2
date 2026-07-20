@@ -22,6 +22,7 @@ METRIC_EXPRESSION_TYPES = ["none", "column", "count_star", "product_revenue_expr
 DATE_GRAINS = ["none", "month", "year"]
 DATE_FILTER_TYPES = ["none", "last_month", "this_month", "last_year", "this_year", "last_30_days", "absolute_range"]
 FILTER_OPERATORS = ["none", "equals", "not_equals", "greater_than", "greater_equal", "less_than", "less_equal", "contains", "in"]
+FILTER_VALUE_TYPES = ["none", "string", "integer", "float", "date", "boolean", "null"]
 ORDER_DIRECTIONS = ["none", "ASC", "DESC"]
 LIMIT_BUCKETS = ["default_100", "top_5", "top_10", "top_20", "custom"]
 
@@ -36,6 +37,7 @@ class IRLabelEncoder:
             "date_grain": _map(DATE_GRAINS),
             "date_filter_type": _map(DATE_FILTER_TYPES),
             "filter_operator": _map(FILTER_OPERATORS),
+            "filter_value_type": _map(FILTER_VALUE_TYPES),
             "order_direction": _map(ORDER_DIRECTIONS),
             "limit_bucket": _map(LIMIT_BUCKETS),
         }
@@ -104,6 +106,7 @@ class IRLabelEncoder:
             "date_filter_type_label": self._label("date_filter_type", _date_filter_type(date_filter), "none"),
             "filter_column_index": filter_column_index,
             "filter_operator_label": self._label("filter_operator", (ir_filter or {}).get("operator") or "none", "none"),
+            "filter_value_type_label": self._label("filter_value_type", _filter_value_type(ir_filter), "none"),
             "order_direction_label": self._label("order_direction", (order_by or {}).get("direction") or "none", "none"),
             "limit_bucket_label": self._label("limit_bucket", _limit_bucket(query_ir.get("limit")), "default_100"),
         }
@@ -326,3 +329,24 @@ def _limit_bucket(limit: Any) -> str:
 
 def _limit_from_bucket(bucket: str) -> int:
     return {"top_5": 5, "top_10": 10, "top_20": 20}.get(bucket, 100)
+
+
+def _filter_value_type(ir_filter: dict | None) -> str:
+    """Infer the value type of a filter literal."""
+    if not ir_filter:
+        return "none"
+    value = ir_filter.get("value")
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        # Check for date pattern
+        if re.match(r"^\d{4}-\d{2}-\d{2}", value):
+            return "date"
+        return "string"
+    return "string"

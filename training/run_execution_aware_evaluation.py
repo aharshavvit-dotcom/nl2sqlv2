@@ -138,7 +138,7 @@ def _build_schema_from_sqlite(
 
     Returns (SchemaGraph, list_of_ForeignKeyInfo) so callers can inspect FK count.
     """
-    from nl2sql_v1.schema import ColumnInfo, ForeignKeyInfo, SchemaGraph, TableInfo
+    from db.schema_graph import ColumnInfo, ForeignKeyInfo, SchemaGraph, TableInfo
 
     tables: dict[str, TableInfo] = {}
     all_fks: list[ForeignKeyInfo] = []

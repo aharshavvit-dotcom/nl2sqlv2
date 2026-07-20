@@ -10,7 +10,7 @@ try:  # pragma: no cover - exercised when optional dependency is absent
 except Exception:  # pragma: no cover
     fuzz = None
 
-from nl2sql_v1.schema import SchemaGraph
+from db.schema_graph import SchemaGraph
 
 from .schema_text_normalizer import (
     column_name_variants,

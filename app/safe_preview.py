@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from nl2sql_v1.schema import SchemaGraph
+from db.schema_graph import SchemaGraph
 
 
 SENSITIVE_MARKERS = ("email", "phone", "password", "token", "secret", "ssn", "address")

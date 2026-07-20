@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 try:  # pragma: no cover - optional in minimal installs
-    from nl2sql_v1.schema import SchemaGraph
+    from db.schema_graph import SchemaGraph
 except Exception:  # pragma: no cover
     SchemaGraph = None  # type: ignore
 

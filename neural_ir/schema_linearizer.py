@@ -4,7 +4,7 @@ from dataclasses import asdict, is_dataclass
 import re
 from typing import Any
 
-from nl2sql_v1.schema import SchemaGraph
+from db.schema_graph import SchemaGraph
 
 
 DATE_NAME_MARKERS = ("date", "time", "created", "updated", "month", "year", "timestamp")

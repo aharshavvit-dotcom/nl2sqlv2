@@ -4,7 +4,7 @@ from collections import defaultdict
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from nl2sql_v1.schema import ForeignKeyInfo, SchemaGraph
+from db.schema_graph import ForeignKeyInfo, SchemaGraph
 
 
 SENSITIVE_MARKERS = ["email", "phone", "password", "token", "secret", "ssn", "address"]

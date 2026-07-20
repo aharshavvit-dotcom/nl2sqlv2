@@ -12,7 +12,12 @@ from .model import DEFAULT_CONFIG, OptionAIRModel
 from .vocab import Vocabulary
 
 
-SCHEMA_AWARE_MODEL_VERSIONS = {"option_a_v2", "schema_aware_queryir_v1", "neural_queryir_v1"}
+SCHEMA_AWARE_MODEL_VERSIONS = {
+    "neural_queryir",           # Canonical version (new)
+    "schema_aware_queryir_v1",  # Legacy alias (backward compat)
+    "neural_queryir_v1",        # Legacy alias (backward compat)
+    "option_a_v2",              # Historical alias (backward compat)
+}
 
 
 def save_model_bundle(model, vocab: Vocabulary, label_encoder: IRLabelEncoder, config: dict, output_dir) -> None:

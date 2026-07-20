@@ -21,6 +21,7 @@ from execution.query_executor import execute_select, execute_query
 from feedback.feedback_models import QueryFeedback
 from feedback.feedback_store import FeedbackStore
 from retriever.retrieval_nl2sql_model import RetrievalNL2SQLModel
+from inference.nl2sql_service import NL2SQLService
 from connected_db_testing.generated_case_runner import ConnectedDBRegressionReporter, ConnectedDBRegressionRunner
 from connected_db_testing.schema_case_generator import SchemaCaseGenerator, write_cases_jsonl
 from semantic_layer import build_semantic_profile
@@ -155,6 +156,21 @@ def _load_model_from_bundle(bundle: dict[str, Any]) -> RetrievalNL2SQLModel:
         synonyms_path=SYNONYMS_PATH,
         neural_ir_model_dir=neural_dir if neural_ready else None,
         allow_dev_fallback=False,
+    )
+
+
+def _load_service_from_bundle(bundle: dict[str, Any]) -> NL2SQLService:
+    """Load NL2SQLService from a validated bundle (canonical path)."""
+    retrieval_dir = Path(bundle["retrieval_model_dir"])
+    neural_dir = Path(bundle["neural_model_dir"])
+    # Build schema from the current session if available
+    schema = st.session_state.get("_cached_schema_graph")
+    return NL2SQLService.from_bundle(
+        bundle_dir=retrieval_dir.parent,
+        schema=schema,
+        config_overrides={
+            "model_version": bundle.get("manifest", {}).get("model_version", "neural_queryir"),
+        },
     )
 
 

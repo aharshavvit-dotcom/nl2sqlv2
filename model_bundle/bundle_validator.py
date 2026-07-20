@@ -690,7 +690,7 @@ def _validate_retrieval_runtime(
     if any(not (retrieval_dir / name).exists() for name in required):
         return summary
     try:
-        from nl2sql_v1.schema import ColumnInfo, SchemaGraph, TableInfo
+        from db.schema_graph import ColumnInfo, SchemaGraph, TableInfo
         from retriever.retrieval_nl2sql_model import RetrievalNL2SQLModel
 
         neural_ready = neural_dir is not None and (neural_dir / "model.pt").exists()

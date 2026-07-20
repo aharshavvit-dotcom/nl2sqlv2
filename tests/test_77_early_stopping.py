@@ -54,3 +54,43 @@ class TestEarlyStopping:
         es.step({"overall_slot_accuracy": 0.5})
         es.step({"overall_slot_accuracy": 0.4})
         assert es.step({"overall_slot_accuracy": 0.3}) is True
+
+    def test_triggered_false_initially(self):
+        """triggered property is False before any early stop event."""
+        es = EarlyStopping(patience=3, metric_name="accuracy", mode="max")
+        assert es.triggered is False
+        es.step({"accuracy": 0.8})
+        assert es.triggered is False
+        es.step({"accuracy": 0.7})
+        assert es.triggered is False
+
+    def test_triggered_latches_true_on_patience(self):
+        """triggered latches True when patience-based stop fires."""
+        es = EarlyStopping(patience=2, metric_name="accuracy", mode="max")
+        es.step({"accuracy": 0.8})
+        es.step({"accuracy": 0.7})
+        assert es.triggered is False
+        result = es.step({"accuracy": 0.6})
+        assert result is True
+        assert es.triggered is True
+
+    def test_triggered_latches_true_on_regression(self):
+        """triggered latches True when regression-based stop fires."""
+        es = EarlyStopping(patience=5, metric_name="accuracy", mode="max", regression_threshold=0.3)
+        es.step({"accuracy": 0.9})
+        result = es.step({"accuracy": 0.5})  # drops 0.4 > threshold 0.3
+        assert result is True
+        assert es.triggered is True
+
+    def test_triggered_never_resets(self):
+        """triggered stays True even after construction of reporting."""
+        es = EarlyStopping(patience=2, metric_name="accuracy", mode="max")
+        es.step({"accuracy": 0.8})
+        es.step({"accuracy": 0.7})
+        es.step({"accuracy": 0.6})  # triggers
+        assert es.triggered is True
+        # Property should remain True even if counter is inspected
+        _ = es.counter
+        _ = es.best_value
+        assert es.triggered is True
+

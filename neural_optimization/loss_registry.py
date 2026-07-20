@@ -16,11 +16,15 @@ def cross_entropy_loss(ignore_index: int = -1) -> Callable:
     return torch.nn.CrossEntropyLoss(ignore_index=ignore_index)
 
 
-def masked_cross_entropy_fn(logits, targets, mask=None, ignore_index: int = -1):
+def masked_cross_entropy_fn(logits, targets, mask=None, ignore_index: int = -1, label_smoothing: float = 0.0):
     """Masked cross-entropy used for pointer heads.
 
     Re-exports the function from ``neural_ir.loss_utils`` so that the
     optimized trainer can use the same loss without a circular import.
+
+    Args:
+        label_smoothing: When > 0, applies label smoothing to reduce
+            overconfidence and improve generalization. Typical values: 0.05-0.15.
     """
     effective_targets = targets
     if mask is not None:
@@ -35,7 +39,7 @@ def masked_cross_entropy_fn(logits, targets, mask=None, ignore_index: int = -1):
         effective_targets = torch.where(valid_target & target_ok, targets, torch.full_like(targets, ignore_index))
     if not effective_targets.ne(ignore_index).any():
         return logits.sum() * 0.0
-    return F.cross_entropy(logits, effective_targets, ignore_index=ignore_index)
+    return F.cross_entropy(logits, effective_targets, ignore_index=ignore_index, label_smoothing=label_smoothing)
 
 
 def margin_ranking_loss(gold_scores, negative_scores, margin: float = 0.2):

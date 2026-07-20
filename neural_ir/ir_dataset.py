@@ -53,6 +53,7 @@ class IRTrainingDataset(Dataset):
         max_columns: int = 256,
         max_examples: int | None = None,
         hard_negative_rows: list[dict[str, Any]] | None = None,
+        partial_supervision_path: str | None = None,
     ):
         self.path = Path(path)
         self.vocab = vocab
@@ -66,9 +67,39 @@ class IRTrainingDataset(Dataset):
         self.candidate_builder = SchemaCandidateBuilder()
         self.schema_linker = SchemaLinker()
         self.examples = load_jsonl(self.path)
+        # Merge partial supervision examples if provided
+        self._partial_supervision_count = 0
+        if partial_supervision_path:
+            ps_path = Path(partial_supervision_path)
+            if ps_path.exists() and ps_path.stat().st_size > 0:
+                ps_examples = load_jsonl(ps_path)
+                # Only include rows that have a query_ir and partial_supervision
+                valid_ps = [
+                    row for row in ps_examples
+                    if isinstance(row.get("query_ir"), dict) and row.get("query_ir")
+                ]
+                self._partial_supervision_count = len(valid_ps)
+                self.examples.extend(valid_ps)
         if max_examples is not None and max_examples > 0:
             self.examples = self.examples[:max_examples]
         self.hard_negative_by_example = _index_hard_negatives(hard_negative_rows or [])
+        # Hard-negative diagnostic counters
+        self._hn_missing_candidate: int = 0
+        self._hn_equal_to_gold: int = 0
+        self._hn_invalid_index: int = 0
+        self._hn_valid_pair: int = 0
+        self._hn_no_negative_ir: int = 0
+
+    @property
+    def hard_negative_diagnostics(self) -> dict[str, int]:
+        """Summary of hard-negative pair classification for training reports."""
+        return {
+            "missing_candidate": self._hn_missing_candidate,
+            "equal_to_gold": self._hn_equal_to_gold,
+            "invalid_index": self._hn_invalid_index,
+            "valid_pair": self._hn_valid_pair,
+            "no_negative_ir": self._hn_no_negative_ir,
+        }
 
     def __len__(self) -> int:
         return len(self.examples)
@@ -174,13 +205,34 @@ class IRTrainingDataset(Dataset):
         negative_row = self.hard_negative_by_example.get(example_id)
         negative_ir = (negative_row or {}).get("negative_query_ir") or (negative_row or {}).get("query_ir")
         if not isinstance(negative_ir, dict):
+            if negative_row is not None:
+                self._hn_no_negative_ir += 1
             return enriched
         negative_labels = self.label_encoder.encode(negative_ir, schema_items)
-        enriched["negative_base_table_index"] = int(negative_labels.get("base_table_index", -1))
-        enriched["negative_metric_column_index"] = int(negative_labels.get("metric_column_index", -1))
-        enriched["negative_dimension_column_index"] = int(negative_labels.get("dimension_column_index", -1))
-        enriched["negative_date_column_index"] = int(negative_labels.get("date_column_index", -1))
-        enriched["negative_filter_column_index"] = int(negative_labels.get("filter_column_index", -1))
+
+        # Diagnostic: classify each pointer pair
+        pointer_pairs = [
+            ("base_table_index", "negative_base_table_index"),
+            ("metric_column_index", "negative_metric_column_index"),
+            ("dimension_column_index", "negative_dimension_column_index"),
+            ("date_column_index", "negative_date_column_index"),
+            ("filter_column_index", "negative_filter_column_index"),
+        ]
+        has_valid_pair = False
+        for gold_key, neg_key in pointer_pairs:
+            gold_val = int(labels.get(gold_key, -1))
+            neg_val = int(negative_labels.get(gold_key, -1))
+            if neg_val < 0:
+                self._hn_missing_candidate += 1
+            elif neg_val == gold_val:
+                self._hn_equal_to_gold += 1
+            elif gold_val < 0:
+                self._hn_invalid_index += 1
+            else:
+                self._hn_valid_pair += 1
+                has_valid_pair = True
+            enriched[neg_key] = neg_val
+
         return enriched
 
     @staticmethod

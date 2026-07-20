@@ -101,9 +101,30 @@ def run_optimized_training(
 
     Returns a metrics dict suitable for experiment comparison.
     """
+    # Artifact isolation: create run-scoped subdirectory
+    from datetime import datetime, timezone
+    pipeline_run_id = str(config.output.get("pipeline_run_id", ""))
+    if not pipeline_run_id:
+        pipeline_run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_output_dir = output_dir / "runs" / pipeline_run_id
+    run_output_dir.mkdir(parents=True, exist_ok=True)
+    # Also keep top-level output_dir functional for backward compat
     output_dir.mkdir(parents=True, exist_ok=True)
     if config.output.get("save_effective_config", True):
+        save_effective_config(config, run_output_dir / "effective_config.yaml")
         save_effective_config(config, output_dir / "effective_config.yaml")
+
+    # Capture training provenance
+    from training.provenance import TrainingProvenance
+    provenance = TrainingProvenance.capture(
+        config=config.to_dict() if hasattr(config, "to_dict") else {},
+        train_path=config.data.get("train_path", ""),
+        val_path=config.data.get("validation_path", ""),
+        hard_negatives_path=config.data.get("hard_negatives_path", ""),
+        partial_supervision_path=config.data.get("partial_supervision_path", ""),
+        pipeline_run_id=pipeline_run_id,
+    )
+
     # Seed
     seed = int(config.training.get("seed", 42))
     random.seed(seed)
@@ -119,6 +140,8 @@ def run_optimized_training(
     legacy_mode = bool(config.data.get("legacy_mode", False))
     sample_mode = bool(config.data.get("sample_mode", False))
     smoke_mode = bool(config.training.get("smoke", False) or (max_examples is not None and max_examples <= 200))
+    partial_supervision_path_str = config.data.get("partial_supervision_path", "")
+    partial_supervision_path = _resolve_path(partial_supervision_path_str) if partial_supervision_path_str else None
 
     if not train_path.exists():
         print(f"Error: Training file not found: {train_path}")
@@ -209,7 +232,9 @@ def run_optimized_training(
         max_columns=int(model_config.get("max_columns", 256)),
         max_examples=max_examples,
         hard_negative_rows=hard_negative_rows if hard_negative_loss_active else None,
+        partial_supervision_path=str(partial_supervision_path) if partial_supervision_path else None,
     )
+    partial_supervision_count = train_dataset._partial_supervision_count
     if len(train_dataset) == 0:
         return {"error": "No training examples loaded"}
 
@@ -301,22 +326,47 @@ def run_optimized_training(
         except Exception:
             pass
 
-    # Run data leakage audit
+    # Run data leakage audit using canonical DatasetLeakageChecker API
     from dataset_training.leakage_checker import DatasetLeakageChecker
     try:
         leakage_checker = DatasetLeakageChecker()
-        leakage_res = leakage_checker.check_leakage(train_path, val_path)
-        leakage_summary = {
-            "ok": leakage_res.ok,
-            "total_issues": len(leakage_res.issues),
-            "issues": [str(issue) for issue in leakage_res.issues],
+        # Build splits dict from loaded training/validation rows
+        leakage_splits = {
+            "train": train_rows_for_stats,
+            "validation": val_rows_for_stats,
         }
+        leakage_res = leakage_checker.run_all_checks(leakage_splits)
+        has_blocking = bool(
+            leakage_res.get("has_question_leakage")
+            or leakage_res.get("has_sql_leakage")
+            or leakage_res.get("has_query_ir_leakage")
+        )
+        leakage_summary = {
+            "ok": not has_blocking,
+            "total_issues": int(
+                leakage_res.get("question_overlap_count", 0)
+                + leakage_res.get("sql_overlap_count", 0)
+                + leakage_res.get("query_ir_overlap_count", 0)
+            ),
+            "blocking_leakage_detected": has_blocking,
+            "details": {k: v for k, v in leakage_res.items() if not isinstance(v, list) or len(v) < 20},
+        }
+        if has_blocking and not smoke_mode:
+            return {
+                "error": f"Blocking data leakage detected. {leakage_summary['total_issues']} violations. Training cannot proceed.",
+                "leakage_summary": leakage_summary,
+            }
     except Exception as exc:
-        leakage_summary = {
-            "ok": False,
-            "total_issues": 1,
-            "issues": [f"Leakage audit execution failed: {exc}"],
-        }
+        if smoke_mode:
+            leakage_summary = {
+                "ok": False,
+                "total_issues": 1,
+                "issues": [f"Leakage audit execution failed: {exc}"],
+            }
+        else:
+            return {
+                "error": f"Leakage audit failed and production training requires passing audit: {exc}",
+            }
 
     # Diagnostics
     diagnostics = TrainingDiagnostics(output_dir)
@@ -327,6 +377,7 @@ def run_optimized_training(
     diagnostics.start_training()
 
     grad_clip = float(config.training.get("gradient_clipping", 1.0))
+    label_smoothing = float(config.loss.get("label_smoothing", 0.0))
 
     print(f"Starting optimized Neural QueryIR training for {epochs} epochs")
     print(f"  Optimizer: {config.optimizer.get('name')} | Activation: {config.model.get('activation')}")
@@ -335,6 +386,8 @@ def run_optimized_training(
     print(f"  Checkpoint monitor: {best_metric}")
     print(f"  Checkpoint mode: {best_mode}")
     print(f"  Early stopping patience: {early_stopper.patience}")
+    if label_smoothing > 0:
+        print(f"  Label smoothing: {label_smoothing}")
     if best_metric == "loss" and best_mode == "min":
         print("  Best checkpoint selected by lowest validation loss")
     if hard_negative_warning:
@@ -383,7 +436,7 @@ def run_optimized_training(
                     continue
                 mask = batch.get(HEAD_TO_MASK.get(head, ""))
                 loss_name = _HEAD_LOSS_NAME.get(head, head.replace("_logits", ""))
-                head_losses[loss_name] = masked_cross_entropy_fn(outputs[head], target, mask=mask, ignore_index=-1)
+                head_losses[loss_name] = masked_cross_entropy_fn(outputs[head], target, mask=mask, ignore_index=-1, label_smoothing=label_smoothing)
 
             # Hard-negative loss
             if hard_negative_loss_active:
@@ -568,6 +621,29 @@ def run_optimized_training(
             print(f"  Early stopping at epoch {epoch}")
             break
 
+        # Hard-negative fail-closed gate after epoch 1
+        if epoch == 1 and hard_negative_loss_active and hard_negative_weight > 0 and hard_negative_batches_used == 0:
+            hn_diag = {
+                "missing_candidate": getattr(train_dataset, "_hn_missing_candidate", 0),
+                "equal_to_gold": getattr(train_dataset, "_hn_equal_to_gold", 0),
+                "invalid_index": getattr(train_dataset, "_hn_invalid_index", 0),
+                "valid_pair": getattr(train_dataset, "_hn_valid_pair", 0),
+                "no_negative_ir": getattr(train_dataset, "_hn_no_negative_ir", 0),
+            }
+            message = (
+                f"Hard-negative loss weight={hard_negative_weight} but 0 batches produced valid loss after epoch 1. "
+                f"Pair diagnostics: {hn_diag}"
+            )
+            print(f"  WARNING: {message}")
+            if not smoke_mode:
+                return {
+                    "error": f"Hard-negative fail-closed: {message}",
+                    "hard_negative_pair_diagnostics": hn_diag,
+                    "hard_negative_batches_used": 0,
+                    "hard_negative_examples_matched": hard_negative_examples_matched,
+                    "hard_negative_examples_loaded": len(hard_negative_rows),
+                }
+
     # Save final model.pt (best model)
     best_ckpt = ckpt_manager.load_best()
     if best_ckpt:
@@ -608,10 +684,13 @@ def run_optimized_training(
         "train_path": str(train_path),
         "validation_path": str(val_path),
         "train_examples_count": len(train_dataset),
+        "partial_supervision_examples_included": partial_supervision_count,
         "validation_examples_count": len(val_dataset) if val_dataset else 0,
         "train_by_dataset": _dataset_distribution(train_dataset.examples),
         "validation_by_dataset": _dataset_distribution(val_dataset.examples if val_dataset else []),
         "curriculum_enabled": curriculum_enabled,
+        "curriculum_runtime_active": curriculum_enabled,
+        "curriculum_configured_mode": curriculum_cfg.get("mode", "disabled") if curriculum_enabled else "disabled",
         "curriculum_distribution": curriculum_distribution,
         "curriculum_mode": curriculum_distribution.get("_curriculum_mode", "ordered_dataset") if curriculum_enabled else "disabled",
         "legacy_mode": legacy_mode,
@@ -623,6 +702,13 @@ def run_optimized_training(
         "hard_negative_batches_used": hard_negative_batches_used,
         "hard_negative_loss_active": hard_negative_loss_active,
         "hard_negative_weight": hard_negative_weight,
+        "hard_negative_pair_diagnostics": {
+            "missing_candidate": getattr(train_dataset, "_hn_missing_candidate", 0),
+            "equal_to_gold": getattr(train_dataset, "_hn_equal_to_gold", 0),
+            "invalid_index": getattr(train_dataset, "_hn_invalid_index", 0),
+            "valid_pair": getattr(train_dataset, "_hn_valid_pair", 0),
+            "no_negative_ir": getattr(train_dataset, "_hn_no_negative_ir", 0),
+        },
         "model_architecture": config.model.get("architecture", "schema_aware_queryir"),
         "ffn_heads_enabled": bool(config.model.get("feed_forward_heads", False)),
         "scheduler": config.scheduler.get("name"),
@@ -631,7 +717,9 @@ def run_optimized_training(
         "checkpoint_mode": best_mode,
         "early_stopping_patience": early_stopper.patience,
         "effective_epochs": epochs,
-        "effective_batch_size": batch_size,
+        "micro_batch_size": batch_size,
+        "gradient_accumulation_steps": int(config.training.get("gradient_accumulation_steps", 1)),
+        "optimizer_effective_batch_size": batch_size * int(config.training.get("gradient_accumulation_steps", 1)),
         "weight_decay": float(config.optimizer.get("weight_decay", 0.0001)),
         "pointer_head_weight_decay": float(config.optimizer.get("pointer_head_weight_decay", 0.001)),
         "pointer_dropout": float(config.model.get("pointer_dropout", 0.30)),
@@ -661,7 +749,8 @@ def run_optimized_training(
         "validation_composite_score": final_metrics.get("validation_composite_score"),
         "checkpoint_path": str(checkpoint_path),
         "epochs_ran": len(history),
-        "early_stopped": early_stopper.counter >= early_stopper.patience,
+        "stopped_by_early_stopping": early_stopper.triggered,
+        "configured_epochs": epochs,
         **{k: v for k, v in final_metrics.items()},
     }
     (output_dir / "training_metrics.json").write_text(
@@ -671,6 +760,11 @@ def run_optimized_training(
     # Save model config for predictor compatibility
     _save_model_config(output_dir, model_config, train_dataset.label_encoder)
     _save_training_manifest(output_dir, report, config)
+
+    # Save provenance
+    provenance.mark_completed()
+    provenance.save(output_dir / "provenance.json")
+    provenance.save(run_output_dir / "provenance.json")
 
     return report
 

@@ -762,7 +762,7 @@ def _apply_sql_safety(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _schema_graph(schema: dict[str, Any]) -> Any:
-    from nl2sql_v1.schema import ColumnInfo, ForeignKeyInfo, SchemaGraph, TableInfo
+    from db.schema_graph import ColumnInfo, ForeignKeyInfo, SchemaGraph, TableInfo
 
     raw_tables = schema.get("tables") or {}
     tables = {}

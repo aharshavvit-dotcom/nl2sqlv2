@@ -7,7 +7,7 @@ from typing import Any
 import sqlglot
 from sqlglot import exp
 
-from nl2sql_v1.schema import SchemaGraph
+from db.schema_graph import SchemaGraph
 
 
 BLOCKED_KEYWORDS = {

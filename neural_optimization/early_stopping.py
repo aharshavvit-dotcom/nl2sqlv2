@@ -38,6 +38,7 @@ class EarlyStopping:
         self.regression_threshold = regression_threshold
         self._best: float | None = None
         self._counter: int = 0
+        self._triggered: bool = False
 
     def step(self, metrics: dict[str, float]) -> bool:
         """Check whether training should stop.
@@ -57,9 +58,11 @@ class EarlyStopping:
         # Abort immediately if a significant regression is detected
         if self.mode == "max" and value < self._best - self.regression_threshold:
             print(f"Early Stopping: Significant regression detected! Metric {self.metric_name} fell from best {self._best:.4f} to {value:.4f} (limit: -{self.regression_threshold})")
+            self._triggered = True
             return True
         elif self.mode == "min" and value > self._best + self.regression_threshold:
             print(f"Early Stopping: Significant regression detected! Metric {self.metric_name} rose from best {self._best:.4f} to {value:.4f} (limit: +{self.regression_threshold})")
+            self._triggered = True
             return True
 
         improved = (
@@ -72,7 +75,10 @@ class EarlyStopping:
             return False
 
         self._counter += 1
-        return self._counter >= self.patience
+        if self._counter >= self.patience:
+            self._triggered = True
+            return True
+        return False
 
     @property
     def counter(self) -> int:
@@ -81,3 +87,14 @@ class EarlyStopping:
     @property
     def best_value(self) -> float | None:
         return self._best
+
+    @property
+    def triggered(self) -> bool:
+        """Whether early stopping was triggered during this training run.
+
+        Unlike checking ``counter >= patience`` post-loop (which can be
+        unreliable if the counter is inspected after reset), this property
+        latches True the first time ``step()`` returns True and never resets.
+        """
+        return self._triggered
+

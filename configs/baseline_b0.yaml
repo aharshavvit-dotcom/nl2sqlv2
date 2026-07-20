@@ -1,0 +1,90 @@
+# Corrected Baseline B0 — Expanded Data with Partial Supervision
+#
+# This config represents the corrected baseline after Phases 1-4:
+# - Fixed diagnostics (early stopping, batch reporting, curriculum)
+# - Canonical leakage checker
+# - Hard-negative diagnostics + fail-closed gate
+# - Partial supervision inclusion
+# - Artifact isolation
+# - Semantic consistency loss (auxiliary)
+#
+# Run:
+#   python training/train_neural_ir_optimized.py --config configs/baseline_b0.yaml
+
+model:
+  model_version: neural_queryir
+  architecture: schema_aware_queryir
+  embedding_dim: 128
+  hidden_dim: 128
+  candidate_hidden_dim: 64
+  dropout: 0.15
+  pointer_dropout: 0.10
+  max_tables: 64
+  max_columns: 256
+  max_question_len: 64
+  max_schema_len: 320
+  max_candidate_tokens: 16
+  activation: gelu
+  feed_forward_heads: false
+  relation_aware_attention:
+    enabled: false   # Phase 7 — defer until baseline established
+
+training:
+  epochs: 30
+  batch_size: 8
+  gradient_accumulation_steps: 4
+  # Effective batch size: 8 × 4 = 32
+  seed: 42
+  smoke: false
+  curriculum:
+    enabled: true
+    mode: difficulty_ascending
+
+optimizer:
+  name: adamw
+  learning_rate: 0.0007
+  weight_decay: 0.00001
+
+scheduler:
+  name: cosine_with_warmup
+  warmup_fraction: 0.05
+
+data:
+  train_path: data/processed/generic_ir_train.jsonl
+  validation_path: data/processed/generic_ir_validation.jsonl
+  hard_negatives_path: data/processed/generic_ir_hard_negatives.jsonl
+  partial_supervision_path: data/processed/generic_ir_partial_supervision.jsonl
+  max_examples: 0   # 0 = use all
+
+loss:
+  intent: 1.0
+  base_table: 1.0
+  metric_column: 1.0
+  metric_aggregation: 1.0
+  metric_expression_type: 1.0
+  dimension_column: 1.0
+  date_column: 1.0
+  date_grain: 1.0
+  date_filter_type: 1.0
+  filter_column: 1.0
+  filter_operator: 1.0
+  order_direction: 1.0
+  limit_bucket: 1.0
+  hard_negative: 0.3
+  safety: 0.0  # Disabled until safety labels are curated
+  semantic_consistency:
+    enabled: true
+    metric_agg_weight: 0.1
+    filter_op_weight: 0.1
+    groupby_weight: 0.1
+
+early_stopping:
+  patience: 8
+  metric: overall_slot_accuracy
+  mode: max
+  min_delta: 0.001
+
+output:
+  output_dir: artifacts/neural_ir_model
+  save_effective_config: true
+  save_diagnostics: true
